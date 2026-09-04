@@ -309,10 +309,16 @@ const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**
  * `mkdir` の「無ければ作る / 有れば EEXIST」を mutex に使い、`fn` を 1 プロセスずつ実行する。
- * 先客がいる間は短く待って再試行し(先客の結果 = 生きた pid file を次の判定で読める)、
- * 閾値を超えて古い lock は持ち主のクラッシュとみなして回収する。待ち切れなければ `fallback`
+ * 先客がいる間は短く待って再試行し、閾値を超えて古い lock は持ち主のクラッシュとみなして回収する。
+ *
+ * 待ち切れなかった時に**「先客が起動したはず」という値を返さない**(PBI-0218)。以前はここで
+ * `fallback = false`(= 他が起動中)を返していたので、先客が起動前に終了していると全員が
+ * 「他が起動中」と判断して**誰も broker を起こさないまま終わる**。lock を取れたかどうかだけを
+ * 呼び出し側に返し、譲る / 取りにいくの判断は呼び出し側が pid file を**読み直して**決める
  */
-async function withStaleTakeoverLock<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
+type LockOutcome<T> = { acquired: true; value: T } | { acquired: false };
+
+async function withStaleTakeoverLock<T>(fn: () => Promise<T>): Promise<LockOutcome<T>> {
   const lock = brokerClaimLockPath();
   for (let attempt = 0; attempt < 60; attempt++) {
     try {
@@ -328,13 +334,21 @@ async function withStaleTakeoverLock<T>(fn: () => Promise<T>, fallback: T): Prom
       continue;
     }
     try {
-      return await fn();
+      return { acquired: true, value: await fn() };
     } finally {
       await rm(lock, { recursive: true, force: true });
     }
   }
-  return fallback;
+  return { acquired: false };
 }
+
+/**
+ * 譲るか取るかが決まらないまま粘る上限。`STALE_LOCK_MS` より十分長く取る —— 持ち主が死んで
+ * 残った lock は `STALE_LOCK_MS` 経過後に回収されるので、この上限に達したということは
+ * **生きた誰かが lock を握り続けている**(＝その誰かが起動の可否を決めに行っている)を意味する。
+ * 短くすると「回収を待てば取れたのに諦めた」= 誰も起動しない、に戻る
+ */
+const CLAIM_DEADLINE_MS = 20_000;
 
 /**
  * pid file の排他生成を早い者勝ちの lock として使う。`link()` は「target が無ければ作る、
@@ -342,12 +356,15 @@ async function withStaleTakeoverLock<T>(fn: () => Promise<T>, fallback: T): Prom
  * 呼ぶ 2 段階方式と違い、target が他プロセスから見える瞬間には(temp file へ先に書き終えた)
  * 内容が既に完成している(torn write の窓が無い)。
  *
- * stale file(前回クラッシュ / 再起動で残った死んだ pid)の再利用は「内容が確定していて、かつ死んでいる」
- * 時だけ、しかも **`withStaleTakeoverLock` の中で 1 プロセスずつ**行う。lock 無しの
- * `readFile → rm → link` では、後発の `rm` が先発の `link` 済み file を消す窓が残り、2 本同時の
- * `atn login` が両方 spawn した(20 回に 1 回。PBI-0046 レビュー AC-X3)。
- * 読めない/空文字列(書き込み中と区別できない)は「不明」として消さずに諦める —— ここを
- * 「空 = stale」と誤認して即 rm すると、勝者の file を横取りして両方が spawn する。
+ * stale file(前回クラッシュ / 再起動で残った死んだ pid)の再利用は **`withStaleTakeoverLock` の
+ * 中で 1 プロセスずつ**行う。lock 無しの `readFile → rm → link` では、後発の `rm` が先発の
+ * `link` 済み file を消す窓が残り、2 本同時の `atn login` が両方 spawn した
+ * (20 回に 1 回。PBI-0046 レビュー AC-X3)。
+ *
+ * **譲る根拠は「生きた broker を確認できた」だけ**(PBI-0218)。「先客がいたはず」「内容が読めない」
+ * のような**仮定で false を返さない** —— 仮定で譲ると、先客が起動前に終了していた時に全員が
+ * 譲って broker が 1 本も上がらず、`atn login` だけが成功したように見える(hero ③ が黙って崩れる)。
+ * 判定が付かない間は「読み直して決め直す」を上限付きで繰り返す
  */
 async function claimBrokerPidFile(): Promise<boolean> {
   await mkdir(brokerHome(), { recursive: true });
@@ -362,17 +379,33 @@ async function claimBrokerPidFile(): Promise<boolean> {
       throw e;
     }
   };
+  /**
+   * pid file が「生きた broker(or それを起こす途中の CLI)」を指していない = 取り直してよい。
+   * 空 / 数字でない / 途中で切れた行も**ここでは「壊れている」に倒す** —— pid file は
+   * `link`(完成した temp からの atomic な出現)と `rename`(atomic な置換)でしか書かれないので、
+   * 「書きかけを覗いた」状態は存在せず、判定不能 = 誰の物でもない。
+   * ここを「不明だから譲る」に倒すと、空の broker.pid 1 つで `atn login` が
+   * **恒久的に**「already running」と言い続けて 1 本も起動しない(PBI-0218 AC-X2)
+   */
+  const takeOver = async (): Promise<"claimed" | "yield" | "retry"> => {
+    if (await runningBrokerPid()) return "yield";
+    await rm(brokerPidPath(), { force: true });
+    return (await tryLink()) ? "claimed" : "retry";
+  };
   try {
-    if (await tryLink()) return true;
-    return await withStaleTakeoverLock(async () => {
+    const deadline = Date.now() + CLAIM_DEADLINE_MS;
+    for (;;) {
+      if (await tryLink()) return true;
+      // pid file が在る。**生きたプロセスを指している時だけ**譲る
       if (await runningBrokerPid()) return false;
-      const raw = await readFile(brokerPidPath(), "utf8").catch(() => null);
-      // 先客が lock 内で取り下げて消えていた → そのまま取りにいく
-      if (raw === null) return tryLink();
-      if (raw.trim() === "") return false;
-      await rm(brokerPidPath(), { force: true });
-      return tryLink();
-    }, false);
+      const outcome = await withStaleTakeoverLock(takeOver);
+      if (outcome.acquired && outcome.value !== "retry") return outcome.value === "claimed";
+      // lock を取れなかった / 取ったが横から link された。**仮定で終わらせず読み直して決め直す**。
+      // ここで lock の外で `rm → link` に逃げてはいけない —— 後発の `rm` が先発の `link` 済み file を
+      // 消す窓が開き、PBI-0046 レビュー AC-X3 の「2 本同時が両方 spawn」がそのまま戻る
+      if (Date.now() > deadline) return false;
+      await sleepMs(20 + Math.floor(Math.random() * 40));
+    }
   } finally {
     await rm(tmp, { force: true });
   }
@@ -421,6 +454,42 @@ const LOGIN_PATH_SNAPSHOT = "PAA_LOGIN_PATH";
 const LOGIN_PATH_MARK = "__ATN_PATH__";
 /** interactive な rc file(oh-my-zsh 等)が重い端末でも、ここで諦めて snapshot に落ちる */
 const LOGIN_SHELL_TIMEOUT_MS = 5000;
+
+/**
+ * 締切付きで stream を読み切る(PBI-0236 レビュー 2026-09-04)。締切を過ぎたら **stream を cancel して**
+ * `null` を返す —— shell を kill するだけでは足りない: rc file が起こした背景 daemon
+ * (powerlevel10k の gitstatusd・zsh-async・mise 等)は shell の stdout を継承するので、
+ * shell が死んでも pipe は開いたままで、読みが終わらない。実測でこの経路が 37 秒待った
+ * (broker の `ADOPT_TIMEOUT` = 60 秒を食い潰し、PBI-0190 が直した「MCP が 1 つも登録されない」に戻る)。
+ * cancel は fd も手放すので、`atn adopt` 自身の終了も背景の子に人質に取られない。
+ */
+async function readWithDeadline(
+  stream: ReadableStream<Uint8Array>,
+  timeoutMs: number,
+): Promise<string | null> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let expired = false;
+  const timer = setTimeout(() => {
+    expired = true;
+    void reader.cancel().catch(() => {});
+  }, timeoutMs);
+  let out = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) out += decoder.decode(value, { stream: true });
+    }
+    out += decoder.decode();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+  return expired ? null : out;
+}
+
 /** `-l -i -c` と `"$PATH"` を POSIX どおりに解釈する shell だけを起こす(fish は list なので別物) */
 const LOGIN_SHELLS = new Set(["zsh", "bash", "sh", "dash", "ksh"]);
 
@@ -430,7 +499,7 @@ const LOGIN_SHELLS = new Set(["zsh", "bash", "sh", "dash", "ksh"]);
  * `-i` が要るのは nvm / rbenv / mise の init が `.zshrc` に居るため —— zsh は `.zshrc` を
  * interactive の時しか読まないので、`-l` だけでは「版を切り替えた」が反映されない。
  * 代わりに interactive は遅い・喋る・入力を待つので、**stdin は /dev/null・stderr は捨てる・
- * 5 秒で kill** の 3 点で閉じ込め、出力は marker で挟んで切り出す。
+ * 5 秒で読みを打ち切って stream ごと捨てる**の 3 点で閉じ込め、出力は marker で挟んで切り出す。
  *
  * 返す前に「PATH の形か」を見る(2 つ以上の絶対 path)。fish のように `"$PATH"` が空白区切りに
  * なる shell を allowlist の外に置いた上で、**出力側でももう一度**弾く —— 壊れた PATH を
@@ -454,16 +523,10 @@ async function freshLoginPath(): Promise<string | null> {
     }
   })();
   if (!proc) return null;
-  const timer = setTimeout(() => proc.kill(9), LOGIN_SHELL_TIMEOUT_MS);
-  let out = "";
-  try {
-    out = await new Response(proc.stdout).text();
-    await proc.exited;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
+  // 締切は **読む側**に置く。`proc.kill(9)` だけでは背景の子が握った stdout が閉じない
+  const out = await readWithDeadline(proc.stdout, LOGIN_SHELL_TIMEOUT_MS);
+  proc.kill(9); // 黙り込んだ shell 本体もここで落とす(既に終わっていれば no-op)
+  if (out === null) return null;
   const parts = out.split(LOGIN_PATH_MARK);
   const dirs = (parts.length >= 3 ? parts[1]! : "").split(":").filter(Boolean);
   if (dirs.length < 2 || !dirs.every((d) => d.startsWith("/"))) return null;

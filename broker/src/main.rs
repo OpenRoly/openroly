@@ -281,9 +281,11 @@ async fn run_once(
     // 通ごとに task を起こすと、この 2 つが両方とも壊れる。
     let (adopt_tx, mut adopt_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<adopt::Adoption>>();
     let (ack_tx, mut ack_rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
-    // 送信端をこの関数でも 1 本持つ。worker が消えても `ack_rx.recv()` が None を返し続けて
-    // select! が空回りしない(500ms で張り付く hot loop と同じ形を作らない。PBI-0190)。
-    let _ack_keepalive = ack_tx.clone();
+    // 送信端は **worker だけが持つ**(PBI-0248 review)。この関数でも clone を握ると
+    // `ack_rx.recv()` は永久に pending になり、下の「worker が消えた」枝が **到達不能な死んだ
+    // 枝**になる —— worker が panic しても誰も気付かず、以後の `registered` は全部
+    // 黙って捨てられ `register_ack` が二度と返らない(接続は heartbeat で生き続けるので
+    // 外からは正常に見える)。None を 1 回受けたら即 return するので空回りもしない。
     let _materialize = AbortOnDrop(tokio::spawn(async move {
         while let Some(batch) = adopt_rx.recv().await {
             adopt::adopt_all(&batch, &ack_tx).await;
@@ -381,7 +383,12 @@ async fn run_once(
                         adoptions.len(),
                         adopt::ADOPT_CONCURRENCY
                     );
-                    let _ = adopt_tx.send(adoptions);
+                    // **捨てない**(PBI-0248 review): send が Err = worker が死んでいる。
+                    // 握り潰すと registered は二度と materialize されず ack も返らないまま、
+                    // 接続だけが生き続ける。接続を作り直して worker ごと立て直す。
+                    if adopt_tx.send(adoptions).is_err() {
+                        return Err("materialize worker gone".to_string());
+                    }
                     continue;
                 }
                 if parsed.get("type").and_then(Value::as_str) != Some("wake") {
@@ -468,8 +475,8 @@ async fn run_once(
                     .map_err(|e| format!("wake_result send failed: {e}"))?;
             }
             maybe_ack = ack_rx.recv() => {
-                // keepalive を持っているので None は来ない。来たら worker が消えた証なので、
-                // 空回りさせずに接続を作り直す。
+                // 送信端は worker だけが持つので、None = worker が消えた(panic)。次の
+                // `registered` を待たずにここで気付いて接続を作り直す(PBI-0248 review)。
                 let Some(ack) = maybe_ack else {
                     return Err("materialize worker gone".to_string());
                 };
