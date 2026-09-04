@@ -510,6 +510,62 @@ function printFindings(findings: Finding[]): boolean {
   return findings.every((f) => f.ok);
 }
 
+/**
+ * 繋がった先の account。**確かめられなかったこと**を undefined に潰さず理由と一緒に持つ ——
+ * 「@? という account に繋がった」に読める表示を作らない為(PBI-0234 AC-X1)。
+ */
+type ConnectedAccount = { handle: string } | { handle: undefined; detail: string };
+
+/** whoami を待つ上限。接続そのものは済んでいるので、遅い server に完了報告ごと張り付かない */
+const ACCOUNT_CONFIRM_TIMEOUT_MS = 10_000;
+
+/**
+ * 繋がった先の account を 1 回だけ確かめる。**例外を投げない** —— ここで throw すると
+ * 「繋がったのに何も表示されない」になり、名乗ること自体が失敗経路で丸ごと消える。
+ */
+async function confirmAccount(credential: RuntimeCredential): Promise<ConnectedAccount> {
+  try {
+    const who = await apiCall(credential.base_url, "/v1/whoami", {
+      token: credential.token,
+      signal: AbortSignal.timeout(ACCOUNT_CONFIRM_TIMEOUT_MS),
+    });
+    if (who.status === 200 && typeof who.body?.handle === "string") return { handle: who.body.handle };
+    return {
+      handle: undefined,
+      detail: who.status === 401 ? "the credential was rejected (401)" : `whoami returned ${who.status}`,
+    };
+  } catch (e) {
+    return { handle: undefined, detail: `whoami could not be reached (${(e as Error).message})` };
+  }
+}
+
+/**
+ * 接続の完了表示。**繋がった先の @account を必ず名乗る**(PBI-0234)。
+ *
+ * `pending` の pairing 行は誰の物でもない(device code flow の性質・図6)ので、`user_code` を
+ * 握った human は**自分の** account でその要求を承認できる。接続した本人が「どの account に
+ * 入ったか」をその場で読めることが最後の砦なので、login / install / pair の 3 経路は必ず
+ * ここを通す —— 文言を各 case に散らすと、次に直す人がまた 1 経路だけ直す。
+ */
+async function reportConnected(
+  credential: RuntimeCredential,
+  subject: string,
+  tail = "",
+  account?: ConnectedAccount,
+): Promise<void> {
+  const who = account ?? (await confirmAccount(credential));
+  if (who.handle !== undefined) {
+    console.log(`\n${subject} is now connected to @${who.handle}.${tail}`);
+    return;
+  }
+  // 「繋がった」と「どの account かは確かめられなかった」を**両方**言う。片方だけにすると、
+  // 他人の account に入っていた時に気づく手掛かりが消える(@? は後者を前者に見せかける)
+  console.log(
+    `\n${subject} is now connected, but the account it landed in could not be confirmed ` +
+      `(${who.detail}). Open Settings → Connected runtimes on the web to see which account has it`,
+  );
+}
+
 function requireAdapter(id: string | undefined) {
   if (!id) fail(`Specify a runtime (${SUPPORTED_IDS.join(", ")})`);
   const adapter = findAdapter(id);
@@ -529,6 +585,17 @@ const target = args.find((a) => !a.startsWith("--"));
 const baseUrl = baseUrlOf(args);
 
 /** `--flag value` を 1 つ読む(値が無ければ undefined) */
+/**
+ * `atn login` が名乗る名前(PBI-0227 AC-4)。**この文字列が承認画面にそのまま出る** ——
+ * 承認する人はこれだけを頼りに「自分の Mac か」を決めるので、hostname を必ず載せる
+ * (server 既定の "unnamed runtime" に落ちると、送りつけられた code と自分の端末が見分けられない)。
+ * 逆に os の user 名・mail は載せない —— この面は **user_code を握った相手にも見える**ので、
+ * 端末の識別に要らない個人情報は増やさない。
+ */
+function loginRuntimeName(): string {
+  return hostname().trim() || "this machine (no hostname)";
+}
+
 function flagValue(name: string): string | undefined {
   const i = args.indexOf(name);
   return i >= 0 && args[i + 1] && !args[i + 1]!.startsWith("--") ? args[i + 1]! : undefined;
@@ -546,33 +613,36 @@ switch (command) {
     if (credential && requestedUrl != null && credential.base_url !== requestedUrl) {
       credential = undefined;
     }
-    let handle: string | undefined;
+    let account: ConnectedAccount | undefined;
     if (credential) {
-      const who = await apiCall(credential.base_url, "/v1/whoami", {
-        token: credential.token,
-      }).catch(() => null);
-      if (who?.status === 200) {
-        handle = who.body.handle;
-      } else {
+      account = await confirmAccount(credential);
+      // 確かめられない credential は使い回さない(既存挙動 —— whoami が 200 でなければ再 pairing)
+      if (account.handle === undefined) {
         credential = undefined;
+        account = undefined;
       }
     }
     if (!credential) {
       const outcome = await pairRuntime({
         baseUrl: requestedUrl ?? DEFAULT_BASE_URL,
         kind: "broker",
-        name: hostname(),
+        name: loginRuntimeName(),
         onPrompt: showPrompt,
       });
       if (outcome.status === "denied") fail("NG pairing was denied");
       if (outcome.status === "expired") fail("NG pairing expired. Run it again");
       if (outcome.status === "failed") fail(`NG pairing failed: ${outcome.detail}`);
       credential = outcome.credential;
-      const who = await apiCall(credential.base_url, "/v1/whoami", {
-        token: credential.token,
-      }).catch(() => null);
-      handle = who?.status === 200 ? who.body.handle : undefined;
+      account = await confirmAccount(credential);
     }
+    // **broker を触る前に名乗る**(PBI-0234 AC-3b): already_running の break・build_needed の
+    // fail・--foreground の 3 経路が、後ろに置いた handle 行を飛ばしていた
+    await reportConnected(
+      credential,
+      "This machine",
+      " The AIs on it are found automatically and appear under Your AI",
+      account,
+    );
     await ensureBrokerBinary();
     if (args.includes("--foreground")) {
       process.exit(await runBrokerForeground(credential));
@@ -583,9 +653,6 @@ switch (command) {
       console.log("The broker is already running");
       break;
     }
-    console.log(
-      `\nThis machine is now connected to @${handle ?? "?"}. The AIs on it are found automatically and appear under Your AI`,
-    );
     if (outcome === "started_launchd") {
       console.log(`Registered with launchd (${plistPath()}). It starts automatically after a reboot`);
     } else {
@@ -645,10 +712,11 @@ switch (command) {
     if (outcome.status === "denied") fail("NG pairing was denied");
     if (outcome.status === "expired") fail("NG pairing expired. Run it again");
     if (outcome.status === "failed") fail(`NG pairing failed: ${outcome.detail}`);
-    console.log(
-      `\nConnected ${adapter.displayName} as ${outcome.credential.name}${
-        outcome.paired ? "" : " (reused the existing credential)"
-      }`,
+    // credential.name は `<host> / <displayName>` なので、subject に displayName を足すと二重になる
+    await reportConnected(
+      outcome.credential,
+      outcome.credential.name,
+      outcome.paired ? "" : " The existing credential was reused.",
     );
     if (!printFindings(outcome.findings)) process.exit(1);
     console.log(`\nRestart ${adapter.displayName} and the @account tools become available`);
@@ -753,7 +821,10 @@ switch (command) {
     if (outcome.status === "denied") fail("NG pairing was denied");
     if (outcome.status === "expired") fail("NG pairing expired");
     if (outcome.status === "failed") fail(`NG pairing failed: ${outcome.detail}`);
-    console.log(`\nConnected: ${outcome.credential.name} (${outcome.credential.runtime_id})`);
+    await reportConnected(
+      outcome.credential,
+      `${outcome.credential.name} (${outcome.credential.runtime_id})`,
+    );
     break;
   }
 
