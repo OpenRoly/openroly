@@ -28,6 +28,21 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 // この間 何も受信しなければ(pong 含む)half-open とみなして接続を切って再接続させる。
 const IDLE_TIMEOUT: Duration = Duration::from_secs(40);
 
+/// 接続ごとに畳む tokio task。**drop で abort する**(PBI-0248 AC-X2)。`run_once` はどの
+/// return 経路でもこの guard を通って抜けるので、古い接続の materialize が生き残って、
+/// 再接続後の分と **二重に `atn adopt` を起こす**ことがない(上限 ADOPT_CONCURRENCY は
+/// task ごとなので、task が 2 つ在れば 8 本立って上限を素通りする)。
+///
+/// abort で future が drop されると、走っていた `atn adopt` は `kill_on_drop(true)` で殺される
+/// —— credential を書きかけた子を置き去りにしない。
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// 接続を跨いで生きる状態(PBI-0022)。registry は cache / fetch で差し替わり、version cache は
 /// scan の probe 結果を binary の mtime 単位で覚える(heartbeat ごとに `--version` を叩かない)。
 struct BrokerState {
@@ -254,6 +269,27 @@ async fn run_once(
         .await
         .map_err(|e| format!("hello send failed: {e}"))?;
 
+    // materialize(`registered` → `atn adopt`)は **WS ループの外**で回す(PBI-0248)。
+    // 同時実行に上限を入れた(PBI-0235)結果、ループの中で待つと停止時間が
+    // `ceil(件数 / ADOPT_CONCURRENCY) × ADOPT_TIMEOUT` まで伸びる。IDLE_TIMEOUT(40 秒)を
+    // 跨ぐと接続が落ちて次の hello からやり直しになり、PBI-0190 で塞いだばかりの
+    // 「再接続が増える口」を別の理由で開けてしまう。
+    //
+    // worker は **1 本**で、batch を 1 通ずつ順に処理する。ここが要点:
+    //   - 上限 4 が接続全体で 1 つになる(`registered` が 2 通来ても 8 本立たない)
+    //   - 同じ runtime_id が 2 通に居ても `atn adopt` が 2 本同時に立たない
+    // 通ごとに task を起こすと、この 2 つが両方とも壊れる。
+    let (adopt_tx, mut adopt_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<adopt::Adoption>>();
+    let (ack_tx, mut ack_rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    // 送信端をこの関数でも 1 本持つ。worker が消えても `ack_rx.recv()` が None を返し続けて
+    // select! が空回りしない(500ms で張り付く hot loop と同じ形を作らない。PBI-0190)。
+    let _ack_keepalive = ack_tx.clone();
+    let _materialize = AbortOnDrop(tokio::spawn(async move {
+        while let Some(batch) = adopt_rx.recv().await {
+            adopt::adopt_all(&batch, &ack_tx).await;
+        }
+    }));
+
     let mut heartbeat = interval(HEARTBEAT_INTERVAL);
     heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
     heartbeat.tick().await; // 起動直後の即時 tick を消費(hello 直後にすぐ ping しない)
@@ -333,10 +369,11 @@ async fn run_once(
                 // 自動登録(PBI-0023 図18): Cloud が hello の応答で credential を返してきた。
                 // kind ごとに `atn adopt` を起こして materialize し、1 件ごとに register_ack を
                 // 返す(Cloud は ok:false の行を revoke して次の hello で再試行させる)。
-                // 並行に走らせる(PBI-0190)が **同時実行数は ADOPT_CONCURRENCY で頭打ち**
-                // (PBI-0235) —— 件数は Cloud が決めるので、上限が無いと 1000 件の registered が
-                // 端末で 1000 個の子プロセスになる。上限で待たされた件も全部 ack を返す
-                // (順序も件数も入力と同じ。判定と待ちは adopt.rs に集約)。
+                // 同時実行数は ADOPT_CONCURRENCY で頭打ち(PBI-0235) —— 件数は Cloud が決めるので、
+                // 上限が無いと 1000 件の registered が端末で 1000 個の子プロセスになる。
+                //
+                // **ここでは待たない**(PBI-0248): worker へ渡してすぐ次の frame に戻る。
+                // ack は 1 件終わるごとに `ack_rx` から戻ってきて、下の枝が現在の接続へ送る。
                 if parsed.get("type").and_then(Value::as_str) == Some("registered") {
                     let adoptions = adopt::parse_registered(&parsed);
                     eprintln!(
@@ -344,24 +381,7 @@ async fn run_once(
                         adoptions.len(),
                         adopt::ADOPT_CONCURRENCY
                     );
-                    let results = adopt::adopt_all(&adoptions).await;
-                    for (a, (ok, detail)) in adoptions.iter().zip(results) {
-                        eprintln!(
-                            "broker: adopt kind={} runtime_id={} ok={ok} detail={detail}",
-                            a.kind, a.runtime_id
-                        );
-                        let ack = json!({
-                            "type": "register_ack",
-                            "kind": a.kind,
-                            "runtime_id": a.runtime_id,
-                            "ok": ok,
-                            "detail": detail,
-                        });
-                        write
-                            .send(Message::Text(ack.to_string().into()))
-                            .await
-                            .map_err(|e| format!("register_ack send failed: {e}"))?;
-                    }
+                    let _ = adopt_tx.send(adoptions);
                     continue;
                 }
                 if parsed.get("type").and_then(Value::as_str) != Some("wake") {
@@ -446,6 +466,19 @@ async fn run_once(
                     .send(Message::Text(response.to_string().into()))
                     .await
                     .map_err(|e| format!("wake_result send failed: {e}"))?;
+            }
+            maybe_ack = ack_rx.recv() => {
+                // keepalive を持っているので None は来ない。来たら worker が消えた証なので、
+                // 空回りさせずに接続を作り直す。
+                let Some(ack) = maybe_ack else {
+                    return Err("materialize worker gone".to_string());
+                };
+                // last_activity は **受信** の時計なので、自分の送信では更新しない
+                // (session_result と同じ理由。PBI-0033)
+                write
+                    .send(Message::Text(ack.to_string().into()))
+                    .await
+                    .map_err(|e| format!("register_ack send failed: {e}"))?;
             }
             maybe_result = results_rx.recv() => {
                 // main で作った channel は tx が生きている限り閉じないが、念のため None を扱う。

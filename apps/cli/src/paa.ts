@@ -89,14 +89,22 @@ function baseUrlOf(args: string[]): string | undefined {
   return process.env.PAA_URL;
 }
 
+/**
+ * 接続コードを **端末の画面に出す**(PBI-0237 AC-2)。
+ *
+ * 以前は `verification_uri_complete`(= `?user_code=` 付きの URL)を 1 本印刷し、browser も
+ * その URL で開いていた —— **その 1 本を人に送るだけで、受け取った側が 1 押しで承認できた**
+ * (device code flow の remote phishing。RFC 8628 §5.4)。今 URL が指すのは
+ * 打つ欄だけの `/connect` で、code は **この行にしか無い**。
+ */
 function showPrompt(prompt: PairPrompt): void {
   console.log(`
-  1. Open in a browser: ${prompt.verification_uri_complete}
-  2. Code: ${prompt.user_code}
+  1. Open in a browser: ${prompt.verification_uri}
+  2. Type this code:    ${prompt.user_code}
   3. Press "Approve" on the account side (within ${Math.round(prompt.expires_in / 60)} minutes)
 
   Waiting for approval...`);
-  maybeOpenBrowser(prompt.verification_uri_complete);
+  maybeOpenBrowser(prompt.verification_uri);
 }
 
 /**

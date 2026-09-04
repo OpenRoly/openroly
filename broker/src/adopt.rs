@@ -10,10 +10,11 @@
 use std::process::Stdio;
 use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::Semaphore;
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::paa_cli::cli_argv;
 
@@ -85,10 +86,16 @@ pub fn adopt_permits(count: usize, limit: usize) -> usize {
     limit.max(1).min(count.max(1))
 }
 
-/// `registered` 1 通分を materialize する。**戻り値は入力と同じ順序・同じ件数**
-/// (呼び出し側が zip して 1 件ずつ `register_ack` を返す = 上限で待たされた件も取りこぼさない)。
-pub async fn adopt_all(adoptions: &[Adoption]) -> Vec<(bool, String)> {
-    adopt_all_with(&cli_argv(), ADOPT_CONCURRENCY, ADOPT_TIMEOUT, adoptions).await
+/// `registered` 1 通分を materialize し、**1 件終わるごとにその件の `register_ack` を
+/// `acks` へ流す**(PBI-0248)。戻り値は持たない —— 呼び出し側が `Vec` を受けて入力と zip する
+/// 形は「順序と件数が入力と一致する」を暗黙の前提にしていたので、結果に相手(kind /
+/// runtime_id)を貼り付けて渡す形にして、ずれる余地ごと消した。
+///
+/// 呼ぶのは **WS ループではなく接続ごとの materialize worker**(main.rs)。ループの中で待つと
+/// 停止時間が `ceil(件数 / ADOPT_CONCURRENCY) × ADOPT_TIMEOUT` まで伸び、`IDLE_TIMEOUT` を
+/// 跨いで接続が落ちる。
+pub async fn adopt_all(adoptions: &[Adoption], acks: &UnboundedSender<Value>) {
+    adopt_all_with(&cli_argv(), ADOPT_CONCURRENCY, ADOPT_TIMEOUT, adoptions, acks).await
 }
 
 /// `adopt_all` の本体。argv / 上限 / timeout を引数で受けるので、test は env(`PAA_CLI`)を
@@ -99,9 +106,10 @@ pub async fn adopt_all_with(
     limit: usize,
     timeout: Duration,
     adoptions: &[Adoption],
-) -> Vec<(bool, String)> {
+    acks: &UnboundedSender<Value>,
+) {
     let sem = Semaphore::new(adopt_permits(adoptions.len(), limit));
-    // **並行は保つ**(PBI-0190: 直列だと `件数 × ADOPT_TIMEOUT` の間 WS ループが止まる)。
+    // **並行は保つ**(PBI-0190: 直列だと `件数 × ADOPT_TIMEOUT` かかる)。
     // permit は guard として **束縛したまま** 1 件分を await する —— `let _ = ...` で受けると
     // その場で drop されて上限が消える。解放は Drop 任せなので、早期 return(CLI 不在・
     // stdin 書込失敗)も timeout も panic も permit を持ち逃げしない。
@@ -110,10 +118,23 @@ pub async fn adopt_all_with(
         async move {
             // close しないので Err にはならない。仮に来ても上限無しで走らせる方(= 進む方)へ倒す
             let _permit = sem.acquire().await.ok();
-            adopt_one(argv, timeout, a).await
+            let (ok, detail) = adopt_one(argv, timeout, a).await;
+            eprintln!(
+                "broker: adopt kind={} runtime_id={} ok={ok} detail={detail}",
+                a.kind, a.runtime_id
+            );
+            // 受信端は **接続ごと**に作り直される(PBI-0248)。切れた後の送信を捨てるのは
+            // 正しい —— その ack を返す相手はもう居らず、Cloud は次の hello で作り直す。
+            let _ = acks.send(json!({
+                "type": "register_ack",
+                "kind": a.kind,
+                "runtime_id": a.runtime_id,
+                "ok": ok,
+                "detail": detail,
+            }));
         }
     }))
-    .await
+    .await;
 }
 
 /// 1 件を materialize する。戻り値 `(ok, detail)` の `detail` は `register_ack` に載る短い理由。
@@ -310,6 +331,39 @@ mod tests {
         vec!["/bin/sh".to_string(), "-c".to_string(), script]
     }
 
+    /// ack を受け取る口。`adopt_all_with` は **完了順**に流すので、検査は runtime_id で引く
+    /// (順序ではなく「相手との対応」を測る = 別の runtime の ack を送る壊れ方を殺す)。
+    fn ack_channel() -> (
+        UnboundedSender<Value>,
+        tokio::sync::mpsc::UnboundedReceiver<Value>,
+    ) {
+        tokio::sync::mpsc::unbounded_channel()
+    }
+
+    /// 受け取った ack を `runtime_id -> (kind, ok, detail)` にする。JSON は **parse して値を
+    /// 比べる**(substring 一致は空白 1 個やキー順で偽の赤を出す)。
+    fn drain_acks(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<Value>,
+    ) -> std::collections::HashMap<String, (String, bool, String)> {
+        let mut out = std::collections::HashMap::new();
+        while let Ok(v) = rx.try_recv() {
+            assert_eq!(
+                v.get("type").and_then(Value::as_str),
+                Some("register_ack"),
+                "ack の type が register_ack でない: {v}"
+            );
+            let rid = v["runtime_id"].as_str().expect("runtime_id").to_string();
+            let kind = v["kind"].as_str().expect("kind").to_string();
+            let ok = v["ok"].as_bool().expect("ok");
+            let detail = v["detail"].as_str().expect("detail").to_string();
+            assert!(
+                out.insert(rid.clone(), (kind, ok, detail)).is_none(),
+                "{rid} の ack が 2 通来た(二重 ack)"
+            );
+        }
+        out
+    }
+
     fn peak(dir: &std::path::Path) -> usize {
         std::fs::read_to_string(dir.join("peak"))
             .unwrap_or_default()
@@ -325,17 +379,20 @@ mod tests {
         let items: Vec<Adoption> = (0..20).map(|i| sample_n(i, "codex")).collect();
 
         let dir = tmp_dir("cap");
-        let results = adopt_all_with(
+        let (tx, mut rx) = ack_channel();
+        adopt_all_with(
             &counting_cli(&dir, "0.15"),
             4,
             Duration::from_secs(30),
             &items,
+            &tx,
         )
         .await;
-        assert_eq!(results.len(), items.len());
+        let acks = drain_acks(&mut rx);
+        assert_eq!(acks.len(), items.len());
         assert!(
-            results.iter().all(|(ok, _)| *ok),
-            "fake CLI が失敗した: {results:?}"
+            acks.values().all(|(_, ok, _)| *ok),
+            "fake CLI が失敗した: {acks:?}"
         );
         let capped = peak(&dir);
         assert!(capped > 0, "fake CLI が 1 度も走っていない(検査が空振り)");
@@ -346,11 +403,13 @@ mod tests {
         // 上限を超える。ここが超えないなら数え方が壊れていて、上の `capped <= 4` は
         // 何も測っていない(PBI-0190 以前の join_all そのままの形が緑になる)。
         let dir2 = tmp_dir("cap-nc");
-        let _ = adopt_all_with(
+        let (tx2, _rx2) = ack_channel();
+        adopt_all_with(
             &counting_cli(&dir2, "0.4"),
             items.len(),
             Duration::from_secs(30),
             &items,
+            &tx2,
         )
         .await;
         let uncapped = peak(&dir2);
@@ -361,11 +420,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir2);
     }
 
-    // AC-2: 上限で待たされた件も含めて全件に結果が返る(= 全件に register_ack を返せる)。
-    // 順序も入力どおり —— 呼び出し側は zip して kind/runtime_id を貼るので、ずれると
-    // 「別の runtime の ack」を Cloud へ送ることになる。
+    // AC-2: 上限で待たされた件も含めて **全件に register_ack が出る**。しかも ack には
+    // その件の kind / runtime_id が貼ってあるので、「別の runtime の ack」を送る余地が無い
+    // (PBI-0248 で zip を廃止した。順序ではなく対応を測る = 完了順が変わっても壊れない)。
     #[tokio::test]
-    async fn adopt_all_は待たされた件も含めて全件に順序どおり結果を返す() {
+    async fn adopt_all_は待たされた件も含めて全件に_ack_を返し相手を取り違えない() {
         // $2 = --kind の値。okk は成功、それ以外は runtime_id($4)を stderr に出して exit 7
         let cli = argv(&[
             "/bin/sh",
@@ -376,10 +435,16 @@ mod tests {
             .map(|i| sample_n(i, if i % 2 == 0 { "okk" } else { "ngg" }))
             .collect();
 
-        let results = adopt_all_with(&cli, 4, Duration::from_secs(30), &items).await;
+        let (tx, mut rx) = ack_channel();
+        adopt_all_with(&cli, 4, Duration::from_secs(30), &items, &tx).await;
+        let acks = drain_acks(&mut rx);
 
-        assert_eq!(results.len(), items.len());
-        for (i, (ok, detail)) in results.iter().enumerate() {
+        assert_eq!(acks.len(), items.len());
+        for (i, a) in items.iter().enumerate() {
+            let (kind, ok, detail) = acks
+                .get(&a.runtime_id)
+                .unwrap_or_else(|| panic!("{} の ack が来ていない", a.runtime_id));
+            assert_eq!(kind, &a.kind, "{i} 件目の ack に別の kind が載っている");
             if i % 2 == 0 {
                 assert!(ok, "{i} 件目が失敗: {detail}");
                 assert_eq!(detail, "");
@@ -414,17 +479,23 @@ mod tests {
         // timeout は 2 秒 —— 混んだ機械では `/bin/sh` の spawn だけで数百 ms かかるので、
         // ここを詰めすぎると健全な件まで adopt_timeout になる(300ms で実測して踏んだ)
         let started = std::time::Instant::now();
-        let results = tokio::time::timeout(
+        let (tx, mut rx) = ack_channel();
+        tokio::time::timeout(
             Duration::from_secs(20),
-            adopt_all_with(&cli, 4, Duration::from_secs(2), &items),
+            adopt_all_with(&cli, 4, Duration::from_secs(2), &items, &tx),
         )
         .await
         .expect("permit を持ち逃げして後続が進めなくなっている(枯渇)");
         let elapsed = started.elapsed();
+        let acks = drain_acks(&mut rx);
 
-        assert_eq!(results.len(), items.len());
-        assert_eq!(results[0], (false, "adopt_timeout".to_string()));
-        for (i, (ok, detail)) in results.iter().enumerate().skip(1) {
+        assert_eq!(acks.len(), items.len());
+        assert_eq!(
+            acks["rt_0"],
+            ("slow".to_string(), false, "adopt_timeout".to_string())
+        );
+        for i in 1..items.len() {
+            let (_, ok, detail) = &acks[&format!("rt_{i}")];
             assert!(ok, "{i} 件目が詰まりに巻き込まれた: {detail}");
         }
         // 詰まった 1 件は permit を 1 つ抱えたままだが、残り 3 permit が回るので
@@ -433,5 +504,52 @@ mod tests {
             elapsed < Duration::from_secs(6),
             "後続が詰まった件を待っている: {elapsed:?}"
         );
+    }
+
+    // ------------------------------------- PBI-0248: materialize を WS ループの外へ出す
+
+    // AC-2: ack は **1 件終わるごとに** 流れる(batch 全体の完了を待たない)。
+    // 測るのは時間ではなく **順序** —— 詰まった 1 件がまだ走っている間に、他の件の ack が
+    // 受信端へ届くこと。batch の最後にまとめて送る形なら `fut` が先に完了して panic する。
+    // これが無いと、100 件の registered で Cloud が最初の ack を聞くまで 25 波分沈黙する。
+    #[tokio::test]
+    async fn ack_は_1_件終わるごとに流れる() {
+        let cli = argv(&[
+            "/bin/sh",
+            "-c",
+            "cat >/dev/null; case \"$2\" in slow) sleep 30;; *) exit 0;; esac",
+        ]);
+        let mut items = vec![sample_n(0, "slow")];
+        items.extend((1..5).map(|i| sample_n(i, "fast")));
+        let (tx, mut rx) = ack_channel();
+
+        let got = tokio::time::timeout(Duration::from_secs(20), async {
+            let mut fut =
+                std::pin::pin!(adopt_all_with(&cli, 4, Duration::from_secs(10), &items, &tx));
+            let mut got: Vec<Value> = Vec::new();
+            while got.len() < 4 {
+                tokio::select! {
+                    // **biased**: 両方 ready の時に必ず `fut` を先に見る。まとめて送る形だと
+                    // 「join_all の完了」と「ack が全部届く」が同じ瞬間に立つので、公平な
+                    // select! では 1/2 で ack 側を拾って**負の対照が緑になる**
+                    biased;
+                    _ = &mut fut => panic!(
+                        "slow が終わる前に batch 全体が完了した(ack をまとめて送っていないか、\
+                         検査が空振りしている)"
+                    ),
+                    Some(v) = rx.recv() => got.push(v),
+                }
+            }
+            got
+        })
+        .await
+        .expect("詰まった 1 件の完了を待たずに ack が流れていない");
+
+        // 先に届いた 4 件は fast(slow はまだ走っている)
+        for v in &got {
+            assert_eq!(v["kind"].as_str(), Some("fast"), "slow の ack が先に来た: {v}");
+            assert_eq!(v["ok"].as_bool(), Some(true), "fast が失敗した: {v}");
+        }
+        assert_eq!(got.len(), 4);
     }
 }
