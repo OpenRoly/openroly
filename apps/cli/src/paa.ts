@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import {
+  accountBaseUrl,
   apiCall,
   binDir,
   DEFAULT_BASE_URL,
@@ -16,6 +17,8 @@ import {
   paaHome,
   pairRuntime,
   reconcile,
+  RUNTIME_CLI_NOT_FOUND,
+  saveAccountUrl,
   saveCredential,
   uninstallRuntime,
   type AdapterContext,
@@ -65,7 +68,8 @@ Usage: atn <command>
                         Run an external API provider as this machine's runtime for one turn and
                         hand the draft reply to the thread (${AGENT_PROVIDERS.join(" / ")})
 
-  --url <base-url>      Account API (default: $PAA_URL or ${DEFAULT_BASE_URL})
+  --url <base-url>      Account API (default: $PAA_URL, then the URL 'atn login' connected to,
+                        then ${DEFAULT_BASE_URL})
   --repair              Recreate the credential on install
   --dry-run             On sync, print the plan without writing to native config / DB
   --no-open             Don't open the approval URL automatically (login / install / pair)
@@ -406,6 +410,91 @@ async function startBrokerDetached(credential: RuntimeCredential): Promise<Detac
 // 実マシンの ~/Library/LaunchAgents と実 launchctl には test から絶対に触れない —— PAA_BROKER_BIN /
 // PAA_CLI と同じ設計で、常に env 経由の差し替え口を通す。
 
+/**
+ * plist が焼いた「login 時の PATH」の別名(PBI-0236)。**この env が在る = 今の PATH は写し**
+ * という 1 つの意味しか持たない —— 在る時だけ `atn adopt` が login shell を起こす。
+ * 人が手で打つ `atn install` / `atn adopt`、test、detached 起動には無いので probe は走らない。
+ */
+const LOGIN_PATH_SNAPSHOT = "PAA_LOGIN_PATH";
+
+/** login shell の出力から PATH だけを切り出す marker。rc file の挨拶が混ざっても拾える */
+const LOGIN_PATH_MARK = "__ATN_PATH__";
+/** interactive な rc file(oh-my-zsh 等)が重い端末でも、ここで諦めて snapshot に落ちる */
+const LOGIN_SHELL_TIMEOUT_MS = 5000;
+/** `-l -i -c` と `"$PATH"` を POSIX どおりに解釈する shell だけを起こす(fish は list なので別物) */
+const LOGIN_SHELLS = new Set(["zsh", "bash", "sh", "dash", "ksh"]);
+
+/**
+ * **今の** login shell が持つ PATH を 1 回だけ読む(PBI-0236)。取れなければ `null`。
+ *
+ * `-i` が要るのは nvm / rbenv / mise の init が `.zshrc` に居るため —— zsh は `.zshrc` を
+ * interactive の時しか読まないので、`-l` だけでは「版を切り替えた」が反映されない。
+ * 代わりに interactive は遅い・喋る・入力を待つので、**stdin は /dev/null・stderr は捨てる・
+ * 5 秒で kill** の 3 点で閉じ込め、出力は marker で挟んで切り出す。
+ *
+ * 返す前に「PATH の形か」を見る(2 つ以上の絶対 path)。fish のように `"$PATH"` が空白区切りに
+ * なる shell を allowlist の外に置いた上で、**出力側でももう一度**弾く —— 壊れた PATH を
+ * 先頭に載せるのは、PATH を取り直さないより悪い。
+ */
+async function freshLoginPath(): Promise<string | null> {
+  const override = process.env.PAA_LOGIN_SHELL;
+  if (override === "") return null; // 明示的に無効化(probe を望まない端末・test の口)
+  const shell = override ?? process.env.SHELL ?? "/bin/zsh";
+  if (override === undefined && !LOGIN_SHELLS.has(shell.split("/").pop() ?? "")) return null;
+  const script = `printf '${LOGIN_PATH_MARK}%s${LOGIN_PATH_MARK}' "$PATH"`;
+  const proc = (() => {
+    try {
+      return Bun.spawn([shell, "-l", "-i", "-c", script], {
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "ignore",
+      });
+    } catch {
+      return null; // shell が実在しない / 実行権が無い
+    }
+  })();
+  if (!proc) return null;
+  const timer = setTimeout(() => proc.kill(9), LOGIN_SHELL_TIMEOUT_MS);
+  let out = "";
+  try {
+    out = await new Response(proc.stdout).text();
+    await proc.exited;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+  const parts = out.split(LOGIN_PATH_MARK);
+  const dirs = (parts.length >= 3 ? parts[1]! : "").split(":").filter(Boolean);
+  if (dirs.length < 2 || !dirs.every((d) => d.startsWith("/"))) return null;
+  return dirs.join(":");
+}
+
+/**
+ * `atn adopt` が runtime CLI(`codex mcp add` 等)を起こす時の env(PBI-0236)。
+ *
+ * `PAA_LOGIN_PATH` が無い = 自分の PATH は今の環境そのもの → **何もしない**。
+ * 在る時だけ「今の login shell の PATH」→「焼いた snapshot」→「今の PATH」の順に繋いで重複を落とす。
+ * **fresh を先頭に置く**のが要点 —— 版を切り替えた人の古い dir がまだ実在する時、後ろに置くと
+ * 古い方が先に解決されて AC-1 が閉じない。snapshot を捨てずに後ろへ残すのは、login を打った
+ * shell にしか無かった dir(direnv 等)を落とさないため。probe が失敗すれば snapshot だけ = 今日と同じ。
+ */
+async function adoptEnv(): Promise<Record<string, string | undefined>> {
+  const snapshot = process.env[LOGIN_PATH_SNAPSHOT];
+  if (!snapshot) return process.env;
+  const fresh = await freshLoginPath();
+  const merged = [
+    ...(fresh ?? "").split(":"),
+    ...snapshot.split(":"),
+    ...(process.env.PATH ?? "").split(":"),
+  ].filter(Boolean);
+  const path = [...new Set(merged)].join(":");
+  // 診断は **stdout** へ(broker は stdout を捨てる)。stderr は失敗理由 1 行だけの場所で、
+  // ここに書くと broker が拾う `register_ack.detail` が診断行に化ける
+  console.log(`adopt: PATH ${fresh ? "refreshed from the login shell" : "kept from the plist snapshot"}`);
+  return { ...process.env, PATH: path };
+}
+
 function launchAgentsDir(): string {
   return process.env.PAA_LAUNCH_AGENTS_DIR ?? join(homedir(), "Library", "LaunchAgents");
 }
@@ -432,10 +521,21 @@ function plistXml(): string {
   // bun だけ解決していたが、その先で呼ばれる CLI の PATH は誰も面倒を見ていなかった。
   // login を打った shell の PATH をそのまま焼く —— その shell で runtime CLI が動いていたのだから、
   // 同じ PATH なら adopt も動く
-  const passthroughKeys = ["PAA_HOME", "PAA_BROKER_HOME", "PAA_BROKER_BIN", "PAA_URL", "PATH"] as const;
-  const envEntries = passthroughKeys
+  //
+  // **焼いた PATH は snapshot**(PBI-0236) —— nvm / rbenv / mise を使う人が後で版を切り替えると
+  // ここは古い版の dir を指したままになり、`codex` の shebang が呼ぶ `node` が消える。
+  // そこで **同じ値を `PAA_LOGIN_PATH` にも焼く**: これは `atn adopt` に対する
+  // 「お前が今持っている PATH は login の瞬間の写しだ」という印で、adopt はこれが在る時だけ
+  // login shell を起こして今の PATH を取り直す。`SHELL` はその時に起こす shell
+  // (launchd の env には無い)。`PATH` を止めないのは broker(Rust) の discovery が
+  // `env::var_os("PATH")` を見るため —— 外すと PBI-0190 の半分が戻る。
+  const passthroughKeys = ["PAA_HOME", "PAA_BROKER_HOME", "PAA_BROKER_BIN", "PAA_URL", "PATH", "SHELL"] as const;
+  const plistEnv: [string, string][] = passthroughKeys
     .filter((k) => process.env[k])
-    .map((k) => `    <key>${k}</key>\n    <string>${escapeXml(process.env[k]!)}</string>`)
+    .map((k) => [k, process.env[k]!]);
+  if (process.env.PATH) plistEnv.push([LOGIN_PATH_SNAPSHOT, process.env.PATH]);
+  const envEntries = plistEnv
+    .map(([k, v]) => `    <key>${k}</key>\n    <string>${escapeXml(v)}</string>`)
     .join("\n");
   const logPath = escapeXml(brokerLogPath());
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -632,7 +732,8 @@ switch (command) {
     }
     if (!credential) {
       const outcome = await pairRuntime({
-        baseUrl: requestedUrl ?? DEFAULT_BASE_URL,
+        // 2 度目の login(credential が失効した端末)も、前回 login した server へ戻る(図7.1)
+        baseUrl: await accountBaseUrl(requestedUrl),
         kind: "broker",
         name: loginRuntimeName(),
         onPrompt: showPrompt,
@@ -643,6 +744,12 @@ switch (command) {
       credential = outcome.credential;
       account = await confirmAccount(credential);
     }
+    // **login が決めた URL を account の既定にする**(PBI-0246・図7.1)。以後 `--url` 無しの
+    // pair / install / doctor はここへ行く —— 書き戻すのは pairing が実際に成功した URL
+    // (`credential.base_url`)であって要求値ではない。名乗る先と繋ぐ先を割らない。
+    // 既に接続済みの端末で `atn login` を打ち直した時も通るので、この機能より前に
+    // login した端末もここで直る
+    await saveAccountUrl(credential.base_url);
     // **broker を触る前に名乗る**(PBI-0234 AC-3b): already_running の break・build_needed の
     // fail・--foreground の 3 経路が、後ろに置いた handle 行を飛ばしていた
     await reportConnected(
@@ -790,7 +897,9 @@ switch (command) {
       paired_at: new Date().toISOString(),
     });
     try {
-      await adapter.register(ctx, {
+      // 起こす runtime CLI(とその shebang が呼ぶ node)は **今の** PATH で解決する(PBI-0236)。
+      // launchd 経路以外では process.env がそのまま返る
+      await adapter.register({ env: await adoptEnv() }, {
         serverEntry: MCP_SERVER_ENTRY,
         runtimeKind: adapter.id,
         baseUrl: cleanUrl,
@@ -798,8 +907,16 @@ switch (command) {
       });
     } catch (e) {
       // exit != 0 で broker が `register_ack ok:false` を返し、Cloud が行を revoke する
-      // (credential だけ生きて MCP config が無い半端な状態を残さない)
-      fail(`adopt: registering the MCP server failed: ${(e as Error).message}`, 2);
+      // (credential だけ生きて MCP config が無い半端な状態を残さない)。
+      // **1 行目が detail になる** ので、runtime CLI がどこにも無い時は named reason を行頭へ置く
+      // (PBI-0236 AC-X1: broker 側の `paa_cli_not_found` = atn 自身が無い、と区別できるように)
+      const message = (e as Error).message;
+      fail(
+        message.startsWith(RUNTIME_CLI_NOT_FOUND)
+          ? message
+          : `adopt: registering the MCP server failed: ${message}`,
+        2,
+      );
     }
     console.log(`adopt: connected ${adapter.displayName} as ${name} (${runtimeId})`);
     break;
@@ -821,7 +938,10 @@ switch (command) {
   case "pair": {
     const adapter = requireAdapter(target);
     const outcome = await pairRuntime({
-      baseUrl: baseUrl ?? DEFAULT_BASE_URL,
+      // `?? DEFAULT_BASE_URL` に戻さないこと(PBI-0246・図7.1)—— login で URL を決めた人が
+      // `atn pair claude` を打つと localhost に行って ConnectionRefused で死ぬ。
+      // まだ pair していない runtime には引き継ぐ credential が無いので account の URL が要る
+      baseUrl: await accountBaseUrl(baseUrl),
       kind: adapter.id,
       name: `${hostname()} / ${adapter.displayName}`,
       onPrompt: showPrompt,
@@ -1026,7 +1146,7 @@ switch (command) {
     if (!adminToken) {
       fail("PAA_ADMIN_TOKEN is not set. Pass the same value as the server's env");
     }
-    const url = (baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "");
+    const url = await accountBaseUrl(baseUrl);
     const res = await apiCall(url, "/v1/admin/sessions", {
       method: "POST",
       token: adminToken,
