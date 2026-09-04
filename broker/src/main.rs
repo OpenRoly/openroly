@@ -331,18 +331,20 @@ async fn run_once(
                     Err(_) => continue,
                 };
                 // 自動登録(PBI-0023 図18): Cloud が hello の応答で credential を返してきた。
-                // kind ごとに `atn adopt` を **同時 1 本ずつ** 起こして materialize し、
-                // 1 件ごとに register_ack を返す(Cloud は ok:false の行を revoke して次の
-                // hello で再試行させる)。5 秒 timeout は adopt 側。
+                // kind ごとに `atn adopt` を起こして materialize し、1 件ごとに register_ack を
+                // 返す(Cloud は ok:false の行を revoke して次の hello で再試行させる)。
+                // 並行に走らせる(PBI-0190)が **同時実行数は ADOPT_CONCURRENCY で頭打ち**
+                // (PBI-0235) —— 件数は Cloud が決めるので、上限が無いと 1000 件の registered が
+                // 端末で 1000 個の子プロセスになる。上限で待たされた件も全部 ack を返す
+                // (順序も件数も入力と同じ。判定と待ちは adopt.rs に集約)。
                 if parsed.get("type").and_then(Value::as_str) == Some("registered") {
                     let adoptions = adopt::parse_registered(&parsed);
-                    eprintln!("broker: received registered count={}", adoptions.len());
-                    // **並行に走らせる**(PBI-0190) —— 直列だと `runtime 数 × ADOPT_TIMEOUT` の間
-                    // WS ループが止まる。1 件ずつ `atn adopt` を起こすのは変えず、待ちだけ重ねる
-                    let results = futures_util::future::join_all(
-                        adoptions.iter().map(|a| async move { adopt::adopt(a).await }),
-                    )
-                    .await;
+                    eprintln!(
+                        "broker: received registered count={} concurrency={}",
+                        adoptions.len(),
+                        adopt::ADOPT_CONCURRENCY
+                    );
+                    let results = adopt::adopt_all(&adoptions).await;
                     for (a, (ok, detail)) in adoptions.iter().zip(results) {
                         eprintln!(
                             "broker: adopt kind={} runtime_id={} ok={ok} detail={detail}",
