@@ -16,3 +16,8 @@ credentials.json
 /paa
 /paa-darwin-*
 /paa-linux-*
+
+# quickstart で落としてくる binary（68MB。public repo に入れない）
+/atn
+/atn-broker
+/atn-mcp
