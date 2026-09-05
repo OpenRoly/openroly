@@ -6946,12 +6946,72 @@ async function loadCredentials(env = process.env) {
 async function getCredential(kind, env = process.env) {
   return (await loadCredentials(env)).runtimes[kind];
 }
-// packages/adapter/src/install.ts
-import { fileURLToPath } from "url";
-var MCP_SERVER_ENTRY = fileURLToPath(new URL("../../mcp/src/server.ts", import.meta.url));
-// packages/adapter/src/devicekeys.ts
-import { chmod as chmod2, mkdir as mkdir2, open as open3, readFile as readFile2, rename as rename2, rm as rm2, stat as stat2, writeFile as writeFile2 } from "fs/promises";
-import { dirname as dirname2, join as join2 } from "path";
+// packages/core/src/handle.ts
+var RESERVED_HANDLES = new Set([
+  "abuse",
+  "admin",
+  "administrator",
+  "agent",
+  "api",
+  "contact",
+  "hostmaster",
+  "help",
+  "info",
+  "mail",
+  "marketing",
+  "mod",
+  "moderator",
+  "noc",
+  "noreply",
+  "no_reply",
+  "official",
+  "paa",
+  "postmaster",
+  "root",
+  "sales",
+  "security",
+  "staff",
+  "support",
+  "system",
+  "team",
+  "webmaster",
+  "www"
+]);
+// packages/core/src/content.ts
+function toEnvelopePlaintext(c) {
+  const p = {};
+  if (c.text !== undefined)
+    p.text = c.text;
+  if (c.files !== undefined)
+    p.files = c.files;
+  if (c.urls !== undefined)
+    p.urls = c.urls;
+  return p;
+}
+function plainString(v) {
+  return typeof v === "string" && v.trim() !== "" ? v : undefined;
+}
+function isRenderableUrl(u) {
+  return typeof u === "string" && /^(?:https?|mailto):/i.test(u);
+}
+function fromEnvelopePlaintext(p) {
+  const c = {};
+  const title = plainString(p.title);
+  const body = plainString(p.body);
+  if (title !== undefined || body !== undefined) {
+    c.text = title !== undefined && body !== undefined ? `${title}
+${body}` : title ?? body;
+  } else if (typeof p.text === "string") {
+    c.text = p.text;
+  }
+  const files = (Array.isArray(p.files) ? p.files : []).filter((f) => !!f && typeof f.name === "string" && typeof f.ref === "string");
+  if (files.length > 0)
+    c.files = files;
+  const urls = [...Array.isArray(p.urls) ? p.urls : [], p.url].filter(isRenderableUrl);
+  if (urls.length > 0)
+    c.urls = urls;
+  return c;
+}
 // node_modules/.bun/@hpke+common@1.10.1/node_modules/@hpke/common/esm/src/errors.js
 class HpkeError extends Error {
   constructor(e) {
@@ -7398,7 +7458,7 @@ function concat3(a, b, c) {
 }
 
 class Dhkem {
-  constructor(id, prim, kdf) {
+  constructor(id2, prim, kdf) {
     Object.defineProperty(this, "id", {
       enumerable: true,
       configurable: true,
@@ -7441,7 +7501,7 @@ class Dhkem {
       writable: true,
       value: undefined
     });
-    this.id = id;
+    this.id = id2;
     this._prim = prim;
     this._kdf = kdf;
     const suiteId = new Uint8Array(SUITE_ID_HEADER_KEM);
@@ -8907,6 +8967,8 @@ async function unwrapPrivateKeyFromDevice(wrapped, device) {
 }
 
 // packages/adapter/src/devicekeys.ts
+import { chmod as chmod2, mkdir as mkdir2, open as open3, readFile as readFile2, rename as rename2, rm as rm2, stat as stat2, writeFile as writeFile2 } from "fs/promises";
+import { dirname as dirname2, join as join2 } from "path";
 var LOCK_TIMEOUT_MS = 5000;
 var LOCK_STALE_MS = 30000;
 function deviceKeysPath(env = process.env) {
@@ -8969,6 +9031,15 @@ async function withLock(env, fn) {
     await rm2(lockPath, { force: true });
   }
 }
+async function freshRecord() {
+  const kp = await generateDeviceKeyPair();
+  return {
+    keyId: kp.keyId,
+    publicJwk: kp.publicJwk,
+    privateJwk: kp.privateJwk,
+    createdAt: new Date().toISOString()
+  };
+}
 async function getOrCreateDeviceKey(kind, env = process.env) {
   const existing = (await loadFile(env)).devices[kind];
   if (existing)
@@ -8978,87 +9049,15 @@ async function getOrCreateDeviceKey(kind, env = process.env) {
     const found = file.devices[kind];
     if (found)
       return found;
-    const kp = await generateDeviceKeyPair();
-    const record = {
-      keyId: kp.keyId,
-      publicJwk: kp.publicJwk,
-      privateJwk: kp.privateJwk,
-      createdAt: new Date().toISOString()
-    };
+    const record = await freshRecord();
     file.devices[kind] = record;
     await writeFileAtomic(file, env);
     return record;
   });
 }
-// packages/core/src/handle.ts
-var RESERVED_HANDLES = new Set([
-  "abuse",
-  "admin",
-  "administrator",
-  "agent",
-  "api",
-  "contact",
-  "hostmaster",
-  "help",
-  "info",
-  "mail",
-  "marketing",
-  "mod",
-  "moderator",
-  "noc",
-  "noreply",
-  "no_reply",
-  "official",
-  "paa",
-  "postmaster",
-  "root",
-  "sales",
-  "security",
-  "staff",
-  "support",
-  "system",
-  "team",
-  "webmaster",
-  "www"
-]);
-// packages/core/src/content.ts
-function toEnvelopePlaintext(c) {
-  const p = {};
-  if (c.text !== undefined)
-    p.text = c.text;
-  if (c.files !== undefined)
-    p.files = c.files;
-  if (c.urls !== undefined)
-    p.urls = c.urls;
-  return p;
-}
-function plainString(v) {
-  return typeof v === "string" && v.trim() !== "" ? v : undefined;
-}
-function isRenderableUrl(u) {
-  return typeof u === "string" && /^(?:https?|mailto):/i.test(u);
-}
-function fromEnvelopePlaintext(p) {
-  const c = {};
-  const title = plainString(p.title);
-  const body = plainString(p.body);
-  if (title !== undefined || body !== undefined) {
-    c.text = title !== undefined && body !== undefined ? `${title}
-${body}` : title ?? body;
-  } else if (typeof p.text === "string") {
-    c.text = p.text;
-  }
-  const files = (Array.isArray(p.files) ? p.files : []).filter((f) => !!f && typeof f.name === "string" && typeof f.ref === "string");
-  if (files.length > 0)
-    c.files = files;
-  const urls = [...Array.isArray(p.urls) ? p.urls : [], p.url].filter(isRenderableUrl);
-  if (urls.length > 0)
-    c.urls = urls;
-  return c;
-}
+
 // packages/adapter/src/e2ee.ts
-async function ensureOwnDevice(call, deviceKind) {
-  const record = await getOrCreateDeviceKey(deviceKind);
+async function registerOwnDevice(call, deviceKind, record) {
   try {
     await call("/v1/devices", {
       body: {
@@ -9067,12 +9066,18 @@ async function ensureOwnDevice(call, deviceKind) {
         public_key_jwk: record.publicJwk
       }
     });
+    return "ok";
   } catch (e) {
     const err = e;
-    if (err?.status === 409 && err?.body?.error === "device_revoked") {
-      throw new Error(`This device (${deviceKind}) was revoked from the account, so it can no longer read or send messages. Run 'atn login' to connect this machine again.`);
-    }
+    if (err?.status === 409 && err?.body?.error === "device_revoked")
+      return "revoked";
     throw e;
+  }
+}
+async function ensureOwnDevice(call, deviceKind, env = process.env) {
+  const record = await getOrCreateDeviceKey(deviceKind, env);
+  if (await registerOwnDevice(call, deviceKind, record) === "revoked") {
+    throw new Error(`This device (${deviceKind}) was revoked from the account, so it can no longer read or send messages. ` + `Run 'atn pair ${deviceKind}' and approve it again to connect with a new device key.`);
   }
   return record;
 }
@@ -9171,6 +9176,9 @@ async function openIfEnvelope(deviceKind, message, call) {
   }
   return { ...message, content: { undecryptable: true } };
 }
+// packages/adapter/src/install.ts
+import { fileURLToPath } from "url";
+var MCP_SERVER_ENTRY = fileURLToPath(new URL("../../mcp/src/server.ts", import.meta.url));
 // node_modules/.bun/zod@3.25.76/node_modules/zod/v3/external.js
 var exports_external = {};
 __export(exports_external, {

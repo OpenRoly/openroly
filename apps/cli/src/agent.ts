@@ -1,5 +1,6 @@
 import {
   apiCall,
+  e2eeCallFor,
   getCredential,
   openIfEnvelope,
   sealForHandle,
@@ -155,19 +156,11 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     };
   }
   const { base_url: baseUrl, token } = credential;
-  const call: E2eeCall = async (path, init) => {
-    const res = await apiCall(baseUrl, path, { token, ...init });
-    if (res.status >= 400) {
-      // E2eeCall の契約(PBI-0259 / PBI-0253): 非 2xx は `status` と応答 `body` を持つ error。
-      // resolveSealTargets は 404 だけを「宛先がまだ account 鍵を持たない = 平文」と読み、それ以外は
-      // この error をそのまま投げ直す。`body` は同じ status の理由を分ける為に要る(409 device_revoked)
-      throw Object.assign(new Error(`account_api_error(${res.status}) ${path}`), {
-        status: res.status,
-        body: res.body,
-      });
-    }
-    return res.body;
-  };
+  // E2eeCall の契約(PBI-0259 / PBI-0253): 非 2xx は `status` と応答 `body` を持つ error。
+  // resolveSealTargets は 404 だけを「宛先がまだ account 鍵を持たない = 平文」と読み、それ以外は
+  // この error をそのまま投げ直す。`body` は同じ status の理由を分ける為に要る(409 device_revoked)。
+  // 作り方は adapter の 1 箇所(pairing の後の名乗り直しと同じ物)
+  const call: E2eeCall = e2eeCallFor(baseUrl, token);
 
   const threadRes = await apiCall(baseUrl, `/v1/threads/${opts.threadId}`, { token });
   if (threadRes.status !== 200) {
@@ -199,7 +192,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   // seal は @paa/adapter の e2ee(MCP tools と同じ経路)。相手に account 鍵が無い時だけ平文。
   // 封をできない時は **平文で送らずに止める**(PBI-0254 AC-X1) —— 自分の account 鍵が引けない
   // ままの送信は「送った本人だけが永久に読めない 1 通」になる。無人で動く agent なので生の stack trace では
-  // なく理由を名乗って終わる(PBI-0253 AC-X1: revoke された device は `atn login` で入り直す)。
+  // なく理由を名乗って終わる(PBI-0253 AC-X1: revoke された device は `atn pair <kind>` で鍵を作り直す —— `atn login` は device 鍵に触らない)。
   let content: MessageContent;
   try {
     content = peerHandle

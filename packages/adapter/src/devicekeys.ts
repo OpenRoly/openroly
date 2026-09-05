@@ -93,6 +93,16 @@ async function withLock<T>(env: Env, fn: () => Promise<T>): Promise<T> {
   }
 }
 
+async function freshRecord(): Promise<DeviceKeyRecord> {
+  const kp = await generateDeviceKeyPair();
+  return {
+    keyId: kp.keyId,
+    publicJwk: kp.publicJwk,
+    privateJwk: kp.privateJwk,
+    createdAt: new Date().toISOString(),
+  };
+}
+
 /** kind(runtime credential と同じ単位)ごとに device keypair を 1 つ持つ。無ければ生成して永続化する */
 export async function getOrCreateDeviceKey(
   kind: string,
@@ -105,13 +115,30 @@ export async function getOrCreateDeviceKey(
     const file = await loadFile(env);
     const found = file.devices[kind];
     if (found) return found;
-    const kp = await generateDeviceKeyPair();
-    const record: DeviceKeyRecord = {
-      keyId: kp.keyId,
-      publicJwk: kp.publicJwk,
-      privateJwk: kp.privateJwk,
-      createdAt: new Date().toISOString(),
-    };
+    const record = await freshRecord();
+    file.devices[kind] = record;
+    await writeFileAtomic(file, env);
+    return record;
+  });
+}
+
+/** その kind の鍵を手元に持っているか(**作らない**。pairing の後に「名乗る鍵が在るか」を見る為) */
+export async function hasDeviceKey(kind: string, env: Env = process.env): Promise<boolean> {
+  return (await loadFile(env)).devices[kind] !== undefined;
+}
+
+/**
+ * その kind の鍵を **捨てて作り直す**(PBI-0253 有界レビュー)。呼んでよいのは
+ * **人が pairing を承認し直した直後**だけ(`pairRuntime` → `reconnectOwnDevice`)。
+ * 人が Revoke を押した device の鍵は server 側で二度と登録できない(409 device_revoked)が、
+ * 秘密鍵は手元に残るので、作り直す口が無いとその runtime は永久に詰む。
+ * agent が自分の判断でここを呼ぶと、押した Revoke が新しい id で黙って取り消される —— 呼び出し元を増やさない
+ * (diagrams-check が `reconnectOwnDevice` 以外の呼び出しを数える)。
+ */
+export async function rotateDeviceKey(kind: string, env: Env = process.env): Promise<DeviceKeyRecord> {
+  return withLock(env, async () => {
+    const file = await loadFile(env);
+    const record = await freshRecord();
     file.devices[kind] = record;
     await writeFileAtomic(file, env);
     return record;

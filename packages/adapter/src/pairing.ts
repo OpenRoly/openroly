@@ -1,5 +1,6 @@
 import { apiCall } from "./api.ts";
 import { saveCredential, type RuntimeCredential } from "./credentials.ts";
+import { e2eeCallFor, reconnectOwnDevice } from "./e2ee.ts";
 
 // device code flow(要件 §15.2 / 図 6)。runtime は user_code と URL を人に見せ、
 // 承認されるまで interval 秒間隔で claim を polling する。
@@ -182,6 +183,13 @@ export async function pairRuntime(options: PairOptions): Promise<PairOutcome> {
         };
         // 保存してから成功を返す(claim は 1 回きり。書く前に落ちると再 pair が必要になる)
         await saveCredential(options.kind, credential, options.env ?? process.env);
+        // 人が承認し直した直後 = revoke された device 鍵を作り直してよい唯一の瞬間(PBI-0253)。
+        // 失敗しても pairing は成功のまま —— credential は書けていて、鍵の登録は次の送信で通る
+        await reconnectOwnDevice(
+          e2eeCallFor(credential.base_url, credential.token),
+          options.kind,
+          options.env ?? process.env,
+        ).catch(() => {});
         return { status: "paired", credential, polls };
       }
       if (status !== "pending") {

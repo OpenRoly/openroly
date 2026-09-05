@@ -360,7 +360,7 @@ describe("atn agent への攻撃 (PBI-0057 review)", () => {
     expect(accountCalls.filter((c) => c.path.endsWith("/reply")).length).toBe(0);
   });
 
-  test("PBI-0253 AC-X1: revoke された device は黙って止まらず、`atn login` を名乗って落ちる", async () => {
+  test("PBI-0253 AC-X1: revoke された device は黙って止まらず、`atn pair openai-api` を名乗って落ちる", async () => {
     // 相手に account 鍵を置くと seal 経路が ensureOwnDevice を通る = POST /v1/devices を打つ
     const theirs = await generateDeviceKeyPair();
     peerAccountKey = { id: "ack_theirs", public_key_jwk: theirs.publicJwk };
@@ -369,7 +369,7 @@ describe("atn agent への攻撃 (PBI-0057 review)", () => {
     expect(res.code).toBe(1);
     const said = res.out + res.err;
     expect(said).toMatch(/revoked from the account/);
-    expect(said).toMatch(/atn login/); // 復帰の手順が error 文言そのものに在る(無人の相手が読む)
+    expect(said).toMatch(/atn pair openai-api/); // 復帰の手順(= 人が承認し直す pairing)が error 文言そのものに在る(無人の相手が読む)
     // 平文で送っていない(reply が 1 本も出ていない = revoke が本当に止めている)
     expect(accountCalls.filter((c) => c.path.endsWith("/reply")).length).toBe(0);
   });

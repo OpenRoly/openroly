@@ -5,7 +5,8 @@ import {
   unwrapPrivateKeyFromDevice,
   type EncryptedEnvelope,
 } from "@paa/crypto-envelope";
-import { getOrCreateDeviceKey } from "./devicekeys.ts";
+import { apiCall } from "./api.ts";
+import { getOrCreateDeviceKey, hasDeviceKey, rotateDeviceKey } from "./devicekeys.ts";
 
 // Native E2EE(要件 §9-11 / PBI-0006 → **PBI-0247 で seal 先が account 鍵になった**)の
 // client 側の作法を 1 箇所に集める。使うのは MCP tools(packages/mcp)と `atn agent`(apps/cli)。
@@ -31,15 +32,29 @@ export type E2eeCall = (
 ) => Promise<unknown>;
 
 /**
- * 自分の device key を用意し、server 側へ upsert 登録する(冪等 — 呼ぶたびに送ってよい)。
- *
- * **人が Revoke を押した device は 409 `device_revoked` で戻れない**(PBI-0253)。秘密鍵は
- * 手元に残るので id は変わらず、黙って再登録できてしまうと押した Revoke が効かない。
- * ここで理由を名乗らないと agent は生の `account_api_error(409)` で止まる —— 無人で動く
- * 相手なので、**復帰の手順を error 文字列そのものに書く**(AC-X1)。
+ * credential 1 本から E2eeCall を作る(`atn agent` と pairing の後の名乗り直しが共有する)。
+ * 契約どおり非 2xx は `status` と `body` を持つ error。message の形は `atn agent` の
+ * 失敗表示(`NG account_api_error(409) /v1/devices`)がそのまま読む。
  */
-export async function ensureOwnDevice(call: E2eeCall, deviceKind: string) {
-  const record = await getOrCreateDeviceKey(deviceKind);
+export function e2eeCallFor(baseUrl: string, token: string): E2eeCall {
+  return async (path, init) => {
+    const res = await apiCall(baseUrl, path, { token, ...init });
+    if (res.status >= 400) {
+      throw Object.assign(new Error(`account_api_error(${res.status}) ${path}`), {
+        status: res.status,
+        body: res.body,
+      });
+    }
+    return res.body;
+  };
+}
+
+/** POST /v1/devices の結末。`revoked` = 人が Revoke を押した id(409 device_revoked)。他の失敗は投げる */
+async function registerOwnDevice(
+  call: E2eeCall,
+  deviceKind: string,
+  record: { keyId: string; publicJwk: JsonWebKey },
+): Promise<"ok" | "revoked"> {
   try {
     await call("/v1/devices", {
       body: {
@@ -48,16 +63,63 @@ export async function ensureOwnDevice(call: E2eeCall, deviceKind: string) {
         public_key_jwk: record.publicJwk,
       },
     });
+    return "ok";
   } catch (e) {
     const err = e as { status?: unknown; body?: { error?: unknown } } | null;
-    if (err?.status === 409 && err?.body?.error === "device_revoked") {
-      throw new Error(
-        `This device (${deviceKind}) was revoked from the account, so it can no longer read or send messages. Run 'atn login' to connect this machine again.`,
-      );
-    }
+    if (err?.status === 409 && err?.body?.error === "device_revoked") return "revoked";
     throw e;
   }
+}
+
+/**
+ * 自分の device key を用意し、server 側へ upsert 登録する(冪等 — 呼ぶたびに送ってよい)。
+ *
+ * **人が Revoke を押した device は 409 `device_revoked` で戻れない**(PBI-0253)。秘密鍵は
+ * 手元に残るので id は変わらず、黙って再登録できてしまうと押した Revoke が効かない。
+ * ここで理由を名乗らないと agent は生の `account_api_error(409)` で止まる —— 無人で動く
+ * 相手なので、**復帰の手順を error 文字列そのものに書く**(AC-X1)。手順は **pairing の
+ * やり直し**(`atn pair <kind>`)—— `atn login` は broker を pair するだけで device 鍵に触らないので、
+ * 案内しても同じ id で 409 のまま永久に詰む(有界レビュー 2026-09-05 で実測)。
+ */
+export async function ensureOwnDevice(
+  call: E2eeCall,
+  deviceKind: string,
+  env: Record<string, string | undefined> = process.env,
+) {
+  const record = await getOrCreateDeviceKey(deviceKind, env);
+  if ((await registerOwnDevice(call, deviceKind, record)) === "revoked") {
+    throw new Error(
+      `This device (${deviceKind}) was revoked from the account, so it can no longer read or send messages. ` +
+        `Run 'atn pair ${deviceKind}' and approve it again to connect with a new device key.`,
+    );
+  }
   return record;
+}
+
+/**
+ * **人が pairing を承認し直した直後**に 1 回だけ通る(`pairRuntime` の中)。手元の鍵で名乗り、
+ * 409 device_revoked なら **鍵を作り直して**新しい id で名乗る —— これが revoke された device の
+ * 唯一の戻り道(Apple の trusted device と同じく、戻るには人の認証を通る)。
+ * agent が自分の判断で作り直す道は作らない(押した Revoke が新しい id で黙って取り消される)。
+ *
+ * 手元に鍵の無い kind(broker の `atn login`)では **何もしない** —— ここで作ると、封もしない
+ * broker が Settings › Devices に 1 行増える。失敗(通信断・5xx)は投げる。呼び出し元は pairing を
+ * 成功のまま返してよい(credential は書けている。鍵の登録は次の送信でもう一度通る)。
+ */
+export async function reconnectOwnDevice(
+  call: E2eeCall,
+  deviceKind: string,
+  env: Record<string, string | undefined> = process.env,
+): Promise<"none" | "kept" | "rotated"> {
+  if (!(await hasDeviceKey(deviceKind, env))) return "none";
+  const current = await getOrCreateDeviceKey(deviceKind, env);
+  if ((await registerOwnDevice(call, deviceKind, current)) === "ok") return "kept";
+  const fresh = await rotateDeviceKey(deviceKind, env);
+  if ((await registerOwnDevice(call, deviceKind, fresh)) === "revoked") {
+    // 作ったばかりの id が revoke 済みである事は無い。来たら server 側の別の問題なので隠さない
+    throw new Error(`the new device key for ${deviceKind} was rejected as revoked`);
+  }
+  return "rotated";
 }
 
 /**
