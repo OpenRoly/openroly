@@ -186,7 +186,7 @@ export async function pairRuntime(options: PairOptions): Promise<PairOutcome> {
         // 人が承認し直した直後 = revoke された device 鍵を作り直してよい唯一の瞬間(PBI-0253)。
         // 失敗しても pairing は成功のまま —— credential は書けていて、鍵の登録は次の送信で通る
         await reconnectOwnDevice(
-          e2eeCallFor(credential.base_url, credential.token),
+          e2eeCallFor(credential.base_url, credential.token, options.kind),
           options.kind,
           options.env ?? process.env,
         ).catch(() => {});

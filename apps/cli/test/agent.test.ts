@@ -374,6 +374,17 @@ describe("atn agent への攻撃 (PBI-0057 review)", () => {
     expect(accountCalls.filter((c) => c.path.endsWith("/reply")).length).toBe(0);
   });
 
+  test("PBI-0264 有界レビュー: credential が 401(Revoke が token ごと落とした)でも黙って止まらず `atn pair openai-api` を名乗る", async () => {
+    // 0264 以後、revoke された agent は 409 device_revoked の案内の手前で 401 になる。401 にも戻り道が要る
+    threadStatus = 401;
+    const res = await runCli(await makeHome());
+    expect(res.code).toBe(1);
+    const said = res.out + res.err;
+    expect(said).toMatch(/401/);
+    expect(said).toMatch(/atn pair openai-api/);
+    expect(accountCalls.filter((c) => c.path.endsWith("/reply")).length).toBe(0);
+  });
+
   test("X3 攻撃: 2 プロセスが同じ kind の device key を同時作成しても 1 つの有効な鍵に収束する", async () => {
     // 相手に account 鍵を置くと seal 経路が ensureOwnDevice を通る = 両プロセスが
     // device-keys.json を同時に作成・読み出す(既存 AC-X3 は平文で鍵ファイルを作らない経路だった)

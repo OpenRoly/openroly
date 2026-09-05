@@ -9057,6 +9057,10 @@ async function getOrCreateDeviceKey(kind, env = process.env) {
 }
 
 // packages/adapter/src/e2ee.ts
+function credentialRejectedHint(kind) {
+  const k = kind && kind !== "default" ? kind : "<kind>";
+  return `this agent's credential was rejected (401): it was revoked from the account, or was never paired. ` + `Run 'atn pair ${k}' and approve it again to reconnect.`;
+}
 async function registerOwnDevice(call, deviceKind, record) {
   try {
     await call("/v1/devices", {
@@ -9071,13 +9075,21 @@ async function registerOwnDevice(call, deviceKind, record) {
     const err = e;
     if (err?.status === 409 && err?.body?.error === "device_revoked")
       return "revoked";
+    if (err?.status === 409 && err?.body?.error === "device_key_id_taken")
+      return "taken";
+    if (err?.status === 403 && err?.body?.error === "scope_denied")
+      return "skipped";
     throw e;
   }
 }
 async function ensureOwnDevice(call, deviceKind, env = process.env) {
   const record = await getOrCreateDeviceKey(deviceKind, env);
-  if (await registerOwnDevice(call, deviceKind, record) === "revoked") {
+  const registered = await registerOwnDevice(call, deviceKind, record);
+  if (registered === "revoked") {
     throw new Error(`This device (${deviceKind}) was revoked from the account, so it can no longer read or send messages. ` + `Run 'atn pair ${deviceKind}' and approve it again to connect with a new device key.`);
+  }
+  if (registered === "taken") {
+    throw new Error(`This device key (${deviceKind}) is held by another connection of this machine \u2014 a different agent or ` + `account paired here \u2014 so it cannot be used by this one. ` + `Run 'atn pair ${deviceKind}' and approve it again to connect with a new device key.`);
   }
   return record;
 }
@@ -9165,12 +9177,13 @@ async function openIfEnvelope(deviceKind, message, call) {
   const envelope = message.content.envelope;
   if (envelope == null)
     return message;
-  const ids = Array.isArray(envelope.recipients) ? envelope.recipients.map((r) => r.device_key_id) : [];
+  const recipients = (Array.isArray(envelope.recipients) ? envelope.recipients : []).filter((r) => typeof r?.device_key_id === "string");
+  const ids = recipients.map((r) => r.device_key_id);
   for (const key of await readerKeys(deviceKind, call)) {
     if (!ids.includes(key.keyId))
       continue;
     try {
-      const plaintextBytes = await open2(envelope, key);
+      const plaintextBytes = await open2({ ...envelope, recipients }, key);
       return { ...message, content: fromEnvelopePlaintext(JSON.parse(new TextDecoder().decode(plaintextBytes))) };
     } catch {}
   }
@@ -22279,8 +22292,8 @@ var rulesPutInputShape = {
 class PaaApiError extends Error {
   status;
   body;
-  constructor(status, body) {
-    super(`PAA API error ${status}: ${JSON.stringify(body)}`);
+  constructor(status, body, hint) {
+    super(`PAA API error ${status}: ${JSON.stringify(body)}${hint ? ` \u2014 ${hint}` : ""}`);
     this.status = status;
     this.body = body;
   }
@@ -22296,8 +22309,9 @@ async function call(config2, path, init) {
     ...init?.body !== undefined ? { body: JSON.stringify(init.body) } : {}
   });
   const body = await res.json().catch(() => null);
-  if (!res.ok)
-    throw new PaaApiError(res.status, body);
+  if (!res.ok) {
+    throw new PaaApiError(res.status, body, res.status === 401 ? credentialRejectedHint(config2.deviceKind) : undefined);
+  }
   return body;
 }
 var e2eeCall = (config2) => (path, init) => call(config2, path, init);
@@ -22322,12 +22336,17 @@ function createAccountTools(config2) {
     },
     reply: async (input) => {
       const { thread_id, text, urls, files, force, refs } = input;
-      const handle2 = await resolveOwnHandle();
-      const content2 = await sealForHandle(e2eeCall(config2), deviceKindOf(config2), handle2, {
-        text,
-        urls,
-        files
-      });
+      let peerHandle;
+      try {
+        const thread = await call(config2, `/v1/threads/${thread_id}`);
+        const ph = thread?.peer_handle;
+        if (ph !== null && typeof ph !== "string")
+          throw new Error("thread response has no peer_handle");
+        peerHandle = ph;
+      } catch (e) {
+        throw new Error(`could not read thread ${thread_id} to find who to encrypt the reply for \u2014 not sending: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
+      }
+      const content2 = peerHandle ? await sealForHandle(e2eeCall(config2), deviceKindOf(config2), peerHandle, { text, urls, files }) : { text, urls, files };
       return call(config2, `/v1/threads/${thread_id}/reply`, {
         body: { force, ...refs?.length ? { refs } : {}, ...content2 }
       });

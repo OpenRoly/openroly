@@ -1,5 +1,6 @@
 import {
   apiCall,
+  credentialRejectedHint,
   e2eeCallFor,
   getCredential,
   openIfEnvelope,
@@ -160,9 +161,11 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   // resolveSealTargets は 404 だけを「宛先がまだ account 鍵を持たない = 平文」と読み、それ以外は
   // この error をそのまま投げ直す。`body` は同じ status の理由を分ける為に要る(409 device_revoked)。
   // 作り方は adapter の 1 箇所(pairing の後の名乗り直しと同じ物)
-  const call: E2eeCall = e2eeCallFor(baseUrl, token);
+  const call: E2eeCall = e2eeCallFor(baseUrl, token, kind);
 
   const threadRes = await apiCall(baseUrl, `/v1/threads/${opts.threadId}`, { token });
+  // 401 = credential が失効(人が Revoke を押した・PBI-0264 は token ごと落とす)。戻り道を名乗って終わる
+  if (threadRes.status === 401) return { status: "failed", detail: credentialRejectedHint(kind) };
   if (threadRes.status !== 200) {
     return { status: "failed", detail: `could not read the thread (${threadRes.status})` };
   }

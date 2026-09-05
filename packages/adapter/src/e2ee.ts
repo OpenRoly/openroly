@@ -36,11 +36,13 @@ export type E2eeCall = (
  * 契約どおり非 2xx は `status` と `body` を持つ error。message の形は `atn agent` の
  * 失敗表示(`NG account_api_error(409) /v1/devices`)がそのまま読む。
  */
-export function e2eeCallFor(baseUrl: string, token: string): E2eeCall {
+export function e2eeCallFor(baseUrl: string, token: string, kind?: string): E2eeCall {
   return async (path, init) => {
     const res = await apiCall(baseUrl, path, { token, ...init });
     if (res.status >= 400) {
-      throw Object.assign(new Error(`account_api_error(${res.status}) ${path}`), {
+      // 401 = この credential はもう account に居ない。戻り道を文言そのものに書く(下の credentialRejectedHint)
+      const hint = res.status === 401 ? ` — ${credentialRejectedHint(kind)}` : "";
+      throw Object.assign(new Error(`account_api_error(${res.status}) ${path}${hint}`), {
         status: res.status,
         body: res.body,
       });
@@ -49,12 +51,33 @@ export function e2eeCallFor(baseUrl: string, token: string): E2eeCall {
   };
 }
 
-/** POST /v1/devices の結末。`revoked` = 人が Revoke を押した id(409 device_revoked)。他の失敗は投げる */
+/**
+ * 401 を受けた agent が読む 1 行(PBI-0264 有界レビュー 2026-09-05)。Revoke は runtime token ごと落とすので、
+ * 0253 が 409 device_revoked に書いた復帰の案内の **手前で 401 が返る** = revoke された agent はあの案内に
+ * 二度と到達しない。無人で動く相手が生の `401 unauthorized` で止まらないよう、戻り道(人が承認し直す
+ * pairing)をここに 1 本だけ持つ —— MCP の PaaApiError / `atn agent` / e2eeCallFor が同じ文を出す。
+ * server は revoke 済みと未 pair を言い分けない(token_hash を消すので言い分けられない)が、戻り道は同じ
+ */
+export function credentialRejectedHint(kind?: string): string {
+  const k = kind && kind !== "default" ? kind : "<kind>";
+  return (
+    `this agent's credential was rejected (401): it was revoked from the account, or was never paired. ` +
+    `Run 'atn pair ${k}' and approve it again to reconnect.`
+  );
+}
+
+/**
+ * POST /v1/devices の結末。`revoked` = 人が Revoke を押した id(409 device_revoked)。
+ * `skipped` = triage scope の session で名乗りが許可集合の外(403 scope_denied・PBI-0268)—— 封の宛先は
+ * account 鍵 2 本で名乗りは封に要らないので、ここで投げると scope 付き MCP の owner thread 報告 reply /
+ * label summary / 外部 send が **全部**止まる(PBI-0261 の有界レビューが実測)。登録は次の非 scope session が
+ * 同じ鍵で通す(冪等)。他の失敗(他の 403 / 5xx / 通信断)は投げる
+ */
 async function registerOwnDevice(
   call: E2eeCall,
   deviceKind: string,
   record: { keyId: string; publicJwk: JsonWebKey },
-): Promise<"ok" | "revoked"> {
+): Promise<"ok" | "revoked" | "taken" | "skipped"> {
   try {
     await call("/v1/devices", {
       body: {
@@ -67,6 +90,9 @@ async function registerOwnDevice(
   } catch (e) {
     const err = e as { status?: unknown; body?: { error?: unknown } } | null;
     if (err?.status === 409 && err?.body?.error === "device_revoked") return "revoked";
+    // 別の生きた runtime(同 account)か別 account が持つ id(PBI-0264 有界レビュー: 1 鍵 ↔ 1 runtime)
+    if (err?.status === 409 && err?.body?.error === "device_key_id_taken") return "taken";
+    if (err?.status === 403 && err?.body?.error === "scope_denied") return "skipped";
     throw e;
   }
 }
@@ -87,9 +113,19 @@ export async function ensureOwnDevice(
   env: Record<string, string | undefined> = process.env,
 ) {
   const record = await getOrCreateDeviceKey(deviceKind, env);
-  if ((await registerOwnDevice(call, deviceKind, record)) === "revoked") {
+  const registered = await registerOwnDevice(call, deviceKind, record);
+  if (registered === "revoked") {
     throw new Error(
       `This device (${deviceKind}) was revoked from the account, so it can no longer read or send messages. ` +
+        `Run 'atn pair ${deviceKind}' and approve it again to connect with a new device key.`,
+    );
+  }
+  if (registered === "taken") {
+    // 同じ鍵 file を別の生きた runtime(同じ machine で pair し直した / 別 account に pair した)が先に
+    // 名乗っている。理由は revoke と別物だが、戻り道は同じ pairing のやり直し(承認直後に鍵を作り直す)
+    throw new Error(
+      `This device key (${deviceKind}) is held by another connection of this machine — a different agent or ` +
+        `account paired here — so it cannot be used by this one. ` +
         `Run 'atn pair ${deviceKind}' and approve it again to connect with a new device key.`,
     );
   }
@@ -113,11 +149,16 @@ export async function reconnectOwnDevice(
 ): Promise<"none" | "kept" | "rotated"> {
   if (!(await hasDeviceKey(deviceKind, env))) return "none";
   const current = await getOrCreateDeviceKey(deviceKind, env);
-  if ((await registerOwnDevice(call, deviceKind, current)) === "ok") return "kept";
+  // "revoked"(人が Revoke を押した)も "taken"(別の生きた runtime / 別 account が先に名乗っている・
+  // PBI-0264 有界レビュー)も、人が承認し直したこの瞬間だけは作り直してよい。
+  // pairing に scope は付かないので "skipped"(PBI-0268)は来ない。来ても鍵を作り直す理由にはならない
+  const named = await registerOwnDevice(call, deviceKind, current);
+  if (named === "ok" || named === "skipped") return "kept";
   const fresh = await rotateDeviceKey(deviceKind, env);
-  if ((await registerOwnDevice(call, deviceKind, fresh)) === "revoked") {
-    // 作ったばかりの id が revoke 済みである事は無い。来たら server 側の別の問題なので隠さない
-    throw new Error(`the new device key for ${deviceKind} was rejected as revoked`);
+  const again = await registerOwnDevice(call, deviceKind, fresh);
+  if (again !== "ok") {
+    // 作ったばかりの id が revoke 済み / 他人の物である事は無い。来たら server 側の別の問題なので隠さない
+    throw new Error(`the new device key for ${deviceKind} was rejected as ${again}`);
   }
   return "rotated";
 }
@@ -253,6 +294,8 @@ export async function resolveSealTargets(
     if ((e as { status?: unknown } | null)?.status === 404) return null;
     throw e;
   }
+  // device の名乗り(POST /v1/devices)。triage scope の session では 403 scope_denied を registerOwnDevice が
+  // `skipped` と読んで飛ばす(PBI-0268 — 封の宛先は account 鍵で、名乗りは封に要らない)
   await ensureOwnDevice(call, deviceKind);
   const mine = await ownAccountPublicKey(call);
   const targets = [theirs];
@@ -309,13 +352,20 @@ export async function openIfEnvelope<T extends { content: MessageContent }>(
 ): Promise<T | (Omit<T, "content"> & { content: MessageContent & { undecryptable?: true } })> {
   const envelope = message.content.envelope as EncryptedEnvelope | undefined;
   if (envelope == null) return message;
-  const ids = Array.isArray(envelope.recipients)
-    ? envelope.recipients.map((r) => r.device_key_id)
-    : [];
+  // 過去に 202 で入った壊れた行(`[null]` / `[{}]`・PBI-0265 より前の send は recipients の中身を
+  // 見なかった)で **ここが投げると履歴読み(CLI agent / inbox_read)ごと落ちる**。壊れた entry は
+  // 宛先に無かった物として扱い、**残った entry だけを `open` に渡す**(web の `recipientsOf` と同じ守り。
+  // 有界レビュー 2026-09-05: 原本をそのまま渡すと `open` の `find` が null で投げ、隣に自分の鍵が
+  // 居ても catch に落ちて undecryptable になっていた = web では読める行が adapter では読めない)
+  const recipients = (Array.isArray(envelope.recipients) ? envelope.recipients : []).filter(
+    (r): r is EncryptedEnvelope["recipients"][number] =>
+      typeof (r as { device_key_id?: unknown } | null)?.device_key_id === "string",
+  );
+  const ids = recipients.map((r) => r.device_key_id);
   for (const key of await readerKeys(deviceKind, call)) {
     if (!ids.includes(key.keyId)) continue;
     try {
-      const plaintextBytes = await open(envelope, key);
+      const plaintextBytes = await open({ ...envelope, recipients }, key);
       return { ...message, content: fromEnvelopePlaintext(JSON.parse(new TextDecoder().decode(plaintextBytes))) };
     } catch {
       /* 次の鍵で試す */

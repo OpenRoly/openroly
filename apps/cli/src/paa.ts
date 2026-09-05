@@ -145,17 +145,35 @@ const brokerPidPath = () => join(brokerHome(), "broker.pid");
 const brokerLogPath = () => join(brokerHome(), "broker.log");
 
 const psBin = () => Bun.which("ps") ?? "/bin/ps";
+/**
+ * 1 回の `ps` の上限。**返らない** ps(hang)も exit≠0 と同じ「分からない」に倒す —— これが無いと claim は最初の
+ * ps で永久に止まり、`CLAIM_DEADLINE_MS` の「永久に待たない」が ps が答える時にしか効かない(PBI-0270 レビュー
+ * 攻撃11)。既定 120s は、混雑下で ps の exec が 20s+ 遅れた実測(PBI-0218 レビュー・load 350)を「壊れた」に
+ * 数えない余裕 —— 短くすると全 suite の負荷で全員が undetermined に倒れる。test は `PAA_PS_TIMEOUT_MS` で縮める
+ */
+const PS_TIMEOUT_MS = Number(process.env.PAA_PS_TIMEOUT_MS) || 120_000;
 
-async function psColumn(pid: number, column: "lstart" | "comm"): Promise<string | null> {
+/**
+ * `ps -o <column>= -p <pid>` の 1 行。**3 値** —— 文字列 = その pid は生きている / null = 居ない(ps が exit 1 で空)/
+ * undefined = **分からない**(ps を spawn できない・signal で死んだ・usage error・上限まで返らない。混雑で EAGAIN /
+ * OOM の時)。「分からない」を「居ない」に潰すと、混雑の最中に生きた broker の pid file を消して 2 本目を起こす /
+ * 生きた持ち主の lock を回収して 2 本が takeOver に入る(PBI-0270)。**取る根拠は「死んだと確かめた」だけ**
+ * (譲る根拠が「生きたと確かめた」だけなのと対。PBI-0218)
+ */
+async function psColumn(pid: number, column: "lstart" | "comm"): Promise<string | null | undefined> {
   try {
     const proc = Bun.spawn([psBin(), "-o", `${column}=`, "-p", String(pid)], {
       stdout: "pipe",
       stderr: "ignore",
+      timeout: PS_TIMEOUT_MS,
     });
     const out = (await new Response(proc.stdout).text()).trim().replace(/\s+/g, " ");
-    return (await proc.exited) === 0 && out ? out : null;
+    const code = await proc.exited;
+    if (code === 0 && out) return out;
+    if (code === 1 && !out) return null; // ps は「該当 pid 無し」を exit 1 で言う
+    return undefined;
   } catch {
-    return null;
+    return undefined;
   }
 }
 
@@ -169,12 +187,15 @@ const processStartTime = (pid: number) => psColumn(pid, "lstart");
 
 /**
  * `<pid> <lstart>` の行が今も同じプロセスを指しているか。起動時刻まで見るのは pid 再利用対策
- * (`runningBrokerPid` と同じ理由)。lstart が無い行は pid の生死だけで判定する
+ * (`runningBrokerPid` と同じ理由)。lstart が無い行は pid の生死だけで判定する。
+ * **undefined = 分からない**(`ps` が走らない)。呼び側は true の時だけ「生きている」、false の時だけ
+ * 「死んでいる」と扱い、undefined では回収も deadline の延長もしない(PBI-0270)
  */
-async function pidRecordAlive(record: string): Promise<boolean> {
+async function pidRecordAlive(record: string): Promise<boolean | undefined> {
   const m = /^(\d+)(?:\s+(.+))?$/.exec(record.trim());
   if (!m) return false;
   const start = await processStartTime(Number(m[1]));
+  if (start === undefined) return undefined;
   if (start === null) return false;
   return m[2] ? start === m[2].replace(/\s+/g, " ") : true;
 }
@@ -190,8 +211,10 @@ async function pidRecord(pid: number): Promise<string> {
  * - `<pid> <lstart>`(現行形式): その pid の現在の起動時刻が一致する時だけ生存
  * - `<pid>` のみ(旧形式 / 起動時刻が取れなかった行): 実行ファイル名が `atn-broker` の時だけ生存
  *   (更新前に起動した本物の broker を殺さず、再利用された無関係な pid は拾わない)
+ * - `"unknown"`: pid file は在るが `ps` が走らず生死を確かめられない(PBI-0270)。**取る側**(`takeOver`・
+ *   `broker status`)だけがこれを見る —— 譲る側は `runningBrokerPid`(生きた pid だけ)で足りる
  */
-async function runningBrokerPid(): Promise<number | undefined> {
+async function probeBroker(): Promise<number | "unknown" | undefined> {
   let raw: string;
   try {
     raw = (await readFile(brokerPidPath(), "utf8")).trim();
@@ -202,10 +225,17 @@ async function runningBrokerPid(): Promise<number | undefined> {
   if (!m) return undefined;
   const pid = Number(m[1]);
   const start = await processStartTime(pid);
+  if (start === undefined) return "unknown";
   if (start === null) return undefined;
   if (m[2]) return start === m[2].replace(/\s+/g, " ") ? pid : undefined;
   const comm = await psColumn(pid, "comm");
+  if (comm === undefined) return "unknown";
   return comm !== null && /(^|\/)atn-broker$/.test(comm) ? pid : undefined;
+}
+/** 生きていると**確かめられた** broker の pid だけ(分からない時は undefined = 譲らない。PBI-0218 / PBI-0270) */
+async function runningBrokerPid(): Promise<number | undefined> {
+  const live = await probeBroker();
+  return typeof live === "number" ? live : undefined;
 }
 
 /** repo checkout の root(broker binary の既定探索先の基点。apps/cli/src/ から 3 階層上) */
@@ -283,7 +313,7 @@ async function runBrokerForeground(credential: RuntimeCredential): Promise<numbe
   await mkdir(brokerHome(), { recursive: true });
   const claim = await claimBrokerPidFile();
   if (claim === "running") fail("The broker is already running (the pid file points at a live process)");
-  if (claim === "undetermined") fail(claimUndeterminedHint());
+  if (claim === "undetermined") fail(await claimUndeterminedHint());
   let child: ReturnType<typeof Bun.spawn>;
   try {
     child = Bun.spawn([bin], {
@@ -344,7 +374,55 @@ const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
  */
 type LockOutcome<T> = { acquired: true; value: T } | { acquired: false; heldByLive: boolean };
 
-async function withStaleTakeoverLock<T>(fn: () => Promise<T>): Promise<LockOutcome<T>> {
+/** lock の同一性。inode だけだと ext4 等は unlink 直後に同じ番号を配り直すので mtime も対にする */
+type LockIdentity = { ino: number; mtimeMs: number };
+
+/**
+ * `lock` に今在る物を **`rename` で atomic に掴んでから**消す。掴めたのが `expect`(判断した時に見た物)と
+ * 同じ時だけ消し、違えば(判断した後にその隙で張られた**新しい** lock)そのまま戻す。
+ *
+ * 「消す直前に `stat` で同一性を確かめてから `rm`」では足りなかった(PBI-0263) —— stat と rm の間は
+ * 閉じないので、2 本が同じ古い lock を同時に回収すると:
+ *   (a) 後発の `rm(recursive)` が、先発が回収して `link` し直した**新しい** lock を消し、2 本が takeOver に
+ *       入る(実測: 3 本同時で 6/120。PBI-0218 レビューが閉じたつもりだった窓が残っていた)
+ *   (b) 同じ dir を 2 本が同時に `rm(recursive)` すると Bun 1.3 が ENOENT でなく **EFAULT を投げ**、
+ *       CLI が stack trace で exit 1 する(実測 15/120)。全 suite で 8 回中 4 回赤に見えた
+ *       `started=1 yielded=0` の正体 = 負け側が「already running」を言う前に例外で落ちていた
+ * `rename` は同じ inode を **1 人しか掴めず**(2 人目は ENOENT)、消すのは自分だけの path なので、
+ * (a) の「他人の新しい lock を消す」も (b) の「同じ dir を 2 本で消す」も起きない
+ * (`scripts/serial.sh` の owner file の rename と同じ型。実測: 同条件 200 回で 0/200・0/200)。
+ *
+ * **掴むのも「判断した時と同じ物」だけ**(PBI-0263 レビュー)。`expect` は呼び側が `ps` を挟む前に見た物なので、
+ * 後発の判断は先発が回収して link し直した**生きた** lock を前にして古い。そこで rename すると、戻すまでの
+ * 数十 µs だけ lock の path が空く —— 3 本目がそこへ link すると戻す rename がその lock を潰す(3 本目は
+ * stillHeld で退くが取り直し)、持ち主がその隙に解放すると戻した lock が **持ち主の居ない名札**として残り、
+ * 持ち主の process が生きている間は誰も回収できない(機序 probe 3 本同時 200 回: 掴み違い 1〜3 / 200・
+ * 置き去り 1 回)。rename の直前に stat で照合し、違えば触らない(同 probe 0 / 200)。stat と rename の間の
+ * 窓は残るので、掴んだ後の照合と戻す枝はその為に残す
+ * 返り値は呼び側が待つ／取りに行くを決める為の 3 値
+ */
+async function reapLock(lock: string, expect: LockIdentity): Promise<"reaped" | "gone" | "someone_elses"> {
+  const now = await stat(lock).catch(() => null);
+  if (!now || now.ino !== expect.ino || now.mtimeMs !== expect.mtimeMs) return now ? "someone_elses" : "gone";
+  const grab = `${lock}.reap.${process.pid}.${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    await rename(lock, grab);
+  } catch {
+    return "gone"; // 他が先に掴んだ(回収した)。次の link で分かる
+  }
+  const got = await stat(grab).catch(() => null);
+  if (got && got.ino === expect.ino && got.mtimeMs === expect.mtimeMs) {
+    // 自分だけの path なので誰とも競合しない。それでも失敗したら残骸は放置する(lock ではないので害は無い)
+    await rm(grab, { recursive: true, force: true }).catch(() => {});
+    return "reaped";
+  }
+  await rename(grab, lock).catch(() => {});
+  return "someone_elses";
+}
+
+async function withStaleTakeoverLock<T>(
+  fn: (stillHeld: () => Promise<boolean>) => Promise<T>,
+): Promise<LockOutcome<T>> {
   const lock = brokerClaimLockPath();
   // 名札(誰が握っているか)は **lock が見えた最初の瞬間から読めなければならない** ——
   // `mkdir` してから中に名札を書く 2 段階だと、その隙間に見た者が「持ち主不明 = 回収してよい」と
@@ -355,6 +433,12 @@ async function withStaleTakeoverLock<T>(fn: () => Promise<T>): Promise<LockOutco
   const me = `${Math.random().toString(36).slice(2)}${process.pid}\n${await pidRecord(process.pid)}`;
   const tmp = `${lock}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
   await writeFile(tmp, me);
+  // `link` は inode を共有するので、lock が今も自分の物かは temp の同一性で分かる(内容を読み直すより確か)
+  const mine: LockIdentity = await stat(tmp);
+  const stillHeld = async () => {
+    const now = await stat(lock).catch(() => null);
+    return now !== null && now.ino === mine.ino && now.mtimeMs === mine.mtimeMs;
+  };
   let heldByLive = false;
   try {
     for (let attempt = 0; attempt < 60; attempt++) {
@@ -369,28 +453,26 @@ async function withStaleTakeoverLock<T>(fn: () => Promise<T>): Promise<LockOutco
         }
         const st = await stat(lock).catch(() => null);
         const held = st ? await readFile(lock, "utf8").catch(() => null) : null;
-        heldByLive = held !== null && (await pidRecordAlive(held.split("\n")[1] ?? ""));
-        // 回収してよいのは **持ち主が死んでいると確かめられた**時だけ。名札が読めない lock
-        // (旧版が残した dir 等)は時限だけが根拠なので、そちらは STALE_LOCK_MS を待つ
-        if (st && !heldByLive && (held !== null || Date.now() - st.mtimeMs > STALE_LOCK_MS)) {
-          // **判断した時と同じ lock である事を、消す直前にもう一度確かめる**。間に `ps` を挟むと
-          // その数 ms の間に他が握った**新しい** lock を消してしまい、2 本が同時に中へ入る
-          const now = await stat(lock).catch(() => null);
-          if (now && now.ino === st.ino && now.mtimeMs === st.mtimeMs) {
-            await rm(lock, { recursive: true, force: true });
-          }
+        // true / false / undefined(= ps が走らず分からない。PBI-0270)
+        const owner = held === null ? null : await pidRecordAlive(held.split("\n")[1] ?? "");
+        heldByLive = owner === true;
+        // 回収してよいのは **持ち主が死んでいると確かめられた**時だけ(分からない時は待つ。deadline も
+        // 延ばさないので、ps が壊れたままなら上限で undetermined に降りる)。名札が読めない lock
+        // (旧版が残した dir 等)は時限だけが根拠なので、そちらは STALE_LOCK_MS を待つ。
+        // 消すのは **判断した時と同じ物**だけ —— reapLock が rename で掴んでから照合する
+        // (掴めなければ他が回収した / 別物なら戻す。どちらも次の link で分かるので結果は見ない)
+        if (st && (held === null ? Date.now() - st.mtimeMs > STALE_LOCK_MS : owner === false)) {
+          await reapLock(lock, st);
           continue;
         }
         await sleepMs(50);
         continue;
       }
       try {
-        return { acquired: true, value: await fn() };
+        return { acquired: true, value: await fn(stillHeld) };
       } finally {
-        // 自分の名札が残っている時だけ消す(横から回収された後に後任の lock を巻き添えにしない)
-        if ((await readFile(lock, "utf8").catch(() => "")) === me) {
-          await rm(lock, { recursive: true, force: true });
-        }
+        // 自分の物(同じ inode)である時だけ消す(横から回収された後に後任の lock を巻き添えにしない)
+        await reapLock(lock, mine);
       }
     }
     return { acquired: false, heldByLive };
@@ -451,7 +533,7 @@ async function claimBrokerPidFile(): Promise<ClaimOutcome> {
    * ここを「不明だから譲る」に倒すと、空の broker.pid 1 つで `atn login` が
    * **恒久的に**「already running」と言い続けて 1 本も起動しない(PBI-0218 AC-X2)
    */
-  const takeOver = async (): Promise<"claimed" | "yield" | "retry"> => {
+  const takeOver = async (stillHeld: () => Promise<boolean>): Promise<"claimed" | "yield" | "retry"> => {
     // **消してよいのは「中身を見て死んでいると確かめた、まさにその file」だけ**(PBI-0218 レビュー)。
     // `runningBrokerPid()` は 内容を読む → `ps` を叩く の 2 段階で、混雑下ではその間が 100ms 以上開く。
     // その隙に勝者が `writePidFileAtomic`(rename)で**生きた broker の記録**へ差し替えていると、
@@ -461,9 +543,16 @@ async function claimBrokerPidFile(): Promise<ClaimOutcome> {
     // rename も link も**必ず inode を差し替える**ので、消す直前に inode を照合すれば分かる
     const before = await stat(brokerPidPath()).catch(() => null);
     if (before === null) return (await tryLink()) ? "claimed" : "retry";
-    if (await runningBrokerPid()) return "yield";
+    const live = await probeBroker();
+    // `ps` が走らない = 死んだと**確かめていない** → 消さずに読み直す(PBI-0270)。譲りもしない(嘘の already running)
+    if (live === "unknown") return "retry";
+    if (live) return "yield";
     const after = await stat(brokerPidPath()).catch(() => null);
     if (after === null || after.ino !== before.ino || after.mtimeMs !== before.mtimeMs) return "retry";
+    // lock を横から回収されていたら(自分の名札がもう lock に無い)、ここで rm→link を撃つのは
+    // lock 無しの取り直しと同じ —— 後発の rm が先発の link 済み file を消す窓が戻る(PBI-0263)。
+    // 取り直さずに戻り、lock を取り直してから決め直す
+    if (!(await stillHeld())) return "retry";
     await rm(brokerPidPath(), { force: true });
     return (await tryLink()) ? "claimed" : "retry";
   };
@@ -490,10 +579,17 @@ async function claimBrokerPidFile(): Promise<ClaimOutcome> {
   }
 }
 
-/** `claimBrokerPidFile` が決められなかった時に人へ出す文言(0 本を成功に見せない) */
-const claimUndeterminedHint = () =>
-  "NG could not tell whether a broker is running: another atn process is holding " +
-  `${brokerClaimLockPath()}. Nothing was started — run it again`;
+/**
+ * `claimBrokerPidFile` が決められなかった時に人へ出す文言(0 本を成功に見せない)。原因は **今の pid file を
+ * 読み直して**分ける —— ps が走らないのに「another atn process is holding the lock」と言うと、人は run it again を
+ * 繰り返すだけで原因(ps)に辿り着けない(PBI-0270 レビュー 攻撃12。`broker status` の "ps did not run" と同じ名指し)
+ */
+const claimUndeterminedHint = async () =>
+  "NG could not tell whether a broker is running: " +
+  ((await probeBroker()) === "unknown"
+    ? `ps did not run on this machine, so ${brokerPidPath()} could not be checked. Nothing was started — ` +
+      "check that `ps -p $$` works, then run it again"
+    : `another atn process is holding ${brokerClaimLockPath()}. Nothing was started — run it again`);
 
 /** `login` から呼ぶ detached 起動。pid file が生きているプロセスを指していれば二重起動しない */
 async function startBrokerDetached(credential: RuntimeCredential): Promise<DetachedOutcome> {
@@ -933,7 +1029,7 @@ switch (command) {
     const outcome = await startBroker(credential);
     if (outcome === "build_needed") fail(BROKER_BUILD_HINT);
     // 「決められなかった」を「既に走っている」に潰さない —— 0 本のまま成功で終わらせない
-    if (outcome === "claim_undetermined") fail(claimUndeterminedHint());
+    if (outcome === "claim_undetermined") fail(await claimUndeterminedHint());
     if (outcome === "already_running") {
       console.log("The broker is already running");
       break;
@@ -971,10 +1067,12 @@ switch (command) {
     if (sub === "status") {
       const plistInstalled = existsSync(plistPath());
       const list = await runLaunchctl(["list", LAUNCHD_LABEL]);
-      const pid = await runningBrokerPid();
+      const pid = await probeBroker();
       console.log(`launchd plist: ${plistInstalled ? `installed (${plistPath()})` : "not installed"}`);
       console.log(`launchd job: ${list.ok ? "registered" : "not registered"}`);
-      console.log(`broker process: ${pid ? `running (pid ${pid})` : "stopped"}`);
+      console.log(
+        `broker process: ${pid === "unknown" ? "unknown (ps did not run)" : pid ? `running (pid ${pid})` : "stopped"}`,
+      );
       break;
     }
     if (sub !== undefined) fail(`Unknown broker subcommand: ${sub}\nSupported: install / uninstall / status`);

@@ -10,6 +10,7 @@
 import type { MessageContent } from "@paa/core";
 import { open, type EncryptedEnvelope } from "@paa/crypto-envelope";
 import {
+  credentialRejectedHint,
   readerKeys,
   openIfEnvelope as openEnvelope,
   sealForHandle,
@@ -30,8 +31,10 @@ export class PaaApiError extends Error {
   constructor(
     public readonly status: number,
     public readonly body: unknown,
+    /** 401 の時だけ: 戻り道(`atn pair <kind>`)。無人で動く agent が生の 401 で止まらない(PBI-0264 有界レビュー) */
+    hint?: string,
   ) {
-    super(`PAA API error ${status}: ${JSON.stringify(body)}`);
+    super(`PAA API error ${status}: ${JSON.stringify(body)}${hint ? ` — ${hint}` : ""}`);
   }
 }
 
@@ -52,7 +55,9 @@ async function call(
     ...(init?.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
   });
   const body = await res.json().catch(() => null);
-  if (!res.ok) throw new PaaApiError(res.status, body);
+  if (!res.ok) {
+    throw new PaaApiError(res.status, body, res.status === 401 ? credentialRejectedHint(config.deviceKind) : undefined);
+  }
   return body;
 }
 
@@ -85,8 +90,8 @@ export interface ReplyInput {
 
 /** §16 contract の 8 操作 + reply(PBI-0094)。MCP server と検査の双方がこの実装を使う */
 export function createAccountTools(config: PaaClientConfig) {
-  // reply の seal 宛先 = 自分の handle(返信先は自分の Account 内の thread)。whoami は 1 回だけ
-  // 引いて cache する(tool 呼び出し毎の往復を避ける)
+  // notification_label の summary の seal 宛先 = 自分の handle(自分の item にだけ付く)。whoami は
+  // 1 回だけ引いて cache する(tool 呼び出し毎の往復を避ける)。reply はこれを使わない(PBI-0261)
   let ownHandle: Promise<string> | null = null;
   const resolveOwnHandle = () =>
     (ownHandle ??= (async () => {
@@ -105,17 +110,32 @@ export function createAccountTools(config: PaaClientConfig) {
       const content = await sealForHandle(e2eeCall(config), deviceKindOf(config), to, { text, urls, files });
       return call(config, "/v1/send", { body: { to, force, ...content } });
     },
-    // owner instruction thread への報告(PBI-0094)。E2EE は send と同じ作法 —
-    // 自 handle の device 鍵宛に seal してから POST する(server 側の requestReply が actor を照合する)。
+    // thread への返信(PBI-0094 → **PBI-0261 で seal 先が thread の相手に**)。E2EE は send と同じ作法 —
+    // seal 先は `GET /v1/threads/:id` の `peer_handle`(相手の account 鍵 + 自分の写し・図9)。自分宛て
+    // thread(owner instruction)は peer_handle = 自 handle なので今までどおり 1 本。前は常に自 handle へ
+    // 封をしていたので、peer thread への AUTO 返信は **相手が永久に開けない 1 通**だった(`atn agent` と
+    // 同じ材料で同じ事をする)。
+    // thread が読めない(404 / 403 / 500 / 通信断)時は **送らない**(AC-X1) —— 自 handle へ封をする
+    // fallback は同じ「相手が開けない 1 通」をまた作る。peer_handle が null(外部 mail peer / 相手が
+    // account を消した)は平文 —— それ以外の壊れた応答は平文の合図にしない(PBI-0259 と同じ読み方)。
     // refs(§18)は本文と別の平文 metadata として body に載せる(id のみ — server が検証する)
     reply: async (input: ReplyInput) => {
       const { thread_id, text, urls, files, force, refs } = input;
-      const handle = await resolveOwnHandle();
-      const content = await sealForHandle(e2eeCall(config), deviceKindOf(config), handle, {
-        text,
-        urls,
-        files,
-      });
+      let peerHandle: string | null;
+      try {
+        const thread = (await call(config, `/v1/threads/${thread_id}`)) as { peer_handle?: unknown };
+        const ph = thread?.peer_handle;
+        if (ph !== null && typeof ph !== "string") throw new Error("thread response has no peer_handle");
+        peerHandle = ph;
+      } catch (e) {
+        throw new Error(
+          `could not read thread ${thread_id} to find who to encrypt the reply for — not sending: ${e instanceof Error ? e.message : String(e)}`,
+          { cause: e },
+        );
+      }
+      const content = peerHandle
+        ? await sealForHandle(e2eeCall(config), deviceKindOf(config), peerHandle, { text, urls, files })
+        : { text, urls, files };
       return call(config, `/v1/threads/${thread_id}/reply`, {
         body: { force, ...(refs?.length ? { refs } : {}), ...content },
       });
