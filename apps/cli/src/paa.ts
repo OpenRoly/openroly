@@ -167,6 +167,18 @@ async function psColumn(pid: number, column: "lstart" | "comm"): Promise<string 
  */
 const processStartTime = (pid: number) => psColumn(pid, "lstart");
 
+/**
+ * `<pid> <lstart>` の行が今も同じプロセスを指しているか。起動時刻まで見るのは pid 再利用対策
+ * (`runningBrokerPid` と同じ理由)。lstart が無い行は pid の生死だけで判定する
+ */
+async function pidRecordAlive(record: string): Promise<boolean> {
+  const m = /^(\d+)(?:\s+(.+))?$/.exec(record.trim());
+  if (!m) return false;
+  const start = await processStartTime(Number(m[1]));
+  if (start === null) return false;
+  return m[2] ? start === m[2].replace(/\s+/g, " ") : true;
+}
+
 /** pid file の 1 行。`<pid> <lstart>`。起動時刻が取れない(既に死んでいる)時は pid だけ */
 async function pidRecord(pid: number): Promise<string> {
   const start = await processStartTime(pid);
@@ -269,7 +281,9 @@ async function runBrokerForeground(credential: RuntimeCredential): Promise<numbe
   const bin = resolveBrokerBin();
   if (!bin) fail(BROKER_BUILD_HINT);
   await mkdir(brokerHome(), { recursive: true });
-  if (!(await claimBrokerPidFile())) fail("The broker is already running (the pid file points at a live process)");
+  const claim = await claimBrokerPidFile();
+  if (claim === "running") fail("The broker is already running (the pid file points at a live process)");
+  if (claim === "undetermined") fail(claimUndeterminedHint());
   let child: ReturnType<typeof Bun.spawn>;
   try {
     child = Bun.spawn([bin], {
@@ -286,7 +300,7 @@ async function runBrokerForeground(credential: RuntimeCredential): Promise<numbe
   return await child.exited;
 }
 
-type DetachedOutcome = "started" | "already_running" | "build_needed";
+type DetachedOutcome = "started" | "already_running" | "build_needed" | "claim_undetermined";
 
 /**
  * pid file を torn-write の窓無く書き換える。`writeFile(path, …)` を直接呼ぶと
@@ -302,53 +316,103 @@ async function writePidFileAtomic(pid: number): Promise<void> {
   await rename(tmp, brokerPidPath());
 }
 
-/** stale pid file の取り直しを直列化する lock(dir)。持ち主が途中で死んで残った時の回収閾値 */
+/**
+ * stale pid file の取り直しを直列化する lock。**中身が名札**(誰が握っているか)で、
+ * **回収してよいかは持ち主の生死で決める**(時限は下の最後の砦だけ)
+ */
 const brokerClaimLockPath = () => join(brokerHome(), "broker.pid.lock");
+/**
+ * 名札の読めない lock(旧版が残した dir 等)にだけ効く最後の砦。**生きている持ち主の lock は
+ * どれだけ古くても奪わない**(PBI-0218 レビュー) —— 時限だけで奪うと、遅い持ち主の lock を
+ * 後発が横取りして **2 本が同時に takeOver に入る**(= pid file の rm→link が競合して二重起動)。
+ * 逆に持ち主が死んでいれば時限を待たずに回収する —— 待つと 1 個の置き土産で全員が 10 秒止まり、
+ * `CLAIM_DEADLINE_MS` の予算をそこで食い潰す(実測 11s。`scripts/serial.sh` / PBI-0249 と同じ型)
+ */
 const STALE_LOCK_MS = 10_000;
 const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**
  * `mkdir` の「無ければ作る / 有れば EEXIST」を mutex に使い、`fn` を 1 プロセスずつ実行する。
- * 先客がいる間は短く待って再試行し、閾値を超えて古い lock は持ち主のクラッシュとみなして回収する。
  *
  * 待ち切れなかった時に**「先客が起動したはず」という値を返さない**(PBI-0218)。以前はここで
  * `fallback = false`(= 他が起動中)を返していたので、先客が起動前に終了していると全員が
  * 「他が起動中」と判断して**誰も broker を起こさないまま終わる**。lock を取れたかどうかだけを
- * 呼び出し側に返し、譲る / 取りにいくの判断は呼び出し側が pid file を**読み直して**決める
+ * 呼び出し側に返し、譲る / 取りにいくの判断は呼び出し側が pid file を**読み直して**決める。
+ *
+ * `heldByLive` は「生きた誰かが今この lock を握っている」= その誰かが起動の可否を決めに行っている、
+ * を意味する。呼び出し側はこの間、諦めの上限を進めない(進めると 0 本になる)
  */
-type LockOutcome<T> = { acquired: true; value: T } | { acquired: false };
+type LockOutcome<T> = { acquired: true; value: T } | { acquired: false; heldByLive: boolean };
 
 async function withStaleTakeoverLock<T>(fn: () => Promise<T>): Promise<LockOutcome<T>> {
   const lock = brokerClaimLockPath();
-  for (let attempt = 0; attempt < 60; attempt++) {
-    try {
-      await mkdir(lock);
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-      const st = await stat(lock).catch(() => null);
-      if (st && Date.now() - st.mtimeMs > STALE_LOCK_MS) {
-        await rm(lock, { recursive: true, force: true });
+  // 名札(誰が握っているか)は **lock が見えた最初の瞬間から読めなければならない** ——
+  // `mkdir` してから中に名札を書く 2 段階だと、その隙間に見た者が「持ち主不明 = 回収してよい」と
+  // 判断し、**生きた持ち主の lock を奪う**。奪われた側は自分が握っている前提のまま takeOver に
+  // 居るので、2 本が同時に `rm(pid file) → link` を撃って**両方が claim を勝つ**
+  // (実測: 空の lock dir を 1 つ置くだけで 8 回中 1 回 `started=2`。PBI-0218 レビュー)。
+  // pid file と同じ手 —— temp に書き切ってから `link` —— で、名札込みで atomic に出現させる
+  const me = `${Math.random().toString(36).slice(2)}${process.pid}\n${await pidRecord(process.pid)}`;
+  const tmp = `${lock}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+  await writeFile(tmp, me);
+  let heldByLive = false;
+  try {
+    for (let attempt = 0; attempt < 60; attempt++) {
+      try {
+        await link(tmp, lock);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+        // 生死の確認は `ps` を起こすので毎回はやらない(200ms 毎。死んだ持ち主はそれで十分速く回収される)
+        if (attempt % 4 !== 0) {
+          await sleepMs(50);
+          continue;
+        }
+        const st = await stat(lock).catch(() => null);
+        const held = st ? await readFile(lock, "utf8").catch(() => null) : null;
+        heldByLive = held !== null && (await pidRecordAlive(held.split("\n")[1] ?? ""));
+        // 回収してよいのは **持ち主が死んでいると確かめられた**時だけ。名札が読めない lock
+        // (旧版が残した dir 等)は時限だけが根拠なので、そちらは STALE_LOCK_MS を待つ
+        if (st && !heldByLive && (held !== null || Date.now() - st.mtimeMs > STALE_LOCK_MS)) {
+          // **判断した時と同じ lock である事を、消す直前にもう一度確かめる**。間に `ps` を挟むと
+          // その数 ms の間に他が握った**新しい** lock を消してしまい、2 本が同時に中へ入る
+          const now = await stat(lock).catch(() => null);
+          if (now && now.ino === st.ino && now.mtimeMs === st.mtimeMs) {
+            await rm(lock, { recursive: true, force: true });
+          }
+          continue;
+        }
+        await sleepMs(50);
         continue;
       }
-      await sleepMs(50);
-      continue;
+      try {
+        return { acquired: true, value: await fn() };
+      } finally {
+        // 自分の名札が残っている時だけ消す(横から回収された後に後任の lock を巻き添えにしない)
+        if ((await readFile(lock, "utf8").catch(() => "")) === me) {
+          await rm(lock, { recursive: true, force: true });
+        }
+      }
     }
-    try {
-      return { acquired: true, value: await fn() };
-    } finally {
-      await rm(lock, { recursive: true, force: true });
-    }
+    return { acquired: false, heldByLive };
+  } finally {
+    await rm(tmp, { force: true });
   }
-  return { acquired: false };
 }
 
 /**
- * 譲るか取るかが決まらないまま粘る上限。`STALE_LOCK_MS` より十分長く取る —— 持ち主が死んで
- * 残った lock は `STALE_LOCK_MS` 経過後に回収されるので、この上限に達したということは
- * **生きた誰かが lock を握り続けている**(＝その誰かが起動の可否を決めに行っている)を意味する。
- * 短くすると「回収を待てば取れたのに諦めた」= 誰も起動しない、に戻る
+ * 譲るか取るかが決まらないまま粘る上限。**生きた誰かが lock を握っている間はこの上限を進めない**
+ * (PBI-0218 レビュー) —— 握っている側は今まさに起動の可否を決めに行っているので、そこで諦めるのは
+ * 「誰も起こさない」を自分から作ることになる。実測: `ps` の exec が 20 秒以上遅れる混雑下では、
+ * 正常に決めに行っている先客を待ち切れずに全員が降りた
  */
 const CLAIM_DEADLINE_MS = 20_000;
+
+/**
+ * claim の結果。**`"undetermined"` を `"running"` に潰さない** —— 潰すと、broker が 1 本も
+ * 上がっていないのに `atn login` が「The broker is already running」と言って正常終了し、
+ * 住所に届いても誰も起きない状態が成功に見える(hero ③ が黙って崩れる)
+ */
+type ClaimOutcome = "claimed" | "running" | "undetermined";
 
 /**
  * pid file の排他生成を早い者勝ちの lock として使う。`link()` は「target が無ければ作る、
@@ -366,7 +430,7 @@ const CLAIM_DEADLINE_MS = 20_000;
  * 譲って broker が 1 本も上がらず、`atn login` だけが成功したように見える(hero ③ が黙って崩れる)。
  * 判定が付かない間は「読み直して決め直す」を上限付きで繰り返す
  */
-async function claimBrokerPidFile(): Promise<boolean> {
+async function claimBrokerPidFile(): Promise<ClaimOutcome> {
   await mkdir(brokerHome(), { recursive: true });
   const tmp = `${brokerPidPath()}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
   await writeFile(tmp, await pidRecord(process.pid));
@@ -388,22 +452,37 @@ async function claimBrokerPidFile(): Promise<boolean> {
    * **恒久的に**「already running」と言い続けて 1 本も起動しない(PBI-0218 AC-X2)
    */
   const takeOver = async (): Promise<"claimed" | "yield" | "retry"> => {
+    // **消してよいのは「中身を見て死んでいると確かめた、まさにその file」だけ**(PBI-0218 レビュー)。
+    // `runningBrokerPid()` は 内容を読む → `ps` を叩く の 2 段階で、混雑下ではその間が 100ms 以上開く。
+    // その隙に勝者が `writePidFileAtomic`(rename)で**生きた broker の記録**へ差し替えていると、
+    // 古い判断(「死んでいる」)のまま新しい file を消して二重起動する ——
+    // 実測(load 350): 勝者の CLI pid を読んだ後に `ps` を叩き、その時には勝者が既に exit していたので
+    // 「死んでいる」と読み、勝者が置いた broker の記録を消して 2 本目を起こした。
+    // rename も link も**必ず inode を差し替える**ので、消す直前に inode を照合すれば分かる
+    const before = await stat(brokerPidPath()).catch(() => null);
+    if (before === null) return (await tryLink()) ? "claimed" : "retry";
     if (await runningBrokerPid()) return "yield";
+    const after = await stat(brokerPidPath()).catch(() => null);
+    if (after === null || after.ino !== before.ino || after.mtimeMs !== before.mtimeMs) return "retry";
     await rm(brokerPidPath(), { force: true });
     return (await tryLink()) ? "claimed" : "retry";
   };
   try {
-    const deadline = Date.now() + CLAIM_DEADLINE_MS;
+    let deadline = Date.now() + CLAIM_DEADLINE_MS;
     for (;;) {
-      if (await tryLink()) return true;
+      if (await tryLink()) return "claimed";
       // pid file が在る。**生きたプロセスを指している時だけ**譲る
-      if (await runningBrokerPid()) return false;
+      if (await runningBrokerPid()) return "running";
       const outcome = await withStaleTakeoverLock(takeOver);
-      if (outcome.acquired && outcome.value !== "retry") return outcome.value === "claimed";
+      if (outcome.acquired && outcome.value !== "retry") {
+        return outcome.value === "claimed" ? "claimed" : "running";
+      }
       // lock を取れなかった / 取ったが横から link された。**仮定で終わらせず読み直して決め直す**。
       // ここで lock の外で `rm → link` に逃げてはいけない —— 後発の `rm` が先発の `link` 済み file を
       // 消す窓が開き、PBI-0046 レビュー AC-X3 の「2 本同時が両方 spawn」がそのまま戻る
-      if (Date.now() > deadline) return false;
+      if (!outcome.acquired && outcome.heldByLive) deadline = Date.now() + CLAIM_DEADLINE_MS;
+      // 諦める時も「他が起動中」とは言わない —— 確かめられなかった、として上へ返す
+      if (Date.now() > deadline) return "undetermined";
       await sleepMs(20 + Math.floor(Math.random() * 40));
     }
   } finally {
@@ -411,13 +490,20 @@ async function claimBrokerPidFile(): Promise<boolean> {
   }
 }
 
+/** `claimBrokerPidFile` が決められなかった時に人へ出す文言(0 本を成功に見せない) */
+const claimUndeterminedHint = () =>
+  "NG could not tell whether a broker is running: another atn process is holding " +
+  `${brokerClaimLockPath()}. Nothing was started — run it again`;
+
 /** `login` から呼ぶ detached 起動。pid file が生きているプロセスを指していれば二重起動しない */
 async function startBrokerDetached(credential: RuntimeCredential): Promise<DetachedOutcome> {
   if (await runningBrokerPid()) return "already_running";
   const bin = resolveBrokerBin();
   if (!bin) return "build_needed";
   await mkdir(brokerHome(), { recursive: true });
-  if (!(await claimBrokerPidFile())) return "already_running";
+  const claim = await claimBrokerPidFile();
+  if (claim === "running") return "already_running";
+  if (claim === "undetermined") return "claim_undetermined";
   const log = await open(brokerLogPath(), "a");
   let child: ReturnType<typeof Bun.spawn>;
   try {
@@ -781,6 +867,10 @@ switch (command) {
     // 「接続しました」の表示だけが嘘になる)
     const requestedUrl = baseUrl?.replace(/\/$/, "");
     let credential = await getCredential("broker");
+    // 失効した credential の `base_url` = 前回 pairing した server。`account_url` を持たない端末
+    // (PBI-0246 より前に login した端末)が再 pair する時、行き先はここにしか残っていない ——
+    // 消してから resolver に渡すと DEFAULT_BASE_URL(localhost)へ落ちる
+    const previousUrl = credential?.base_url;
     if (credential && requestedUrl != null && credential.base_url !== requestedUrl) {
       credential = undefined;
     }
@@ -796,7 +886,7 @@ switch (command) {
     if (!credential) {
       const outcome = await pairRuntime({
         // 2 度目の login(credential が失効した端末)も、前回 login した server へ戻る(図7.1)
-        baseUrl: await accountBaseUrl(requestedUrl),
+        baseUrl: await accountBaseUrl(requestedUrl, previousUrl),
         kind: "broker",
         name: loginRuntimeName(),
         onPrompt: showPrompt,
@@ -827,6 +917,8 @@ switch (command) {
     }
     const outcome = await startBroker(credential);
     if (outcome === "build_needed") fail(BROKER_BUILD_HINT);
+    // 「決められなかった」を「既に走っている」に潰さない —— 0 本のまま成功で終わらせない
+    if (outcome === "claim_undetermined") fail(claimUndeterminedHint());
     if (outcome === "already_running") {
       console.log("The broker is already running");
       break;
