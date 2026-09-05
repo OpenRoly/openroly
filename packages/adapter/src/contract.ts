@@ -148,6 +148,14 @@ function extraPathDirs(env: Record<string, string>): string[] {
 }
 
 /**
+ * **runtime 側の CLI がどこにも無い**時の named reason(PBI-0236)。broker の `register_ack.detail` と
+ * broker log(`broker: adopt kind=… detail=…`)にそのまま載るので、`paa_cli_not_found`
+ * (= broker が **`atn` 自身**を起こせない)と**混ざらない別の名前**を持たせる —— 混ぜると
+ * 「node/CLI を入れ直せ」と「atn が配布で PATH に無い」が同じ顔になり、人が直せなくなる。
+ */
+export const RUNTIME_CLI_NOT_FOUND = "runtime_cli_not_found";
+
+/**
  * bare な command を PATH で解決する。PATH に無ければ `extraPathDirs` も見て absolute path を
  * 返す(`/` を含む command はそのまま)。どこにも無ければ名前の付いた Error —— ENOENT の生を
  * register の error message(= broker の register_ack detail)に晒さない(PBI-0050 AC-X2)。
@@ -179,7 +187,8 @@ function resolveCommand(env: Record<string, string>, cmd: string): string {
   const found = whichIn(extraPathDirs(env), cmd);
   if (found) return found;
   throw new Error(
-    `${cmd} was not found (if it is installed, check PATH; otherwise install the runtime first)`,
+    `${RUNTIME_CLI_NOT_FOUND}: ${cmd} was not found in PATH or the fallback dirs ` +
+      `(if it is installed, check PATH; otherwise install the runtime first)`,
   );
 }
 

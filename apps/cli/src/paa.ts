@@ -777,6 +777,15 @@ type ConnectedAccount = { handle: string } | { handle: undefined; detail: string
 const ACCOUNT_CONFIRM_TIMEOUT_MS = 10_000;
 
 /**
+ * 名乗れる handle の形。**200 が返ったことは「account を確認できた」ではない**(有界レビュー) ——
+ * 空文字は `connected to @.` に、空白や改行を含む値は完了表示に**偽の行**を差し込める形になり、
+ * どちらも `@?` と同じ「確認できていないのに account に見える表示」に戻る。
+ * server 側の規則(`[a-z][a-z0-9_]*`)より緩く取る —— 規則が広がっても既存 account を
+ * 名乗れなくしない為で、ここで見たいのは「1 語の名前として画面に出せるか」だけ。
+ */
+const HANDLE_SHAPE = /^[a-z0-9_.-]{1,64}$/i;
+
+/**
  * 繋がった先の account を 1 回だけ確かめる。**例外を投げない** —— ここで throw すると
  * 「繋がったのに何も表示されない」になり、名乗ること自体が失敗経路で丸ごと消える。
  */
@@ -786,10 +795,16 @@ async function confirmAccount(credential: RuntimeCredential): Promise<ConnectedA
       token: credential.token,
       signal: AbortSignal.timeout(ACCOUNT_CONFIRM_TIMEOUT_MS),
     });
-    if (who.status === 200 && typeof who.body?.handle === "string") return { handle: who.body.handle };
+    const handle = typeof who.body?.handle === "string" ? who.body.handle : "";
+    if (who.status === 200 && HANDLE_SHAPE.test(handle)) return { handle };
     return {
       handle: undefined,
-      detail: who.status === 401 ? "the credential was rejected (401)" : `whoami returned ${who.status}`,
+      detail:
+        who.status === 401
+          ? "the credential was rejected (401)"
+          : who.status === 200
+            ? "whoami did not name an account"
+            : `whoami returned ${who.status}`,
     };
   } catch (e) {
     return { handle: undefined, detail: `whoami could not be reached (${(e as Error).message})` };

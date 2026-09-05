@@ -5,9 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   credentialsPath,
+  getAccountUrl,
   getCredential,
   loadCredentials,
   removeCredential,
+  saveAccountUrl,
   saveCredential,
   type RuntimeCredential,
 } from "../src/credentials.ts";
@@ -116,5 +118,80 @@ describe("credential store", () => {
     // lock file を残さない(次の install が 5 秒待たされる)
     const { readdir } = await import("node:fs/promises");
     expect((await readdir(env.PAA_HOME)).filter((f) => f.endsWith(".lock"))).toEqual([]);
+  }, 60_000);
+});
+
+// ---- PBI-0246 AC-X2 / AC-X3: account の URL は token と同じ file・同じ規律 ----
+
+describe("account_url", () => {
+  test("未保存なら undefined。保存すると末尾の / を落として引ける", async () => {
+    const env = await tempEnv();
+    expect(await getAccountUrl(env)).toBeUndefined();
+
+    await saveAccountUrl("https://atn.shibubu.ai/", env);
+    expect(await getAccountUrl(env)).toBe("https://atn.shibubu.ai");
+  });
+
+  test("runtime の credential を巻き込まない(どちらの向きでも)", async () => {
+    const env = await tempEnv();
+    await saveCredential("claude", cred("claude"), env);
+    await saveAccountUrl("https://atn.shibubu.ai", env);
+    await saveCredential("codex", cred("codex"), env);
+
+    const file = await loadCredentials(env);
+    expect(file.account_url).toBe("https://atn.shibubu.ai");
+    expect(Object.keys(file.runtimes).sort()).toEqual(["claude", "codex"]);
+  });
+
+  test("AC-X2: 保存先の file mode は 0600(token と同じ扱い)", async () => {
+    const env = await tempEnv();
+    await saveAccountUrl("https://atn.shibubu.ai", env);
+    expect(statSync(credentialsPath(env)).mode & 0o777).toBe(0o600);
+  });
+
+  test("手で壊された値は「無い」として扱う(1 行で全 command を落とさない)", async () => {
+    const env = await tempEnv();
+    await saveCredential("claude", cred("claude"), env);
+    const { writeFile } = await import("node:fs/promises");
+    for (const broken of [123, "", null]) {
+      await writeFile(
+        credentialsPath(env),
+        JSON.stringify({ version: 1, account_url: broken, runtimes: {} }),
+      );
+      expect(await getAccountUrl(env)).toBeUndefined();
+    }
+  });
+
+  test("AC-X3: 別 URL の login が同時に走っても後勝ちで、壊れた中間状態を残さない", async () => {
+    const env = await tempEnv();
+    await saveCredential("claude", cred("claude"), env);
+    const module = new URL("../src/credentials.ts", import.meta.url).href;
+    const urls = ["https://a.example", "https://b.example", "https://c.example", "https://d.example"];
+    const procs = urls.map((url) =>
+      Bun.spawn(
+        [
+          "bun",
+          "-e",
+          `const { saveAccountUrl } = await import(${JSON.stringify(module)});
+           await saveAccountUrl(${JSON.stringify(url)}, { PAA_HOME: ${JSON.stringify(env.PAA_HOME)} });`,
+        ],
+        { stdout: "pipe", stderr: "pipe" },
+      ),
+    );
+    const codes = await Promise.all(procs.map((p) => p.exited));
+    const errs = await Promise.all(procs.map((p) => new Response(p.stderr).text()));
+    expect(codes).toEqual([0, 0, 0, 0]);
+    expect(errs.join("")).toBe("");
+
+    const file = await loadCredentials(env);
+    // 後勝ち —— どれが最後かは決まらないが、**どれか 1 つ**が丸ごと残る(混ざらない)
+    expect(typeof file.account_url).toBe("string");
+    expect(urls).toContain(file.account_url as string);
+    // 先に居た credential を巻き込まない / 半端な file を残さない
+    expect(file.version).toBe(1);
+    expect(Object.keys(file.runtimes)).toEqual(["claude"]);
+    const { readdir } = await import("node:fs/promises");
+    const left = await readdir(env.PAA_HOME);
+    expect(left.filter((f) => f.endsWith(".lock") || f.endsWith(".tmp"))).toEqual([]);
   }, 60_000);
 });

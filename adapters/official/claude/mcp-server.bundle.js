@@ -8816,7 +8816,7 @@ var b64u = {
     return bytes;
   }
 };
-async function deriveKeyId(publicJwk) {
+async function deriveKeyId(publicJwk, prefix = "dvk_") {
   const canonical = JSON.stringify({
     crv: publicJwk.crv,
     kty: publicJwk.kty,
@@ -8824,7 +8824,7 @@ async function deriveKeyId(publicJwk) {
     y: publicJwk.y
   });
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
-  return "dvk_" + b64u.encode(digest.slice(0, 16));
+  return prefix + b64u.encode(digest.slice(0, 16));
 }
 async function generateDeviceKeyPair() {
   const kp = await suite.kem.generateKeyPair();
@@ -8881,6 +8881,29 @@ async function open2(envelope, device) {
   const contentKey = await crypto.subtle.importKey("raw", contentKeyRaw, "AES-GCM", false, ["decrypt"]);
   const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: b64u.decode(envelope.iv) }, contentKey, b64u.decode(envelope.ciphertext));
   return new Uint8Array(plaintext);
+}
+var KDF_AUTH_SALT = "atn/account-key/v1/auth-salt";
+class WrapOpenError extends Error {
+  reason;
+  constructor(reason) {
+    super(reason === "wrong_secret" ? "wrong secret for this wrap" : reason === "stale_kdf" ? "this wrap was made by an older key derivation and can no longer be opened" : "malformed wrap");
+    this.reason = reason;
+    this.name = "WrapOpenError";
+  }
+}
+var AUTH_SALT_BYTES = new TextEncoder().encode(KDF_AUTH_SALT);
+async function unwrapPrivateKeyFromDevice(wrapped, device) {
+  let envelope;
+  try {
+    envelope = JSON.parse(new TextDecoder().decode(b64u.decode(wrapped)));
+  } catch {
+    throw new WrapOpenError("malformed");
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(await open2(envelope, device)));
+  } catch {
+    throw new WrapOpenError("wrong_secret");
+  }
 }
 
 // packages/adapter/src/devicekeys.ts
@@ -9036,23 +9059,85 @@ ${body}` : title ?? body;
 // packages/adapter/src/e2ee.ts
 async function ensureOwnDevice(call, deviceKind) {
   const record = await getOrCreateDeviceKey(deviceKind);
-  await call("/v1/devices", {
-    body: {
-      device_name: deviceKind,
-      device_key_id: record.keyId,
-      public_key_jwk: record.publicJwk
+  try {
+    await call("/v1/devices", {
+      body: {
+        device_name: deviceKind,
+        device_key_id: record.keyId,
+        public_key_jwk: record.publicJwk
+      }
+    });
+  } catch (e) {
+    const err = e;
+    if (err?.status === 409 && err?.body?.error === "device_revoked") {
+      throw new Error(`This device (${deviceKind}) was revoked from the account, so it can no longer read or send messages. Run 'atn login' to connect this machine again.`);
     }
-  });
+    throw e;
+  }
   return record;
 }
+var GRANT_MISS_TTL_MS = 30000;
+var GRANT_HIT_TTL_MS = 5 * 60000;
+var granted = new Map;
+async function loadGrantedAccountKey(call, deviceKind) {
+  const cached = granted.get(deviceKind);
+  if (cached && cached.until > Date.now())
+    return cached.key;
+  const device = await getOrCreateDeviceKey(deviceKind);
+  let key = null;
+  try {
+    const grant = await call(`/v1/me/account-key/grant?device_key_id=${encodeURIComponent(device.keyId)}`);
+    key = {
+      keyId: grant.key_id,
+      publicJwk: grant.public_key_jwk,
+      privateJwk: await unwrapPrivateKeyFromDevice(grant.wrapped_private_key, device)
+    };
+  } catch {
+    key = null;
+  }
+  granted.set(deviceKind, {
+    key,
+    until: Date.now() + (key ? GRANT_HIT_TTL_MS : GRANT_MISS_TTL_MS)
+  });
+  return key;
+}
+async function accountPublicKeyOf(call, handle2) {
+  const bare = handle2.replace(/^@/, "");
+  const key = await call(`/v1/handles/${encodeURIComponent(bare)}/account-key`);
+  if (typeof key?.id !== "string" || key.public_key_jwk == null) {
+    throw new Error(`account-key for @${bare}: response has no id / public_key_jwk`);
+  }
+  return { keyId: key.id, publicJwk: key.public_key_jwk };
+}
+async function ownAccountPublicKey(call) {
+  const me = await call("/v1/whoami");
+  if (typeof me?.handle !== "string" || me.handle === "") {
+    throw new Error("whoami returned no handle \u2014 cannot include the sender's own copy");
+  }
+  try {
+    return await accountPublicKeyOf(call, me.handle);
+  } catch (e) {
+    if (e?.status === 404) {
+      throw new Error(`your account (@${me.handle}) has no account key yet \u2014 sending now would create a message you can never read`);
+    }
+    throw e;
+  }
+}
 async function resolveSealTargets(call, deviceKind, toHandle) {
-  const bare = toHandle.replace(/^@/, "");
-  const theirs = await call(`/v1/handles/${encodeURIComponent(bare)}/devices`);
-  if (theirs.length === 0)
-    return null;
+  let theirs;
+  try {
+    theirs = await accountPublicKeyOf(call, toHandle);
+  } catch (e) {
+    if (e?.status === 404)
+      return null;
+    throw e;
+  }
   await ensureOwnDevice(call, deviceKind);
-  const mine = await call("/v1/devices");
-  return [...theirs, ...mine].map((d) => ({ keyId: d.id, publicJwk: d.public_key_jwk }));
+  const mine = await ownAccountPublicKey(call);
+  const targets = [theirs];
+  if (mine.keyId !== theirs.keyId)
+    targets.push(mine);
+  return targets;
 }
 async function sealForHandle(call, deviceKind, toHandle, content2) {
   const targets = await resolveSealTargets(call, deviceKind, toHandle);
@@ -9061,18 +9146,30 @@ async function sealForHandle(call, deviceKind, toHandle, content2) {
   const plaintext = new TextEncoder().encode(JSON.stringify(toEnvelopePlaintext(content2)));
   return { envelope: await seal(plaintext, targets) };
 }
-async function openIfEnvelope(deviceKind, message) {
+async function readerKeys(deviceKind, call) {
+  const keys = [];
+  if (call) {
+    const account = await loadGrantedAccountKey(call, deviceKind);
+    if (account)
+      keys.push(account);
+  }
+  keys.push(await getOrCreateDeviceKey(deviceKind));
+  return keys;
+}
+async function openIfEnvelope(deviceKind, message, call) {
   const envelope = message.content.envelope;
   if (envelope == null)
     return message;
-  try {
-    const own = await getOrCreateDeviceKey(deviceKind);
-    const plaintextBytes = await open2(envelope, own);
-    const plaintext = JSON.parse(new TextDecoder().decode(plaintextBytes));
-    return { ...message, content: fromEnvelopePlaintext(plaintext) };
-  } catch {
-    return { ...message, content: { undecryptable: true } };
+  const ids = Array.isArray(envelope.recipients) ? envelope.recipients.map((r) => r.device_key_id) : [];
+  for (const key of await readerKeys(deviceKind, call)) {
+    if (!ids.includes(key.keyId))
+      continue;
+    try {
+      const plaintextBytes = await open2(envelope, key);
+      return { ...message, content: fromEnvelopePlaintext(JSON.parse(new TextDecoder().decode(plaintextBytes))) };
+    } catch {}
   }
+  return { ...message, content: { undecryptable: true } };
 }
 // node_modules/.bun/zod@3.25.76/node_modules/zod/v3/external.js
 var exports_external = {};
@@ -22208,7 +22305,7 @@ function createAccountTools(config2) {
     inbox_list: () => call(config2, "/v1/inbox/messages"),
     inbox_read: async (messageId) => {
       const message = await call(config2, `/v1/messages/${messageId}`);
-      return openIfEnvelope(deviceKindOf(config2), message);
+      return openIfEnvelope(deviceKindOf(config2), message, e2eeCall(config2));
     },
     send: async (input) => {
       const { to, text, urls, files, force } = input;
@@ -22249,13 +22346,17 @@ function createAccountTools(config2) {
     rules_put: (input) => call(config2, "/v1/rules", { body: input }),
     rules_list: async () => {
       const rules = await call(config2, "/v1/rules");
-      let own = null;
+      let keys = null;
       return Promise.all(rules.map(async (rule) => {
         if (rule.content_scope?.envelope == null)
           return rule;
-        own ??= await getOrCreateDeviceKey(deviceKindOf(config2));
+        keys ??= await readerKeys(deviceKindOf(config2), e2eeCall(config2));
+        const envelope = rule.content_scope.envelope;
+        const own = keys.find((k) => envelope.recipients?.some((r) => r.device_key_id === k.keyId));
+        if (!own)
+          return rule;
         try {
-          const bytes = await open2(rule.content_scope.envelope, own);
+          const bytes = await open2(envelope, own);
           const plain = JSON.parse(new TextDecoder().decode(bytes));
           const { content_scope, ...rest } = rule;
           return {

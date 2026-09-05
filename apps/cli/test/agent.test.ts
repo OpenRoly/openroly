@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { generateDeviceKeyPair, seal } from "@paa/crypto-envelope";
+import { generateDeviceKeyPair, open, seal } from "@paa/crypto-envelope";
 
 // `atn agent <provider>`(PBI-0057 / EP-0009 B)。実 provider には到達させない ——
 // OpenAI 互換の fake server と stub Account API を立て、CLI が何を送ったかを観測する。
@@ -18,7 +18,17 @@ let approvalStatus = "approved";
 let replyResponse: { status: number; body: any } = { status: 202, body: { status: "sent" } };
 let accountCalls: { path: string; body: any }[] = [];
 // 相手 handle の device 一覧。空 = 相手に device 無し = 平文 fallback(攻撃 test で差し替える)
-let handleDevices: any[] = [];
+/** 宛先 account の seal 先(PBI-0247: account 鍵 1 本。null = 鍵なし → 平文 fallback) */
+let peerAccountKey: { id: string; public_key_jwk: unknown } | null = null;
+/** POST /v1/devices を 409 にする(PBI-0253)。null = 従来どおり通る */
+let deviceRegisterError: string | null = null;
+/**
+ * 送信者(= この agent の owner)の account 鍵。PBI-0254 で seal 経路が **grant ではなく
+ * handle 経由の公開鍵**を引く様になったので、stub 側にも自分の鍵と whoami が要る。
+ * null にすると「自分の鍵がまだ無い」= 送信を止める(平文にはしない)経路になる。
+ */
+let ownAccountKey: { id: string; public_key_jwk: unknown } | null = null;
+const OWN_HANDLE = "alice";
 
 const account = Bun.serve({
   port: 0,
@@ -39,8 +49,22 @@ const account = Bun.serve({
     if (url.pathname.startsWith("/v1/approvals/")) {
       return Response.json({ id: "apr_1", status: approvalStatus });
     }
-    if (url.pathname.startsWith("/v1/handles/")) return Response.json(handleDevices);
-    if (url.pathname === "/v1/devices") return Response.json([]);
+    if (url.pathname === "/v1/whoami") return Response.json({ handle: OWN_HANDLE });
+    if (url.pathname.startsWith("/v1/handles/")) {
+      const key = url.pathname.startsWith(`/v1/handles/${OWN_HANDLE}/`) ? ownAccountKey : peerAccountKey;
+      return key ? Response.json(key) : Response.json({ error: "not_found" }, { status: 404 });
+    }
+    // 人が承認していない agent には account 鍵の包みが降りてこない(AC-X2)。
+    // それでも L1(自分の device 鍵宛)の envelope は device 鍵で開ける
+    if (url.pathname === "/v1/me/account-key/grant") {
+      return Response.json({ error: "not_found" }, { status: 404 });
+    }
+    if (url.pathname === "/v1/devices") {
+      // 人が Revoke を押した device は自力で戻れない(PBI-0253)。409 の理由は body に載る
+      return deviceRegisterError
+        ? Response.json({ error: deviceRegisterError }, { status: 409 })
+        : Response.json([]);
+    }
     return new Response("not found", { status: 404 });
   },
 });
@@ -59,6 +83,10 @@ const provider = Bun.serve({
     return Response.json({ choices: [{ message: { content: providerContent } }] });
   },
 });
+
+/** owner の account 公開鍵(seal を実際に通す必要があるので本物の鍵対から取る) */
+const OWN_KEYPAIR = await generateDeviceKeyPair();
+const OWN_PUBLIC_JWK = OWN_KEYPAIR.publicJwk;
 
 const API_KEY = "sk-pbi0057-secret"; // gitleaks:allow(test fixture・実在しない key)
 const ACCOUNT_URL = `http://localhost:${account.port}`;
@@ -117,7 +145,9 @@ beforeEach(() => {
   approvalStatus = "approved";
   replyResponse = { status: 202, body: { status: "sent" } };
   threadStatus = 200;
-  handleDevices = [];
+  peerAccountKey = null;
+  deviceRegisterError = null;
+  ownAccountKey = { id: "ack_own", public_key_jwk: OWN_PUBLIC_JWK };
   threadResponse = {
     id: "th_1",
     peer_handle: "bob",
@@ -182,6 +212,42 @@ describe("atn agent(PBI-0057 AC-1〜AC-5)", () => {
     // 「復号した相手の本文」を Account に書き戻していないことを確かめる
     const reply = accountCalls.find((c) => c.path.endsWith("/reply"))!;
     expect(JSON.stringify(reply.body)).not.toContain("暗号化された本文");
+  });
+
+  // PBI-0254 AC-2 / AC-X2: **grant される前が agent の既定状態**。承認がまだでも、
+  // 送った物には送信者(owner)の account 鍵が入り、owner はそれを自分の鍵で開ける。
+  // 前は写しを grant(= 承認済みの秘密鍵)に掛けていたので、初期の送信が全部
+  // 「後で承認されても永久に開かない 1 通」だった。
+  test("AC-2 / AC-X2: grant が無い agent の reply も owner の account 鍵で開ける", async () => {
+    const theirs = await generateDeviceKeyPair();
+    peerAccountKey = { id: "ack_bob", public_key_jwk: theirs.publicJwk };
+
+    const res = await runCli(await makeHome());
+    expect(res.code).toBe(0);
+    // 人はまだ承認していない(stub の grant は 404)
+    expect(accountCalls.some((c) => c.path === "/v1/me/account-key/grant")).toBe(false);
+
+    const reply = accountCalls.find((c) => c.path.endsWith("/reply"))!;
+    expect(reply.body.text).toBeUndefined();
+    const ids = reply.body.envelope.recipients.map((r: any) => r.device_key_id).sort();
+    expect(ids).toEqual(["ack_bob", "ack_own"].sort());
+    // id が並んでいるだけでは足りない —— owner の秘密鍵で **実際に開く**
+    const plain = await open(reply.body.envelope, {
+      keyId: "ack_own",
+      privateJwk: OWN_KEYPAIR.privateJwk,
+    });
+    expect(JSON.parse(new TextDecoder().decode(plain)).text).toBe("こちらが下書きです");
+  });
+
+  test("AC-X1: owner の account 鍵がまだ無ければ、平文で送らずに失敗する", async () => {
+    const theirs = await generateDeviceKeyPair();
+    peerAccountKey = { id: "ack_bob", public_key_jwk: theirs.publicJwk };
+    ownAccountKey = null;
+
+    const res = await runCli(await makeHome());
+    expect(res.code).toBe(1);
+    // reply を 1 本も送っていない(平文で残さない)
+    expect(accountCalls.filter((c) => c.path.endsWith("/reply"))).toEqual([]);
   });
 
   test("AC-4: resolve が 202 pending なら承認を待ってから provider を呼ぶ", async () => {
@@ -294,11 +360,25 @@ describe("atn agent への攻撃 (PBI-0057 review)", () => {
     expect(accountCalls.filter((c) => c.path.endsWith("/reply")).length).toBe(0);
   });
 
+  test("PBI-0253 AC-X1: revoke された device は黙って止まらず、`atn login` を名乗って落ちる", async () => {
+    // 相手に account 鍵を置くと seal 経路が ensureOwnDevice を通る = POST /v1/devices を打つ
+    const theirs = await generateDeviceKeyPair();
+    peerAccountKey = { id: "ack_theirs", public_key_jwk: theirs.publicJwk };
+    deviceRegisterError = "device_revoked";
+    const res = await runCli(await makeHome());
+    expect(res.code).toBe(1);
+    const said = res.out + res.err;
+    expect(said).toMatch(/revoked from the account/);
+    expect(said).toMatch(/atn login/); // 復帰の手順が error 文言そのものに在る(無人の相手が読む)
+    // 平文で送っていない(reply が 1 本も出ていない = revoke が本当に止めている)
+    expect(accountCalls.filter((c) => c.path.endsWith("/reply")).length).toBe(0);
+  });
+
   test("X3 攻撃: 2 プロセスが同じ kind の device key を同時作成しても 1 つの有効な鍵に収束する", async () => {
-    // 相手に active device を置くと seal 経路が ensureOwnDevice を通る = 両プロセスが
+    // 相手に account 鍵を置くと seal 経路が ensureOwnDevice を通る = 両プロセスが
     // device-keys.json を同時に作成・読み出す(既存 AC-X3 は平文で鍵ファイルを作らない経路だった)
     const theirs = await generateDeviceKeyPair();
-    handleDevices = [{ id: "dev_theirs", public_key_jwk: theirs.publicJwk }];
+    peerAccountKey = { id: "ack_theirs", public_key_jwk: theirs.publicJwk };
     const home = await makeHome();
     const [a, b] = await Promise.all([runCli(home), runCli(home)]);
     expect(a.code).toBe(0);

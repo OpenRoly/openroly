@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -297,5 +298,200 @@ describe("atn adopt — launchd 最小 PATH (PBI-0050)", () => {
     expect(first).toContain("claude was not found");
     // 生 stack trace を stderr 1 行目に晒さない(broker が register_ack の detail に載せる)
     expect(first).not.toContain("at ");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PBI-0236: plist に焼いた PATH は login の瞬間の snapshot。`atn adopt` は
+// `PAA_LOGIN_PATH`(= 焼いた印)が在る時だけ login shell を起こして今の PATH を取り直す。
+// 実 CLI には到達させない —— stale / fresh の 2 つの dir に別々の fake `codex` を置き、
+// **どちらが走ったか**を marker file で観測する(EP-0001 LEARN 13)。
+// fake は `#!/bin/sh` なので PATH には /usr/bin:/bin を残す(残さないと script 内の command が
+// 解決できず、意図した経路ではなく exit 127 で終わる)。
+// ---------------------------------------------------------------------------
+describe("atn adopt: PATH は adopt の時に解決する (PBI-0236)", () => {
+  const ADOPT_ARGS = [
+    "--kind", "codex",
+    "--runtime-id", "rt_0236",
+    "--base-url", "http://localhost:9999",
+    "--name", "MacBook / Codex",
+    "--token-stdin",
+  ];
+
+  interface Fixture {
+    root: string;
+    home: string;
+    stale: string;
+    fresh: string;
+    marker: string;
+    shellSpy: string;
+  }
+
+  /** fake の codex を 2 つ(stale / fresh)と、fresh を PATH に入れて `-c` を実行する fake login shell */
+  async function fixture(opts: { staleCodex?: string; loginShell?: string } = {}): Promise<Fixture> {
+    const root = await mkdtemp(join(tmpdir(), "paa-0236-"));
+    const home = join(root, "home");
+    const stale = join(root, "stale-bin");
+    const fresh = join(root, "fresh-bin");
+    const marker = join(root, "which-codex.log");
+    const shellSpy = join(root, "login-shell-called");
+    for (const d of [home, stale, fresh]) await mkdir(d, { recursive: true });
+
+    const codex = (tag: string) => `#!/bin/sh\necho "${tag} $@" >> ${marker}\nexit 0\n`;
+    await writeFile(join(stale, "codex"), opts.staleCodex ?? codex("STALE"));
+    await writeFile(join(fresh, "codex"), codex("FRESH"));
+    await chmod(join(stale, "codex"), 0o755);
+    await chmod(join(fresh, "codex"), 0o755);
+
+    // 既定の fake login shell: 「rc file が PATH を書き換えてから -c を実行する」を再現する。
+    // ① 渡された argv が `-l -i -c <script>` である事をここで固定し(違えば exit 9)、
+    // ② `-c` の中身は **本物のまま** 実行する(marker の組み立てと切り出しを迂回しない)。
+    // 実行は `/bin/sh -c` にする —— `-l` を付け直すと macOS の path_helper が /etc/paths を
+    // 足して実機の /opt/homebrew/bin が混ざり、fake が本物の codex に負けて検査が嘘になる
+    const login = join(root, "login-shell");
+    await writeFile(
+      login,
+      opts.loginShell ??
+        `#!/bin/sh\ntouch ${shellSpy}\n` +
+          `[ "$1" = "-l" ] && [ "$2" = "-i" ] && [ "$3" = "-c" ] || exit 9\n` +
+          `PATH="${fresh}:/usr/bin:/bin"\nexport PATH\nexec /bin/sh -c "$4"\n`,
+    );
+    await chmod(login, 0o755);
+    return { root, home, stale, fresh, marker, shellSpy: shellSpy };
+  }
+
+  async function runAdopt(
+    f: Fixture,
+    env: Record<string, string>,
+  ): Promise<{ code: number; out: string; err: string }> {
+    const proc = Bun.spawn([process.execPath, CLI, "adopt", ...ADOPT_ARGS], {
+      env: {
+        // launchd が broker を起こす時の env を再現する(最小 PATH + plist が焼いた分)
+        HOME: f.home,
+        PAA_HOME: f.home,
+        PAA_EXTRA_PATH_DIRS: "", // 実機の /opt/homebrew/bin に本物が居ても決定的にする
+        ...env,
+      },
+      stdin: new TextEncoder().encode(`${TOKEN}\n`),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [out, err] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    return { code: await proc.exited, out, err };
+  }
+
+  /** 走った fake CLI の tag(STALE / FRESH)。1 回も走っていなければ空 */
+  async function whoRan(f: Fixture): Promise<string> {
+    const log = await readFile(f.marker, "utf8").catch(() => "");
+    return log
+      .split("\n")
+      .filter((l) => l.includes("mcp add"))
+      .map((l) => l.split(" ")[0]!)
+      .join(",");
+  }
+
+  test("AC-1: 版を切り替えた後は login shell の今の PATH が使われる(焼いた古い dir ではなく)", async () => {
+    const f = await fixture();
+    const snapshot = `${f.stale}:/usr/bin:/bin`;
+    const res = await runAdopt(f, {
+      PATH: snapshot,
+      PAA_LOGIN_PATH: snapshot,
+      PAA_LOGIN_SHELL: join(f.root, "login-shell"),
+    });
+    expect(res.code).toBe(0);
+    // 旧 dir の codex は**まだ実在する**(nvm で古い版を消していない人)。それでも新が勝つ
+    expect(await whoRan(f)).toBe("FRESH");
+    expect(res.out).toContain("refreshed from the login shell");
+    await rm(f.root, { recursive: true, force: true });
+  });
+
+  test("AC-2: 解決できても shebang の node が無ければ、その 1 行がそのまま理由になる", async () => {
+    // PBI-0190 で本番実測した壊れ方。`codex` は解決できているので resolveCommand は助けにならない
+    const f = await fixture({
+      staleCodex: `#!/bin/sh\necho "env: node: No such file or directory" >&2\nexit 127\n`,
+      loginShell: `#!/bin/sh\nexit 1\n`, // probe は失敗 = 焼いた PATH のまま(「作り直していない端末」)
+    });
+    const snapshot = `${f.stale}:/usr/bin:/bin`;
+    const res = await runAdopt(f, {
+      PATH: snapshot,
+      PAA_LOGIN_PATH: snapshot,
+      PAA_LOGIN_SHELL: join(f.root, "login-shell"),
+    });
+    expect(res.code).toBe(2);
+    // broker は stderr の **1 行目**だけを register_ack.detail と log に載せる
+    const first = res.err.split("\n")[0]!;
+    expect(first).toContain("env: node: No such file or directory");
+    expect(first).not.toContain("at "); // 生 stack を晒さない
+    await rm(f.root, { recursive: true, force: true });
+  });
+
+  test("AC-3: PAA_LOGIN_PATH が無ければ login shell を 1 回も起こさない(人が手で打つ経路)", async () => {
+    const f = await fixture();
+    const res = await runAdopt(f, {
+      PATH: `${f.stale}:/usr/bin:/bin`,
+      PAA_LOGIN_SHELL: join(f.root, "login-shell"), // 起こせる状態にしておく
+    });
+    expect(res.code).toBe(0);
+    expect(await whoRan(f)).toBe("STALE"); // 今の PATH がそのまま使われる
+    expect(existsSync(f.shellSpy)).toBe(false); // shell は起きていない
+    expect(res.out).not.toContain("PATH ");
+    await rm(f.root, { recursive: true, force: true });
+  });
+
+  test("AC-X1: どこにも codex が無ければ runtime_cli_not_found(paa_cli_not_found とは別の名前)", async () => {
+    const f = await fixture();
+    // stale / fresh の両方から codex を消す = 「PATH がどうやっても解決できない」
+    await rm(join(f.stale, "codex"), { force: true });
+    await rm(join(f.fresh, "codex"), { force: true });
+    const snapshot = `${f.stale}:/usr/bin:/bin`;
+    const res = await runAdopt(f, {
+      PATH: snapshot,
+      PAA_LOGIN_PATH: snapshot,
+      PAA_LOGIN_SHELL: join(f.root, "login-shell"),
+    });
+    expect(res.code).toBe(2);
+    const first = res.err.split("\n")[0]!;
+    expect(first.startsWith("runtime_cli_not_found")).toBe(true);
+    expect(first).not.toContain("paa_cli_not_found"); // broker 側の「atn 自身が無い」と混ぜない
+    await rm(f.root, { recursive: true, force: true });
+  });
+
+  test("AC-X2: login shell が答えない 3 通り(落ちる / PATH でない / 黙る)は焼いた PATH に落ちる", async () => {
+    const shells = [
+      { name: "exit 1", body: `#!/bin/sh\nexit 1\n` },
+      { name: "PATH でない出力", body: `#!/bin/sh\necho hello world\n` },
+      { name: "黙る(timeout)", body: `#!/bin/sh\nexec sleep 30\n` },
+    ];
+    for (const s of shells) {
+      const f = await fixture({ loginShell: s.body });
+      const snapshot = `${f.stale}:/usr/bin:/bin`;
+      const res = await runAdopt(f, {
+        PATH: snapshot,
+        PAA_LOGIN_PATH: snapshot,
+        PAA_LOGIN_SHELL: join(f.root, "login-shell"),
+      });
+      expect(`${s.name}: exit ${res.code}`).toBe(`${s.name}: exit 0`);
+      expect(`${s.name}: ${await whoRan(f)}`).toBe(`${s.name}: STALE`);
+      expect(res.out).toContain("kept from the plist snapshot");
+      await rm(f.root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("AC-X2 攻撃: allowlist の外の login shell(fish 等)は起こさない", async () => {
+    const f = await fixture();
+    const snapshot = `${f.stale}:/usr/bin:/bin`;
+    // PAA_LOGIN_SHELL を渡さない = 本番と同じ `SHELL` 経由の判定になる
+    const res = await runAdopt(f, {
+      PATH: snapshot,
+      PAA_LOGIN_PATH: snapshot,
+      SHELL: "/opt/homebrew/bin/fish",
+    });
+    expect(res.code).toBe(0);
+    expect(await whoRan(f)).toBe("STALE");
+    expect(res.out).toContain("kept from the plist snapshot");
+    await rm(f.root, { recursive: true, force: true });
   });
 });

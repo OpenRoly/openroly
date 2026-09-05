@@ -23,6 +23,13 @@ export interface RuntimeCredential {
 
 export interface CredentialFile {
   version: 1;
+  /**
+   * `atn login` が決めた account の server URL(PBI-0246・図7.1)。**runtime ごとの
+   * credential とは別の面** —— まだ pair していない runtime には引き継ぐ credential が
+   * 無いので、`atn pair claude` が既定値の localhost へ落ちる。account に 1 つ持つ。
+   * URL 自体は秘密ではないが、token と同じ file に置く以上は同じ 0600・同じ lock に従う。
+   */
+  account_url?: string;
   runtimes: Record<string, RuntimeCredential>;
 }
 
@@ -59,6 +66,29 @@ export async function getCredential(
   env: Env = process.env,
 ): Promise<RuntimeCredential | undefined> {
   return (await loadCredentials(env)).runtimes[kind];
+}
+
+/**
+ * `atn login` が決めた account の URL。無ければ undefined。
+ * 手で編集された file(数値・空文字)は「無い」として扱う —— 壊れた 1 行で全 command を
+ * 落とすより、既定へ落ちて **URL を名乗って**失敗する方が直せる
+ */
+export async function getAccountUrl(env: Env = process.env): Promise<string | undefined> {
+  const saved = (await loadCredentials(env)).account_url;
+  return typeof saved === "string" && saved !== "" ? saved : undefined;
+}
+
+/**
+ * account の URL を書く。credential と同じ lock の中で read-modify-write するので、
+ * 同時に走る `atn login` / `atn install` が互いの entry を消さない(後勝ち・半端な file を残さない)
+ */
+export async function saveAccountUrl(url: string, env: Env = process.env): Promise<void> {
+  const clean = url.replace(/\/$/, "");
+  await withCredentialLock(env, async () => {
+    const file = await loadCredentials(env);
+    file.account_url = clean;
+    await writeCredentials(file, env);
+  });
 }
 
 /** 既存 entry を保ったまま 1 kind を書き換える。file mode は 0600(他 user から読めない) */

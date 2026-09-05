@@ -2,8 +2,14 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { saveCredential } from "../src/credentials.ts";
-import { installRuntime, doctorRuntime, uninstallRuntime } from "../src/install.ts";
+import { saveAccountUrl, saveCredential } from "../src/credentials.ts";
+import {
+  accountBaseUrl,
+  DEFAULT_BASE_URL,
+  installRuntime,
+  doctorRuntime,
+  uninstallRuntime,
+} from "../src/install.ts";
 import {
   STAGE0_CAPABILITIES,
   type AdapterContext,
@@ -119,8 +125,7 @@ const other = Bun.serve({
           expires_at: new Date(Date.now() + 600_000).toISOString(),
           expires_in: 600,
           interval: 2,
-          verification_uri: "http://localhost:5173/",
-          verification_uri_complete: "http://localhost:5173/?user_code=WXYZ6789",
+          verification_uri: "http://localhost:5173/connect",
         },
         { status: 201 },
       );
@@ -202,5 +207,92 @@ describe("uninstall の失敗理由", () => {
     expect(outcome.detail).toContain("command not found");
     // credential 側は消えている(runtime CLI の故障に引きずられない)
     expect(outcome.credentialRemoved).toBe(true);
+  });
+});
+
+// ---- PBI-0246: URL は account に 1 つ(図7.1) ----
+
+describe("accountBaseUrl の優先順(図7.1)", () => {
+  const EXPLICIT = "https://explicit.example";
+  const SAVED = "https://saved.example";
+  const CRED = "https://cred.example";
+
+  const home = async () => ({ PAA_HOME: await mkdtemp(join(tmpdir(), "paa-url-")) });
+
+  test("AC-3: 明示(--url / $PAA_URL)は他の全部に勝つ", async () => {
+    const env = await home();
+    await saveAccountUrl(SAVED, env);
+    expect(await accountBaseUrl(EXPLICIT, CRED, env)).toBe(EXPLICIT);
+    // 末尾の / は 1 箇所で落とす
+    expect(await accountBaseUrl(`${EXPLICIT}/`, CRED, env)).toBe(EXPLICIT);
+  });
+
+  test("AC-1: 明示が無ければ account の URL。**呼び手の credential より前**", async () => {
+    const env = await home();
+    await saveAccountUrl(SAVED, env);
+    // credential は「その runtime が昔居た server」であって、今 login している account ではない
+    expect(await accountBaseUrl(undefined, CRED, env)).toBe(SAVED);
+    // まだ pair していない runtime(credential 無し)にも効くのがこの PBI の要点
+    expect(await accountBaseUrl(undefined, undefined, env)).toBe(SAVED);
+  });
+
+  test("AC-4: login していなければ credential → 既定の順(今までと同じ)", async () => {
+    const env = await home();
+    expect(await accountBaseUrl(undefined, CRED, env)).toBe(CRED);
+    expect(await accountBaseUrl(undefined, undefined, env)).toBe(DEFAULT_BASE_URL);
+  });
+});
+
+describe("install が account の URL を継ぐ(図7.1)", () => {
+  test("AC-2: まだ pair していない runtime でも account の URL に pair しに行く", async () => {
+    revoked = false;
+    // credential が 1 つも無い端末 = README の quickstart の状態
+    const env = {
+      PAA_HOME: await mkdtemp(join(tmpdir(), "paa-install-url-")),
+      PAA_BINARY_BASE_URL: "http://127.0.0.1:1",
+    };
+    await saveAccountUrl(otherBase, env);
+
+    const outcome = await installRuntime({
+      adapter: fakeAdapter,
+      ctx,
+      env,
+      onPrompt: () => {},
+      sleep: async () => {},
+      now: () => 0,
+    });
+
+    expect(outcome.status === "installed" && outcome.paired).toBe(true);
+    // 既定値(localhost:8787)へ落ちていない
+    expect(outcome.status === "installed" && outcome.credential.base_url).toBe(otherBase);
+    expect(registered.at(-1)?.baseUrl).toBe(otherBase);
+  });
+
+  test("AC-2: doctor は未 pair の runtime にも行き先の URL を名乗る", async () => {
+    const env = { PAA_HOME: await mkdtemp(join(tmpdir(), "paa-doctor-url-")) };
+    await saveAccountUrl(otherBase, env);
+
+    const findings = await doctorRuntime({ adapter: fakeAdapter, ctx, env });
+    const credential = findings.find((f) => f.label === "credential")!;
+
+    expect(credential.ok).toBe(false);
+    expect(credential.detail).toContain(otherBase);
+    expect(credential.detail).not.toContain(DEFAULT_BASE_URL);
+  });
+
+  test("AC-3: install でも --url の明示が account の URL に勝つ", async () => {
+    revoked = false;
+    const env = {
+      PAA_HOME: await mkdtemp(join(tmpdir(), "paa-install-explicit-")),
+      PAA_BINARY_BASE_URL: "http://127.0.0.1:1",
+    };
+    // account は stub(= base)を指しているが、明示は other。credential はまだ無い
+    await saveAccountUrl(base, env);
+
+    const outcome = await installRuntime(installOptions(env, otherBase));
+
+    expect(outcome.status === "installed" && outcome.paired).toBe(true);
+    expect(outcome.status === "installed" && outcome.credential.base_url).toBe(otherBase);
+    expect(registered.at(-1)?.baseUrl).toBe(otherBase);
   });
 });

@@ -26,8 +26,7 @@ const START = {
   expires_at: new Date(Date.now() + 600_000).toISOString(),
   expires_in: 6,
   interval: 2,
-  verification_uri: "http://localhost:5173/",
-  verification_uri_complete: "http://localhost:5173/?user_code=ABCD2345",
+  verification_uri: "http://localhost:5173/connect",
 };
 
 const server = Bun.serve({
@@ -125,9 +124,19 @@ describe("pairing engine", () => {
     expect(polls).toBe(3);
     expect(prompts[0]).toMatchObject({
       user_code: "ABCD2345",
-      verification_uri_complete: START.verification_uri_complete,
+      verification_uri: START.verification_uri,
       interval: 2,
     });
+    // PBI-0237: **code の入った URL は組み立てない**。人に渡せるのは code の文字列だけで、
+    // URL は打つ欄だけの定数 path —— prompt のどの field にも code が混ざらない事まで見る
+    expect(prompts[0]).not.toHaveProperty("verification_uri_complete");
+    // `prompts` は unknown[](実物の形を型で先取りしない)ので、**値として**取り出して見る ——
+    // どの field にも code が混ざっていないことまで数える(1 つでも在れば送りつけられる)
+    const shown = prompts[0] as Record<string, unknown>;
+    for (const value of Object.values(shown)) {
+      if (typeof value === "string" && value.includes("http")) expect(value).not.toContain("ABCD2345");
+    }
+    expect(shown.verification_uri).toBe("http://localhost:5173/connect");
     const saved = await getCredential("claude", env);
     expect(saved).toMatchObject({ runtime_id: "rt_1", token: "par_abc", base_url: base });
   });

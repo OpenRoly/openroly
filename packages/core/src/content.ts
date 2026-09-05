@@ -125,6 +125,12 @@ export interface NotificationSource {
   external_id?: string;
   /** 秘匿境界(REQ-68)。rule 適用で ingest 時に決まる。無い行は full 扱い */
   cloud_visibility?: CloudVisibility;
+  /**
+   * mail が**どの住所に届いたか**(PBI-0191 で住所を複数持てるようになった為・図61)。
+   * `+t_<token>` を落とした形(`ryo@shibubu.ai`)。routing に使った metadata で、本文とは無関係。
+   * 古い行には無い(optional のまま・列は増やさない)
+   */
+  delivered_to?: string;
 }
 
 /** thread の peer から source を導出する(既存 chat 行は source 列が null のため) */

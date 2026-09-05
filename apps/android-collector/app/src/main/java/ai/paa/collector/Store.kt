@@ -70,7 +70,9 @@ class Store(context: Context) {
     }
 
     companion object {
-        const val DEFAULT_BASE_URL = "https://paa-cloud.onrender.com"
+        // 初回のみの既定(保存済みの base_url は上書きしない)。PBI-0186: hosted を Fly に移し
+        // 旧 URL は 404 になった —— 入れた人が最初に叩く先が死んでいると、何も起きずに終わる
+        const val DEFAULT_BASE_URL = "https://atn.shibubu.ai"
         const val KEYS_TTL_MS = 30 * 60 * 1000L
     }
 }

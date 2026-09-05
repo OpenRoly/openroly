@@ -10,7 +10,7 @@
 import type { MessageContent } from "@paa/core";
 import { open, type EncryptedEnvelope } from "@paa/crypto-envelope";
 import {
-  getOrCreateDeviceKey,
+  readerKeys,
   openIfEnvelope as openEnvelope,
   sealForHandle,
 } from "@paa/adapter";
@@ -98,7 +98,7 @@ export function createAccountTools(config: PaaClientConfig) {
     inbox_list: () => call(config, "/v1/inbox/messages"),
     inbox_read: async (messageId: string) => {
       const message = (await call(config, `/v1/messages/${messageId}`)) as { content: MessageContent };
-      return openEnvelope(deviceKindOf(config), message);
+      return openEnvelope(deviceKindOf(config), message, e2eeCall(config));
     },
     send: async (input: SendInput) => {
       const { to, text, urls, files, force } = input;
@@ -160,13 +160,18 @@ export function createAccountTools(config: PaaClientConfig) {
         scope: Record<string, unknown>;
         content_scope: { envelope: unknown } | null;
       }[];
-      let own: Awaited<ReturnType<typeof getOrCreateDeviceKey>> | null = null;
+      // 開ける鍵は inbox_read と同じ順(account 鍵の grant → device 鍵)。ここで device 鍵だけを
+      // 見ると、rule の私的部だけが agent から読めない形に片落ちする(PBI-0247)
+      let keys: Awaited<ReturnType<typeof readerKeys>> | null = null;
       return Promise.all(
         rules.map(async (rule) => {
           if (rule.content_scope?.envelope == null) return rule;
-          own ??= await getOrCreateDeviceKey(deviceKindOf(config));
+          keys ??= await readerKeys(deviceKindOf(config), e2eeCall(config));
+          const envelope = rule.content_scope.envelope as EncryptedEnvelope;
+          const own = keys.find((k) => envelope.recipients?.some((r) => r.device_key_id === k.keyId));
+          if (!own) return rule;
           try {
-            const bytes = await open(rule.content_scope.envelope as EncryptedEnvelope, own);
+            const bytes = await open(envelope, own);
             const plain = JSON.parse(new TextDecoder().decode(bytes)) as {
               nl: string;
               sender?: string;

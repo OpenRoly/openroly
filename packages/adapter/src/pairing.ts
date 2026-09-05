@@ -10,12 +10,17 @@ import { saveCredential, type RuntimeCredential } from "./credentials.ts";
 // 畳んだ結果を "expired" と呼ぶと、人には「期限切れ」と嘘を伝えることになる。
 
 export interface PairPrompt {
+  /** 人が **端末の画面から読んで打つ** 文字列(PBI-0237 AC-2)。URL には載らない */
   user_code: string;
+  /** 打ちに行く先(`<web>/connect`)。**code を含まない定数 path** */
   verification_uri: string;
-  verification_uri_complete: string;
   expires_in: number;
   interval: number;
 }
+
+// `verification_uri_complete`(RFC 8628 §3.3.1 の任意項目)は **持たない**(PBI-0237)。
+// 「開くだけで承認画面に code 入りで着く URL」は、送りつけるだけで成立する remote phishing
+// (§5.4)の運び屋そのもので、server も返さなくなった。人に渡せるのは code の文字列だけにする。
 
 export interface PairOptions {
   baseUrl: string;
@@ -136,7 +141,6 @@ export async function pairRuntime(options: PairOptions): Promise<PairOutcome> {
   const prompt: PairPrompt = {
     user_code: start.body.user_code,
     verification_uri: start.body.verification_uri,
-    verification_uri_complete: start.body.verification_uri_complete,
     expires_in: start.body.expires_in,
     interval: start.body.interval ?? 2,
   };

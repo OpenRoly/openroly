@@ -157,7 +157,15 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   const { base_url: baseUrl, token } = credential;
   const call: E2eeCall = async (path, init) => {
     const res = await apiCall(baseUrl, path, { token, ...init });
-    if (res.status >= 400) throw new Error(`account_api_error(${res.status}) ${path}`);
+    if (res.status >= 400) {
+      // E2eeCall の契約(PBI-0259 / PBI-0253): 非 2xx は `status` と応答 `body` を持つ error。
+      // resolveSealTargets は 404 だけを「宛先がまだ account 鍵を持たない = 平文」と読み、それ以外は
+      // この error をそのまま投げ直す。`body` は同じ status の理由を分ける為に要る(409 device_revoked)
+      throw Object.assign(new Error(`account_api_error(${res.status}) ${path}`), {
+        status: res.status,
+        body: res.body,
+      });
+    }
     return res.body;
   };
 
@@ -171,7 +179,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   // 復号できない message は履歴から落とす(平文を作らない・provider にも渡さない)
   const history: { role: "user" | "assistant"; content: string }[] = [];
   for (const m of messages) {
-    const opened = await openIfEnvelope(kind, m);
+    const opened = await openIfEnvelope(kind, m, call);
     const text = (opened.content as MessageContent).text;
     if (typeof text !== "string" || text.trim().length === 0) continue;
     history.push({ role: m.direction === "in" ? "user" : "assistant", content: text });
@@ -188,10 +196,18 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   const draft = await draftReply(opts.provider, key.key, model, providerBaseUrl, history);
   if (!draft.ok) return { status: "failed", detail: draft.detail };
 
-  // seal は @paa/adapter の e2ee(MCP tools と同じ経路)。相手に active device が無い時だけ平文
-  const content = peerHandle
-    ? await sealForHandle(call, kind, peerHandle, { text: draft.text })
-    : { text: draft.text };
+  // seal は @paa/adapter の e2ee(MCP tools と同じ経路)。相手に account 鍵が無い時だけ平文。
+  // 封をできない時は **平文で送らずに止める**(PBI-0254 AC-X1) —— 自分の account 鍵が引けない
+  // ままの送信は「送った本人だけが永久に読めない 1 通」になる。無人で動く agent なので生の stack trace では
+  // なく理由を名乗って終わる(PBI-0253 AC-X1: revoke された device は `atn login` で入り直す)。
+  let content: MessageContent;
+  try {
+    content = peerHandle
+      ? await sealForHandle(call, kind, peerHandle, { text: draft.text })
+      : { text: draft.text };
+  } catch (e) {
+    return { status: "failed", detail: `could not encrypt the reply — ${e instanceof Error ? e.message : String(e)}` };
+  }
   const reply = await apiCall(baseUrl, `/v1/threads/${opts.threadId}/reply`, {
     token,
     method: "POST",

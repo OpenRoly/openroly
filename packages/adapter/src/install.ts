@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { apiCall } from "./api.ts";
 import { ensureBinary, type EnsureBinaryOutcome } from "./binary.ts";
 import {
+  getAccountUrl,
   getCredential,
   removeCredential,
   type RuntimeCredential,
@@ -23,6 +24,32 @@ export const MCP_SERVER_ENTRY = fileURLToPath(
 export const MCP_SERVER_NAME = "atn";
 
 export const DEFAULT_BASE_URL = "http://localhost:8787";
+
+/**
+ * この端末が繋ぐ Account API の URL を決める **唯一の関数**(PBI-0246・図7.1)。
+ *
+ * 順序: 明示(`--url` / `$PAA_URL`)> `atn login` が決めた account の URL >
+ * 呼び手が既に持っている credential の base_url > `DEFAULT_BASE_URL`。
+ *
+ * - **明示が必ず勝つ**: ここを崩すと、別 server へ繋ぎ替える手段が無くなる。
+ * - **account の URL は credential より前**: 呼び手の credential は「その runtime が昔
+ *   居た server」であって、この端末が今 login している account の server とは限らない。
+ *   死んだ旧 server の URL で pair し直しても人は前に進めない。
+ * - `?? DEFAULT_BASE_URL` を command 側に散らさない —— 散らした結果が「`install` は通るのに
+ *   `pair` だけ localhost へ落ちる」(2026-09-04 の gate 実測で quickstart の 5 行目が死んだ)。
+ */
+export async function accountBaseUrl(
+  explicit?: string,
+  fallback?: string,
+  env: Env = process.env,
+): Promise<string> {
+  const clean = (u: string) => u.replace(/\/$/, "");
+  if (explicit) return clean(explicit);
+  const saved = await getAccountUrl(env);
+  if (saved) return clean(saved);
+  if (fallback) return clean(fallback);
+  return DEFAULT_BASE_URL;
+}
 
 type Env = Record<string, string | undefined>;
 
@@ -56,22 +83,26 @@ export async function installRuntime(options: InstallOptions): Promise<InstallOu
   const { adapter, ctx } = options;
   const env = options.env ?? process.env;
   const serverName = options.serverName ?? MCP_SERVER_NAME;
-  // 「明示的に指定された URL」だけを再 pair の根拠にする。既定値との比較で判断すると、
-  // リモートに pair 済みの人が引数無しで install した時に localhost へ張り替えてしまう
+  // 呼び手が明示した URL(`--url` / `$PAA_URL`)。**ここで既定値に潰さない** —— 潰すと
+  // 「明示された」と「省略された」が区別できなくなり、resolver の 1 行目が常に勝ってしまう
   const requestedUrl = options.baseUrl?.replace(/\/$/, "");
 
   const detected = await adapter.detect(ctx);
   if (!detected.installed) return { status: "runtime_not_found", detail: detected.detail };
 
   // upgrade 経路: 既に有効な credential があれば pair し直さない(§7.2 upgrade)。
-  // ただし --url / PAA_URL で別 server を指した場合は再利用できない —— そのまま進むと
-  // 旧 server の token と URL が runtime に登録され、「接続しました」の表示だけが嘘になる
+  // ただし**行き先が変わった**なら再利用できない —— そのまま進むと旧 server の token と URL が
+  // runtime に登録され、「接続しました」の表示だけが嘘になる
   let credential = await getCredential(adapter.id, env);
   let paired = false;
-  const urlChanged =
-    credential != null && requestedUrl != null && credential.base_url !== requestedUrl;
-  // URL 未指定なら既存 credential の server を引き継ぐ
-  const baseUrl = requestedUrl ?? credential?.base_url ?? DEFAULT_BASE_URL;
+  // URL 未指定なら account の URL(login が決めた物)→ 既存 credential の server の順(図7.1)
+  const baseUrl = await accountBaseUrl(requestedUrl, credential?.base_url, env);
+  // 比べるのは **resolver が決めた行き先**であって、明示された値ではない(PBI-0246 レビュー)。
+  // 明示だけを見ていると、`atn login --url <prod>` の後も、dev で作った credential が
+  // まだ 200 を返す間は install がそこに留まる —— doctor は prod を名乗り register は dev を
+  // 書く「名乗る先と繋ぐ先が割れた」状態になる。account_url が無い時は baseUrl が
+  // credential.base_url に落ちるので、この式は今までどおり false(AC-16 は動いたまま)
+  const urlChanged = credential != null && credential.base_url.replace(/\/$/, "") !== baseUrl;
   if (options.repair || !credential || urlChanged || !(await isCredentialValid(credential))) {
     const outcome = await pairRuntime({
       baseUrl,
@@ -176,10 +207,14 @@ export async function doctorRuntime(options: EngineOptions): Promise<Finding[]> 
 
   const credential = await getCredential(adapter.id, env);
   if (!credential) {
+    // **行き先を名乗る**(PBI-0246)—— 未 pair の runtime にはまだ credential が無いので、
+    // ここが「この端末は今どの server に繋ぎに行くのか」を人が読める唯一の面になる
     findings.push({
       ok: false,
       label: "credential",
-      detail: `not paired. Run 'atn install ${adapter.id}'`,
+      detail:
+        `not paired. Run 'atn install ${adapter.id}' ` +
+        `(it will connect to ${await accountBaseUrl(options.baseUrl, undefined, env)})`,
     });
     return findings;
   }

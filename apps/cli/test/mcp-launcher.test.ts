@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,6 +60,23 @@ async function runLauncher(
   return { stdout, stderr, exitCode, log: await readFile(marker, "utf8") };
 }
 
+/**
+ * 公開 Release の stub(PBI-0162)。launcher の 4 段目(自動 download)を **network に出さずに**
+ * 実測するために立てる —— 実物に向けると 1 run ごとに 66MB を引き、Release の中身で結果が変わる。
+ * 形は本物と同じ: `v<ver>/SHA256SUMS` と `v<ver>/atn-mcp-<target>` の 2 つ。
+ */
+const RELEASE_VERSION = "9.9.9";
+/** launcher の target 判定(`uname -s`/`uname -m`)と同じ並び。合わない名前で配ると 404 になる */
+const RELEASE_TARGET =
+  process.platform === "darwin"
+    ? process.arch === "arm64"
+      ? "darwin-arm64"
+      : "darwin-x64"
+    : "linux-x64";
+let releaseMode: "ok" | "bad-checksum" = "ok";
+let releaseServer: ReturnType<typeof Bun.serve> | undefined;
+const releaseBase = () => `http://127.0.0.1:${releaseServer!.port}`;
+
 beforeAll(async () => {
   sandbox = await mkdtemp(join(tmpdir(), "paa-launcher-"));
   fakeBin = join(sandbox, "bin");
@@ -68,9 +85,30 @@ beforeAll(async () => {
   await mkdir(join(sandbox, "empty"), { recursive: true });
   await mkdir(join(sandbox, "home"), { recursive: true });
   await putFake(join(fakeBin, "bun"), "bun");
+
+  // 配る「binary」は marker に 1 行書く sh。exec されたことを受け取る側の入口で観測する
+  const body = `#!/bin/sh\necho "release $*" >> ${marker}\nexit 0\n`;
+  const digest = new Bun.CryptoHasher("sha256").update(new TextEncoder().encode(body)).digest("hex");
+  releaseServer = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(req) {
+      const path = new URL(req.url).pathname;
+      if (path === `/v${RELEASE_VERSION}/SHA256SUMS`) {
+        const sum = releaseMode === "bad-checksum" ? "0".repeat(64) : digest;
+        // 似た名前の行を先に置く: 部分一致で拾う実装なら別 asset の hash を使ってしまう
+        return new Response(
+          `${"1".repeat(64)}  atn-mcp-${RELEASE_TARGET}-old\n${sum}  atn-mcp-${RELEASE_TARGET}\n`,
+        );
+      }
+      if (path === `/v${RELEASE_VERSION}/atn-mcp-${RELEASE_TARGET}`) return new Response(body);
+      return new Response("not found", { status: 404 });
+    },
+  });
 });
 
 afterAll(async () => {
+  releaseServer?.stop(true);
   await rm(sandbox, { recursive: true, force: true });
 });
 
@@ -130,6 +168,43 @@ describe("plugin launcher の分岐 (PBI-0132)", () => {
     expect(res.stderr).toContain("bun.sh/install");
     await rm(home, { recursive: true, force: true });
   }, 30_000);
+
+  // PBI-0162: AC-8 の**取れる側**。v0.1.0 の公開で 4 段目(自動 download)が現実に成功するように
+  // なったので、「取れない = exit 1」だけを固定していると、取れた時に何が起きるかを誰も見ていない
+  // ことになる。**stub の Release server**に向けて実測する(network には出ない・66MB も引かない)。
+  test("AC-8: Release から取れる時は取って `~/.atn/bin` に置き、それを exec する", async () => {
+    const home = await mkdtemp(join(tmpdir(), "paa-launcher-home-"));
+    const res = await runLauncher(
+      { PAA_HOME: home, PAA_BINARY_BASE_URL: releaseBase(), PAA_BINARY_VERSION: RELEASE_VERSION },
+      { withBun: false },
+    );
+    expect({ code: res.exitCode, stderr: res.stderr }).toMatchObject({ code: 0 });
+    // 取ってきた物を exec した(fake binary が marker に書く)
+    expect(res.log).toContain("release ");
+    // 置いた物: 実行権つき + version stamp(2 回目は 2 段目で当たり、download しない)
+    const placed = join(home, "bin", "atn-mcp");
+    expect((await stat(placed)).mode & 0o111).toBeGreaterThan(0);
+    expect((await readFile(`${placed}.version`, "utf8")).trim()).toBe(RELEASE_VERSION);
+    // stdout は 1 byte も汚さない(JSON-RPC の面)
+    expect(res.stdout).toBe("");
+    await rm(home, { recursive: true, force: true });
+  }, 60_000);
+
+  test("AC-8 攻撃: SHA256 が合わない配布物は置かず exec もしない(案内を出して exit 1)", async () => {
+    const home = await mkdtemp(join(tmpdir(), "paa-launcher-home-"));
+    releaseMode = "bad-checksum";
+    const res = await runLauncher(
+      { PAA_HOME: home, PAA_BINARY_BASE_URL: releaseBase(), PAA_BINARY_VERSION: RELEASE_VERSION },
+      { withBun: false },
+    );
+    releaseMode = "ok";
+    expect(res.exitCode).toBe(1);
+    expect(res.log).not.toContain("release ");
+    // 壊れた物も、途中の tmp も残さない(次回 2 段目が壊れた binary に当たらない)
+    expect(await readdir(join(home, "bin")).catch(() => [])).toEqual([]);
+    expect(res.stderr).toContain("bun.sh/install");
+    await rm(home, { recursive: true, force: true });
+  }, 60_000);
 
   test("AC-X1: env はそのまま透過し、launcher 自身は何も log しない", async () => {
     const home = await mkdtemp(join(tmpdir(), "paa-launcher-home-"));

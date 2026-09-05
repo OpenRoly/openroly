@@ -14,6 +14,14 @@ import { saveCredential } from "@paa/adapter";
 
 const CLI = join(import.meta.dir, "../src/paa.ts");
 
+// launchd は macOS だけの機構で、`atn login` / `atn broker install` は paa.ts で
+// `process.platform === "darwin"` に閉じている。CI は ubuntu で回す(private repo の macOS runner は
+// 分数が 10 倍で数えられる)ので、**launchd 経路を通る test だけ**を darwin に限る —— 限るのは
+// 6 本で、残り 9 本(uninstall / status / pid file / detached fallback)は全 platform で回る。
+// **skip で穴を空けない**ため、「launchd 経路が platform で閉じている」こと自体は
+// この file の最後の describe が source 検査として全 platform で固定する(PBI-0162)。
+const darwinOnly = test.skipIf(process.platform !== "darwin");
+
 let pairStartCalls = 0;
 const whoamiTokens = new Set<string>();
 let approveCounter = 0;
@@ -31,8 +39,7 @@ const server = Bun.serve({
           expires_at: new Date(Date.now() + 600_000).toISOString(),
           expires_in: 60,
           interval: 0,
-          verification_uri: "http://localhost:5173/",
-          verification_uri_complete: "http://localhost:5173/?user_code=LNCH2345",
+          verification_uri: "http://localhost:5173/connect",
         },
         { status: 201 },
       );
@@ -160,7 +167,10 @@ async function lstartOf(pid: number): Promise<string> {
 async function waitForContent(
   path: string,
   predicate: (s: string) => boolean,
-  timeoutMs = 2_000,
+  timeoutMs = // 混雑した機械では detached broker の spawn だけで数秒掛かる。**予定より長く待つ**のは
+  // 只で、短い締切は「実装が壊れた」と「機械が混んでいた」を混ぜてしまう(PBI-0162 AC-X2)。
+  // 条件が満たされた瞬間に返るので、健全な run の所要はこの値に影響されない
+  15_000,
 ): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -172,7 +182,7 @@ async function waitForContent(
 }
 
 describe("atn login launchd 分岐 (PBI-0048)", () => {
-  test("AC-1: 未 load なら plist を書いて load する(token は書かない)", async () => {
+  darwinOnly("AC-1: 未 load なら plist を書いて load する(token は書かない)", async () => {
     const { env, plistPath, launchctlLog } = await freshEnv({ launchctl: { list: 1, load: 0, unload: 0 } });
     const res = await paa(["login", "--no-open"], env);
     expect(res.code).toBe(0);
@@ -186,7 +196,7 @@ describe("atn login launchd 分岐 (PBI-0048)", () => {
     expect(log).toContain(`load -w ${plistPath}`);
   }, 30_000);
 
-  test("AC-2: 既に load 済みなら plist を書かず load も呼ばない", async () => {
+  darwinOnly("AC-2: 既に load 済みなら plist を書かず load も呼ばない", async () => {
     const { env, plistPath, launchctlLog } = await freshEnv({ launchctl: { list: 0, load: 1, unload: 1 } });
     const res = await paa(["login", "--no-open"], env);
     expect(res.code).toBe(0);
@@ -213,7 +223,7 @@ describe("atn login launchd 分岐 (PBI-0048)", () => {
 });
 
 describe("atn broker install/uninstall/status (PBI-0048)", () => {
-  test("AC-4: install は credential が有れば plist を書き token を含まない", async () => {
+  darwinOnly("AC-4: install は credential が有れば plist を書き token を含まない", async () => {
     const { env, home, plistPath } = await freshEnv({ launchctl: { list: 1, load: 0, unload: 0 } });
     await saveBrokerCredential(home, "par_install_ac4");
     const res = await paa(["broker", "install"], env);
@@ -223,7 +233,7 @@ describe("atn broker install/uninstall/status (PBI-0048)", () => {
     expect(plist).not.toContain("par_install_ac4");
   }, 30_000);
 
-  test("AC-5: credential が無ければ login を案内して plist を書かない", async () => {
+  darwinOnly("AC-5: credential が無ければ login を案内して plist を書かない", async () => {
     const { env, plistPath } = await freshEnv();
     const res = await paa(["broker", "install"], env);
     expect(res.code).toBe(1);
@@ -255,7 +265,7 @@ describe("atn broker install/uninstall/status (PBI-0048)", () => {
     expect(res.out).toContain(`running (pid ${process.pid})`);
   }, 30_000);
 
-  test("AC-X2: install 失敗時は plist を残したまま exit 1 で理由を出す", async () => {
+  darwinOnly("AC-X2: install 失敗時は plist を残したまま exit 1 で理由を出す", async () => {
     const { env, home, plistPath } = await freshEnv({ launchctl: { list: 1, load: 1, unload: 1 } });
     await saveBrokerCredential(home, "par_install_x2");
     const res = await paa(["broker", "install"], env);
@@ -270,7 +280,7 @@ describe("atn broker install/uninstall/status (PBI-0048)", () => {
 // レビュー(有界)の攻撃 test(PBI-0048 review 2026-08-27)。レビュー時は `test.failing` で「今は破れている」を
 // 固定し、実装ステージの修正(resolveBrokerBin の null 化 / pid file への起動時刻併記)で `test` に戻した。
 describe("PBI-0048 review: AC-X2 / AC-X3 攻撃", () => {
-  test(
+  darwinOnly(
     "AC-X2 攻撃: broker binary が無ければ launchd 経路でも build 案内で exit 1(plist を書かず launchd に登録しない)",
     async () => {
       const { env, home, plistPath, launchctlLog } = await freshEnv({ launchctl: { list: 1, load: 0, unload: 0 } });
@@ -352,6 +362,33 @@ describe("PBI-0048 再レビュー: AC-X3 攻撃", () => {
       const pidRaw = (await readFile(brokerPid, "utf8")).trim();
       expect(pidRaw).not.toBe("not-a-pid");
       expect(brokerHome.length).toBeGreaterThan(0); // env が変わっていないことの smoke
+    },
+    30_000,
+  );
+});
+
+// ---- PBI-0162: CI(ubuntu)で launchd 経路が skip される穴を塞ぐ ----
+// 上の 6 本は darwin でしか回らない。**skip した分を「何も測っていない」にしない**ため、
+// 「launchd 経路は platform で閉じている」という契約自体をここで測る ——
+// source 側は全 platform で、振る舞い側は darwin 以外で(darwin では上の 6 本が本物を測る)。
+describe("launchd 経路の platform 境界 (PBI-0162)", () => {
+  test("source: launchd の起動と登録は darwin に閉じている", async () => {
+    const src = await readFile(join(import.meta.dir, "../src/paa.ts"), "utf8");
+    // ① login の統一入口: darwin でだけ launchd を先に試す
+    expect(src).toContain('process.platform === "darwin" && (await tryInstallLaunchdBroker())');
+    // ② `atn broker install`: darwin 以外は理由を出して止まる(登録だけして動かない状態を作らない)
+    expect(src).toContain('if (process.platform !== "darwin") fail("broker install is macOS (launchd) only");');
+  });
+
+  test.skipIf(process.platform === "darwin")(
+    "darwin 以外では broker install が理由付きで exit 1(plist を書かない)",
+    async () => {
+      const { env, home, plistPath } = await freshEnv({ launchctl: { list: 1, load: 0, unload: 0 } });
+      await saveBrokerCredential(home, "par_non_darwin");
+      const res = await paa(["broker", "install"], env);
+      expect(res.code).toBe(1);
+      expect(res.err).toContain("macOS (launchd) only");
+      await expect(readFile(plistPath, "utf8")).rejects.toThrow();
     },
     30_000,
   );

@@ -33,4 +33,4 @@ Java + BouncyCastle で seal した envelope を `packages/crypto-envelope`(TS)�
 2. **Source token**(`pso_…`)を paste して **Save & connect**。device 公開鍵を取得して cache。
 3. **Apps** で capture したい app を Title only / Full text にする(既定 Off)。
 
-Server URL の既定は `https://paa-cloud.onrender.com`。
+Server URL の既定は `https://atn.shibubu.ai`。
