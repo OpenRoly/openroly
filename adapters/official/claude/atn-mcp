@@ -50,7 +50,7 @@ fetch_binary() {
     *) return 1 ;;  # 未対応 OS/arch
   esac
   base="${PAA_BINARY_BASE_URL:-https://github.com/personal-agent-account/all-together-now/releases/download}"
-  ver="${PAA_BINARY_VERSION:-0.2.1}"
+  ver="${PAA_BINARY_VERSION:-0.2.3}"
   dir=$(dirname "$paa_bin")
   mkdir -p "$dir" 2>/dev/null || return 1
 

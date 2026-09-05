@@ -13,7 +13,7 @@ import { paaHome } from "./credentials.ts";
 // 両方で同じ(diagrams-check の PBI-0137 規則が version と URL の形を両側で固定する)。
 
 /** Release の tag。`v${PAA_BINARY_VERSION}` が tag 名になる(plugin.json の version と一致させる) */
-export const PAA_BINARY_VERSION = "0.2.1";
+export const PAA_BINARY_VERSION = "0.2.3";
 
 /** 公開 Release の置き場。private な mirror へ向けたい時は `PAA_BINARY_BASE_URL` で差し替える */
 export const DEFAULT_BINARY_BASE_URL =
