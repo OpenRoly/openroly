@@ -1,6 +1,6 @@
 //! PBI-0190（broker の TLS）の有界レビューの攻撃 test。newway §14.1: AC-X1〜X3 を破りに行く。
 //!
-//! **外の人が最初に踏む経路**（`atn login` → broker → `wss://atn.shibubu.ai`）なので、
+//! **外の人が最初に踏む経路**（`openroly login` → broker → `wss://atn.shibubu.ai`）なので、
 //! 撃つ方向は 5 つ:
 //!   1. 証明書検証を無効化する逃げ道が **source にも依存にも** 無いか（AC-X1）
 //!   2. `wss://` が平文に落ちないか（TLS を張らずに token を平文で出さないか）
@@ -11,6 +11,8 @@
 //! `broker` は lib crate を持たない（bin のみ）ので、`#[path]` で src を直接取り込む
 //! （`pbi0033_review_attack.rs` / `pbi0070_review_attack.rs` と同じ回避策）。
 
+#[path = "../src/env_compat.rs"]
+mod env_compat;
 #[path = "../src/registry.rs"]
 mod registry;
 // triggers.rs は discovery::ScanEnv / is_executable_file を使うので一緒に取り込む
@@ -75,7 +77,7 @@ fn tls_の検証を外す逃げ道が_source_に_1_つも無い() {
         "adopt.rs",
         "discovery.rs",
         "launch.rs",
-        "paa_cli.rs",
+        "openroly_cli.rs",
         "triggers.rs",
     ];
     // 「検証を外す」語彙 と 「TLS を自分で組む」語彙の両方
@@ -247,7 +249,7 @@ async fn ws_handshake_は_302_を追わない() {
 }
 
 /// 接続先の横取り その 2: URL と token に **CR/LF を混ぜても header を注入できない**こと。
-/// `PAA_BROKER_WS_URL` は plist（`atn login` が書く）、token は pairing の応答から来るので、
+/// `OPENROLY_BROKER_WS_URL` は plist（`openroly login` が書く）、token は pairing の応答から来るので、
 /// どちらも「外から来た文字列」として扱う。main.rs が `.parse()` の Err を潰していない事も見る。
 #[test]
 fn url_と_token_の_CRLF_で_header_を注入できない() {
@@ -342,7 +344,7 @@ fn http_response(body: &str, extra_headers: &str) -> String {
 }
 
 fn temp_cache(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("atn-0190-{tag}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("openroly-0190-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -362,7 +364,7 @@ fn 署名が違う_registry_は_cache_を書き換えない() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let body = r#"{"version":9,"detectors":[{"id":"evil","adapter":"official/evil"}]}"#;
-    let sig = format!("{}\r\n", format!("X-PAA-Registry-Signature: {}", "A".repeat(88)));
+    let sig = format!("{}\r\n", format!("X-OpenRoly-Registry-Signature: {}", "A".repeat(88)));
     let req = one_shot_http(listener, http_response(body, &sig));
 
     let outcome = registry::fetch_and_store(
@@ -412,7 +414,7 @@ fn redirect_の先の偽_registry_も署名で止まる() {
     let attacker = TcpListener::bind("127.0.0.1:0").unwrap();
     let attacker_port = attacker.local_addr().unwrap().port();
     let body = r#"{"version":9,"detectors":[{"id":"evil","adapter":"official/evil"}]}"#;
-    let sig = format!("X-PAA-Registry-Signature: {}\r\n", "B".repeat(88));
+    let sig = format!("X-OpenRoly-Registry-Signature: {}\r\n", "B".repeat(88));
     let _attacker_req = one_shot_http(attacker, http_response(body, &sig));
 
     let victim = TcpListener::bind("127.0.0.1:0").unwrap();

@@ -4,8 +4,10 @@ use std::path::{Path, PathBuf};
 use tokio::process::{Child, Command};
 
 use crate::discovery::Found;
-use crate::paa_cli::cli_argv;
+use crate::egress::{self, Egress, EgressConfig};
+use crate::openroly_cli::cli_argv;
 use crate::registry::Registry;
+use crate::sandbox::{SandboxBackend, SandboxSpec, default_deny_read, default_writable_extra};
 
 /// dedicated session の instruction の上限(argv 1 要素)。これを超えると OS の argv 上限で
 /// spawn が `spawn failed` に埋もれるため、名前の付いた reason で手前で止める(PBI-0019 AC-11)。
@@ -16,17 +18,37 @@ const MAX_INSTRUCTION_BYTES: usize = 16 * 1024;
 const MAX_TURNS: &str = "40";
 
 /// dedicated session に載せる MCP server 名(runtime 側の登録名。install.ts の `MCP_SERVER_NAME`)。
-const MCP_SERVER_NAME: &str = "atn";
+const MCP_SERVER_NAME: &str = "openroly";
 
-/// gemini の閉じ込め policy(PBI-0167)。**admin tier** に「paa MCP 以外は全部 deny」を置く。
-/// `toolName = "*"` + `mcpName = "atn"` は「その server の任意の tool」に一致する(bundle の
+/// 旧 server 名(PBI-0344)。**旧名で登録された自分たちの server は「他人」とは別扱い**:
+/// claude の discovery は読み先として受け(reinstall していない端末でも dedicated session が
+/// 止まらないように)、codex の disable 一覧には載せない(落とすと旧名登録の端末から
+/// 自分の tools が消える)。案内は 1 行で「reinstall して新名へ」と出す。
+const LEGACY_MCP_SERVER_NAMES: [&str; 2] = ["paa", "atn"];
+
+/// 新名を先に探す helper。旧名に当たった時だけ 1 行案内を出す。
+fn mcp_server_by_name(servers: &serde_json::Value) -> Option<serde_json::Value> {
+    if let Some(v) = servers.get(MCP_SERVER_NAME) {
+        return Some(v.clone());
+    }
+    LEGACY_MCP_SERVER_NAMES.iter().find_map(|legacy| {
+        let v = servers.get(*legacy)?.clone();
+        eprintln!(
+            "broker: the MCP server is registered under the legacy name \"{legacy}\" — run 'openroly install' again to update it"
+        );
+        Some(v)
+    })
+}
+
+/// gemini の閉じ込め policy(PBI-0167)。**admin tier** に「openroly MCP 以外は全部 deny」を置く。
+/// `toolName = "*"` + `mcpName = "openroly"` は「その server の任意の tool」に一致する(bundle の
 /// `ruleMatches` 実測: mcpName で server を絞ってから toolName の `*` を素通しする)。
 /// 最終 priority = tier base(admin = 5)+ priority/1000 なので、deny(5.000)< allow(5.900)。
 /// workspace tier(`<cwd>/.gemini/policies`)は 0.46.0 時点で**機能しない**(docs の警告)ため、
 /// session_dir に置いた file を `--admin-policy` で明示的に読ませる。
-const GEMINI_POLICY_TOML: &str = r#"# Containment policy the atn broker writes for each dedicated session.
+const GEMINI_POLICY_TOML: &str = r#"# Containment policy the openroly broker writes for each dedicated session.
 # A notification body is attacker-controlled input, so no built-in tool
-# (run_shell_command / write_file / …) is allowed — only the atn MCP server's tools.
+# (run_shell_command / write_file / …) is allowed — only the openroly MCP server's tools.
 [[rule]]
 toolName = "*"
 decision = "deny"
@@ -34,7 +56,7 @@ priority = 0
 
 [[rule]]
 toolName = "*"
-mcpName = "atn"
+mcpName = "openroly"
 decision = "allow"
 priority = 900
 "#;
@@ -42,7 +64,7 @@ priority = 900
 /// 閉じ込めの成否を決める外部の状態(path)。実環境の既定は `containment_env()`、test は値で差し替える。
 pub struct ContainmentEnv {
     /// claude の user config(`$CLAUDE_CONFIG_DIR` か `$HOME` の `.claude.json`)。
-    /// paa MCP server の定義をここから読んで session_dir へ複製する。
+    /// openroly MCP server の定義をここから読んで session_dir へ複製する。
     pub claude_config: PathBuf,
     /// claude の plugin 台帳(`<claude 設定 dir>/plugins/installed_plugins.json`)。
     /// **配布戦略 §7.1 は plugin-first**(図10)で、plugin が持ち込む MCP server は
@@ -56,7 +78,7 @@ pub struct ContainmentEnv {
     /// **user が設定した MCP server を全部載せる**(実測 2026-09-02: `codex mcp list` に playwright /
     /// obsidian / unityMCP … が並ぶ)。MCP server は sandbox の外で動く別プロセスなので、
     /// `--sandbox read-only` を掛けても攻撃者の本文から network 越しの書込み・持ち出しができる。
-    /// ここから server 名を読み、paa 以外を `-c mcp_servers.<name>.enabled=false` で落とす。
+    /// ここから server 名を読み、openroly 以外を `-c mcp_servers.<name>.enabled=false` で落とす。
     pub codex_config: PathBuf,
     /// gemini の**標準** admin policy dir。ここに `.toml` が 1 つでも在ると、
     /// `--admin-policy` で渡す supplemental policy は **丸ごと無視される**(gemini の
@@ -93,24 +115,24 @@ pub fn containment_env() -> ContainmentEnv {
     }
 }
 
-/// claude の paa MCP server の定義を抜き、`--mcp-config` に渡せる JSON にする。
-/// 探す順序は ① user config(`.claude.json` の `mcpServers.paa` = `atn install claude` 経路)
+/// claude の openroly MCP server の定義を抜き、`--mcp-config` に渡せる JSON にする。
+/// 探す順序は ① user config(`.claude.json` の `mcpServers.openroly` = `openroly install claude` 経路)
 /// → ② plugin 台帳(`installed_plugins.json` → `<installPath>/.mcp.json` = **plugin-first** 経路。
 /// 図10 / 配布戦略 §7.1)。どちらでも見つからなければ `containment_unavailable` —— **user settings を
-/// 落とすと MCP 登録ごと消える**(実測 2026-09-02: `--setting-sources project` で `atn` が tool 一覧から
+/// 落とすと MCP 登録ごと消える**(実測 2026-09-02: `--setting-sources project` で `openroly` が tool 一覧から
 /// 消える)ので、定義を複製できないなら「閉じ込めたまま仕事ができる session」を作れない。
 /// 閉じ込めを緩めて起こす選択はしない(便利さより「mail 1 通で shell」を塞ぐ)。
 ///
-/// ② を見るのは、plugin で入れた人の `.claude.json` に `mcpServers.paa` が**無い**ため
+/// ② を見るのは、plugin で入れた人の `.claude.json` に `mcpServers.openroly` が**無い**ため
 /// (実測 2026-09-02: 同じ機で plugin 由来の fakechat server は top-level `mcpServers` に無く、
-/// `atn install claude` で入れた paa だけが在る)。① だけだと plugin-first の user は
+/// `openroly install claude` で入れた openroly だけが在る)。① だけだと plugin-first の user は
 /// 全 dedicated session が fail-closed になり、AUTO が dispatch_skip の log 1 行だけ残して止まる。
 fn claude_mcp_config(config_path: &Path, plugin_registry: &Path) -> Result<String, String> {
     let server = claude_user_mcp_server(config_path)
         .or_else(|| claude_plugin_mcp_server(plugin_registry))
         .ok_or_else(|| {
             eprintln!(
-                "broker: the atn MCP server definition was not found (neither in the user config {config_path:?} \
+                "broker: the openroly MCP server definition was not found (neither in the user config {config_path:?} \
                  nor in the plugin registry {plugin_registry:?}). Cannot start it contained, so not starting it"
             );
             "containment_unavailable".to_string()
@@ -118,7 +140,8 @@ fn claude_mcp_config(config_path: &Path, plugin_registry: &Path) -> Result<Strin
     Ok(serde_json::json!({ "mcpServers": { MCP_SERVER_NAME: server } }).to_string())
 }
 
-/// ①: `.claude.json`(`claude mcp add -s user` が書く場所)の `mcpServers.paa`。
+/// ①: `.claude.json`(`claude mcp add -s user` が書く場所)の `mcpServers.openroly`。
+/// 旧名(`mcpServers.paa` / `.atn`)も読み先に受ける(PBI-0344)。
 fn claude_user_mcp_server(config_path: &Path) -> Option<serde_json::Value> {
     let text = fs::read_to_string(config_path)
         .map_err(|e| eprintln!("broker: cannot read the claude config ({config_path:?}): {e}"))
@@ -126,10 +149,10 @@ fn claude_user_mcp_server(config_path: &Path) -> Option<serde_json::Value> {
     let parsed: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| eprintln!("broker: the claude config is not valid JSON ({config_path:?}): {e}"))
         .ok()?;
-    parsed.get("mcpServers")?.get(MCP_SERVER_NAME).cloned()
+    mcp_server_by_name(parsed.get("mcpServers")?)
 }
 
-/// ②: plugin 台帳 → plugin 同梱の `.mcp.json` の `mcpServers.paa`。
+/// ②: plugin 台帳 → plugin 同梱の `.mcp.json` の `mcpServers.openroly`。
 /// 台帳の key は `<plugin 名>@<marketplace 名>`、値は install ごとの配列(scope: user / local)。
 /// `${CLAUDE_PLUGIN_ROOT}` は claude が展開する変数なので、複製する時に **broker が実 path へ畳む**
 /// (`--mcp-config` で渡す JSON は plugin の文脈で読まれないため、展開されないまま渡すと command が
@@ -140,9 +163,12 @@ fn claude_plugin_mcp_server(registry_path: &Path) -> Option<serde_json::Value> {
         .map_err(|e| eprintln!("broker: the claude plugin registry is broken ({registry_path:?}): {e}"))
         .ok()?;
     let plugins = parsed.get("plugins")?.as_object()?;
+    let is_ours = |plugin: Option<&str>| {
+        plugin == Some(MCP_SERVER_NAME) || LEGACY_MCP_SERVER_NAMES.contains(&plugin.unwrap_or(""))
+    };
     let mut candidates: Vec<&serde_json::Value> = plugins
         .iter()
-        .filter(|(key, _)| key.split('@').next() == Some(MCP_SERVER_NAME))
+        .filter(|(key, _)| is_ours(key.split('@').next()))
         .filter_map(|(_, installs)| installs.as_array())
         .flatten()
         .collect();
@@ -153,10 +179,10 @@ fn claude_plugin_mcp_server(registry_path: &Path) -> Option<serde_json::Value> {
         let Some(root) = install.get("installPath").and_then(|p| p.as_str()) else { continue };
         let Ok(text) = fs::read_to_string(Path::new(root).join(".mcp.json")) else { continue };
         let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
-        let Some(server) = parsed.get("mcpServers").and_then(|s| s.get(MCP_SERVER_NAME)) else {
+        let Some(server) = parsed.get("mcpServers").and_then(mcp_server_by_name) else {
             continue;
         };
-        return Some(expand_plugin_root(server, root));
+        return Some(expand_plugin_root(&server, root));
     }
     None
 }
@@ -177,7 +203,7 @@ fn expand_plugin_root(value: &serde_json::Value, root: &str) -> serde_json::Valu
     }
 }
 
-/// codex の config.toml から **paa 以外の MCP server 名**を拾う(PBI-0167 review 指摘)。
+/// codex の config.toml から **openroly 以外の MCP server 名**を拾う(PBI-0167 review 指摘)。
 /// codex には claude の `--strict-mcp-config` に相当する flag が無いので、`-c
 /// mcp_servers.<name>.enabled=false` を 1 つずつ積んで落とす(実測 2026-09-02, codex-cli 0.151.0:
 /// `codex mcp list --json -c 'mcp_servers.playwright.enabled=false'` で該当 server だけ
@@ -191,7 +217,7 @@ fn expand_plugin_root(value: &serde_json::Value, root: &str) -> serde_json::Valu
 /// 「落とし忘れた server が 1 つ」は静かな全開放になるため、曖昧なら起こさない)。
 fn codex_disabled_mcp_servers(config_path: &Path) -> Result<Vec<String>, String> {
     let Ok(text) = fs::read_to_string(config_path) else {
-        // config.toml が無い = MCP server の設定も無い(paa は plugin 側から来る)。落とす相手が居ない。
+        // config.toml が無い = MCP server の設定も無い(openroly は plugin 側から来る)。落とす相手が居ない。
         return Ok(vec![]);
     };
     let mut names: Vec<String> = vec![];
@@ -217,7 +243,10 @@ fn codex_disabled_mcp_servers(config_path: &Path) -> Result<Vec<String>, String>
                 eprintln!("broker: unexpected MCP server name in the codex config ({name:?} in {config_path:?})");
                 return Err("containment_unavailable".to_string());
             }
-            if name != MCP_SERVER_NAME && !names.iter().any(|n| n == name) {
+            if name != MCP_SERVER_NAME
+                && !LEGACY_MCP_SERVER_NAMES.contains(&&*name)
+                && !names.iter().any(|n| n == name)
+            {
                 names.push(name.to_string());
             }
             continue;
@@ -250,37 +279,42 @@ fn has_toml(dir: &Path) -> bool {
 /// 任意コマンド実行の口になる)。`session_dir` は codex の `-o`(結果ファイル)と、閉じ込め file の置き場に使う。
 ///
 /// **閉じ込め(PBI-0167)**: dedicated session の入力(通知本文)は攻撃者が書ける。3 runtime とも
-/// 「組込み tool は通さず paa MCP だけ通す」に揃える —— 揃っていないと「gemini を既定にしている人
+/// 「組込み tool は通さず openroly MCP だけ通す」に揃える —— 揃っていないと「gemini を既定にしている人
 /// だけ mail 1 通で shell を握られる」という、user から見えない差になる。
 ///
 /// 返り値は (argv, session_dir に置く file の (相対 path, 中身))。実測 argv を持たない runtime は
 /// `dedicated_unsupported` —— registry で足しただけの新 runtime(PBI-0022)を instruction 無しで
 /// bare spawn してしまうと「AUTO で起こしたのに何も指示していない」session になる。
 /// 閉じ込めが組めない環境は `containment_unavailable`(fail-closed。起こさない)。
+///
+/// **PBI-0238 以降、ここで組む flag は上乗せ**(図72)。主の壁は broker が spawn の前に掛ける
+/// OS sandbox + egress proxy(`launch_session_scoped_in` → `sandbox.wrap`)で、runtime が何であれ同じ。
+/// `folder` は lane の作業 folder(cwd。codex は `-C` にも載せる)。
 pub fn dedicated_launch(
     runtime: &str,
     instruction: &str,
     session_dir: &str,
+    folder: &str,
     env: &ContainmentEnv,
 ) -> Result<(Vec<String>, Vec<(String, String)>), String> {
     let argv = |args: &[&str]| args.iter().map(|s| s.to_string()).collect::<Vec<String>>();
     match runtime {
         // 実測 C(PBI-0019)+ 実測 E(PBI-0167, 2026-09-02, Claude Code 2.1.258):
         //   claude -p <instruction> --tools "" --setting-sources project --strict-mcp-config
-        //          --mcp-config <dir>/atn-mcp.json --permission-mode dontAsk --allowedTools mcp__paa
+        //          --mcp-config <dir>/openroly-mcp.json --permission-mode dontAsk --allowedTools mcp__openroly
         //          --output-format json --max-turns 40
         //
-        // `--allowedTools mcp__paa` **だけでは Bash が通る**(実測 E: `--permission-mode dontAsk` は
+        // `--allowedTools mcp__openroly` **だけでは Bash が通る**(実測 E: `--permission-mode dontAsk` は
         // 「聞かずに実行する」であって allow list ではない。user の `~/.claude/settings.json` に
         // `allow: ["Bash"]` が有ろうと無かろうと Bash は動いた)。組込み tool を落とすのは
-        // `--tools ""`(= 組込みを 1 つも積まない。MCP tool は別枠なので paa は残る — 実測 E)。
+        // `--tools ""`(= 組込みを 1 つも積まない。MCP tool は別枠なので openroly は残る — 実測 E)。
         //
         // `--tools` / `--mcp-config` / `--allowedTools` は可変長引数なので、**直後には必ず別の flag を置く**
         // (positional が続くと flag が食う —— 実測 E で `--mcp-config <path> mcp list` が
         // "MCP config file not found: .../mcp" に化けた)。
         "claude" => {
             let mcp_config = claude_mcp_config(&env.claude_config, &env.claude_plugin_registry)?;
-            let rel = "atn-mcp.json";
+            let rel = "openroly-mcp.json";
             Ok((
                 argv(&[
                     "-p",
@@ -295,7 +329,7 @@ pub fn dedicated_launch(
                     "--permission-mode",
                     "dontAsk",
                     "--allowedTools",
-                    "mcp__atn",
+                    "mcp__openroly",
                     "--output-format",
                     "json",
                     "--max-turns",
@@ -311,7 +345,7 @@ pub fn dedicated_launch(
         // 読ませる session の権限を、user の設定 file 任せにしない。
         "codex" => {
             let mut args = argv(&["exec", "--skip-git-repo-check", "--sandbox", "read-only"]);
-            // paa 以外の MCP server を 1 つずつ落とす(review 指摘: `--sandbox read-only` は
+            // openroly 以外の MCP server を 1 つずつ落とす(review 指摘: `--sandbox read-only` は
             // MCP server に掛からない —— server は sandbox の外の別プロセスなので、
             // 攻撃者の本文から playwright / obsidian 越しに network も書込みも届く)。
             for name in codex_disabled_mcp_servers(&env.codex_config)? {
@@ -320,7 +354,7 @@ pub fn dedicated_launch(
             }
             args.extend(argv(&[
                 "-C",
-                session_dir,
+                folder,
                 "-o",
                 &format!("{session_dir}/result.txt"),
                 instruction,
@@ -329,7 +363,7 @@ pub fn dedicated_launch(
         }
         // 実測 D(2026-08-28, gemini-cli 0.46.0。PBI-0061 / W9c)+ 実測 E(PBI-0167):
         //   gemini -p <instruction> --approval-mode yolo --skip-trust
-        //          --allowed-mcp-server-names paa --admin-policy <dir>/policies -o json
+        //          --allowed-mcp-server-names openroly --admin-policy <dir>/policies -o json
         //
         // `--skip-trust` は**必須** —— session_dir は必ず「信頼していないフォルダ」なので、
         // 無いと `Approval mode overridden to "default" because the current folder is not
@@ -348,7 +382,7 @@ pub fn dedicated_launch(
                 );
                 return Err("containment_unavailable".to_string());
             }
-            let rel = "policies/paa-containment.toml";
+            let rel = "policies/openroly-containment.toml";
             Ok((
                 argv(&[
                     "-p",
@@ -357,7 +391,7 @@ pub fn dedicated_launch(
                     "yolo",
                     "--skip-trust",
                     "--allowed-mcp-server-names",
-                    "atn",
+                    "openroly",
                     "--admin-policy",
                     &format!("{session_dir}/policies"),
                     "-o",
@@ -380,13 +414,17 @@ fn is_safe_request_id(request_id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-/// `$PAA_BROKER_HOME`(default `~/.atn/broker`)。sessions/<requestId>/ と registry cache の親。
+/// `$OPENROLY_BROKER_HOME`(default `~/.openroly/broker`)。sessions/<requestId>/ と registry cache の親。
+/// 旧 env 名(`PAA_BROKER_HOME`)と旧 dir(`~/.atn/broker`)は env_compat が引き継ぐ(PBI-0344 AC-3)。
 pub fn broker_home() -> PathBuf {
-    if let Ok(dir) = std::env::var("PAA_BROKER_HOME") {
+    if let Some(dir) = crate::env_compat::env_new_or_legacy("OPENROLY_BROKER_HOME") {
         return PathBuf::from(dir);
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".atn").join("broker")
+    crate::env_compat::legacy_dir(
+        PathBuf::from(&home).join(".openroly").join("broker"),
+        PathBuf::from(home).join(".atn").join("broker"),
+    )
 }
 
 /// spawn する program。scan で見つかった path があればそれ(PATH に無い brew / npm の binary も
@@ -430,10 +468,10 @@ fn check_launchable(registry: &Registry, runtime: &str) -> Result<(), String> {
 /// —— PBI-0019 の実測 C(cwd = scratchpad)と同じ条件を再現する。codex に渡している
 /// `-C <session_dir>` の claude 版でもある(左右非対称の解消)。MCP server の登録は絶対パス
 /// (`MCP_SERVER_ENTRY` = `fileURLToPath(new URL(...))`)＋ user scope 登録なので cwd に依存しない
-/// (コード確認。この機には paa MCP server が未登録なので実登録での実測はしていない)。
+/// (コード確認。この機には openroly MCP server が未登録なので実登録での実測はしていない)。
 ///
 /// `resolve_program` が返す `Found.path` は scan 側(discovery.rs `absolutize`)で絶対化済みなので、
-/// cwd を session_dir に固定しても `PATH` / `PAA_SCAN_DIRS` の相対 entry で解決が壊れない(PBI-0039)。
+/// cwd を session_dir に固定しても `PATH` / `OPENROLY_SCAN_DIRS` の相対 entry で解決が壊れない(PBI-0039)。
 ///
 /// **Manual routing(`launch()`)では None のまま**にすること: `claude --continue` /
 /// `codex resume --last` は「**そのディレクトリの**直近 session」を継ぐので、cwd を変えると
@@ -449,13 +487,17 @@ pub fn launch_with_allowlist(
     allowlist: &[String],
     session_dir: Option<&str>,
 ) -> Result<Child, String> {
-    launch_with_scope(runtime, program, args, allowlist, session_dir, None)
+    launch_with_scope(runtime, program, args, allowlist, session_dir, None, None)
 }
 
 /// `launch_with_allowlist` の本体 + triage session の scope token(EP-0013 W3 / PBI-0117)。
-/// `scope` が有る時だけ子プロセスの env `PAA_SESSION_SCOPE` に載せる(MCP server が全 request の
-/// `x-paa-session-scope` header で Cloud へ返す。REQ-61 enforcement ②)。無い時は env を
+/// `scope` が有る時だけ子プロセスの env `OPENROLY_SESSION_SCOPE` に載せる(MCP server が全 request の
+/// `x-openroly-session-scope` header で Cloud へ返す。REQ-61 enforcement ②)。無い時は env を
 /// 触らない = Manual / AUTO / owner lane の dedicated session は従来どおり全権。
+///
+/// `session_id` は dedicated session の request_id(PBI-0224 peek)。`Some` の時だけ子 env
+/// `OPENROLY_SESSION_ID` に載せ、MCP server が session_dir/peek.jsonl に tool 往復を残す。manual `launch`
+/// からは `None` = env に無い = 何も記録しない(人が画面で見ている面を二重に記録しない)。
 pub fn launch_with_scope(
     runtime: &str,
     program: &str,
@@ -463,24 +505,63 @@ pub fn launch_with_scope(
     allowlist: &[String],
     session_dir: Option<&str>,
     scope: Option<&str>,
+    session_id: Option<&str>,
+) -> Result<Child, String> {
+    launch_in(runtime, program, args, allowlist, session_dir, scope, session_id, None)
+}
+
+/// spawn の唯一の口。`contained` が有る時(= dedicated session。PBI-0238)は spawn の前に
+/// **必ず** `sandbox.wrap` を通し、cwd を lane の folder にし、egress proxy の env を載せる。
+/// `Command::new` から `spawn` までがここ 1 箇所なので、dedicated 経路に「wrap を通らない spawn」は無い
+/// (diagrams-check の規則 (a) が固定する)。Manual(`launch`)/ API provider(`launch_api`)は None。
+fn launch_in(
+    runtime: &str,
+    program: &str,
+    args: &[String],
+    allowlist: &[String],
+    session_dir: Option<&str>,
+    scope: Option<&str>,
+    // dedicated session の request_id(PBI-0224 peek)。`Some` の時だけ子 env に載る
+    session_id: Option<&str>,
+    contained: Option<(&dyn SandboxBackend, &SandboxSpec)>,
 ) -> Result<Child, String> {
     if !allowlist.contains(&runtime.to_string()) {
         return Err("unknown_runtime".to_string());
     }
     let mut cmd = Command::new(program);
     cmd.args(args);
-    // 両 CLI とも非 TTY stdin を読みに行って hang するため null に落とす(実測 — codex exec は
-    // "Reading additional input from stdin..." で待つ / claude -p も同様)。
-    cmd.stdin(std::process::Stdio::null());
     // Claude Code の中から broker を起動した時、CLAUDECODE が残っていると nested 判定で落ちる。
     cmd.env_remove("CLAUDECODE");
     if let Some(scope) = scope {
-        cmd.env("PAA_SESSION_SCOPE", scope);
+        cmd.env("OPENROLY_SESSION_SCOPE", scope);
     }
-    if let Some(dir) = session_dir {
-        // dedicated session の作業ディレクトリを session_dir に固定する(上の doc コメント: `-p` は
-        // trust dialog を出さずに cwd の設定・hooks を読むため、継承した cwd のままにしない)。
+    if let Some(id) = session_id {
+        cmd.env("OPENROLY_SESSION_ID", id);
+    }
+    if let Some((sandbox, spec)) = contained {
+        // 閉じ込め(図72): cwd = lane の folder(sandbox が唯一 write を許す所)。network は
+        // profile が proxy の 1 port しか許さないので、runtime の HTTP client を全部そこへ向ける。
+        // `NO_PROXY=""` は「proxy を迂回する host は無い」の明示(user の env に NO_PROXY が有っても
+        // 継がない)。`NODE_USE_ENV_PROXY=1` は gemini(Node)の API key fetch が HTTPS_PROXY だけでは
+        // proxy を通らない実測(2026-09-04)への対処。
+        cmd.current_dir(&spec.folder);
+        let proxy = format!("http://127.0.0.1:{}", spec.proxy_port);
+        for key in ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"] {
+            cmd.env(key, &proxy);
+        }
+        cmd.env("NO_PROXY", "");
+        cmd.env("no_proxy", "");
+        cmd.env("NODE_USE_ENV_PROXY", "1");
+        cmd = sandbox.wrap(cmd, spec)?;
+    } else if let Some(dir) = session_dir {
+        // 閉じ込め無しで session_dir を渡す経路(test の cwd / env probe)。cwd は session_dir。
         cmd.current_dir(dir);
+    }
+    // 両 CLI とも非 TTY stdin を読みに行って hang するため null に落とす(実測 — codex exec は
+    // "Reading additional input from stdin..." で待つ / claude -p も同様)。stdio は wrap の後に付ける
+    // (wrap は program / args / env / cwd しか写せない)。
+    cmd.stdin(std::process::Stdio::null());
+    if let Some(dir) = session_dir {
         // dedicated session の出力は session_dir に残す(Cloud へは送らない — cost/内容の集計は
         // スコープ外)。open に失敗したら継承にフォールバックせず session_dir_failed 相当で扱う
         // ため、ここでは Result を上へ返す。
@@ -518,12 +599,12 @@ pub fn launch(
 
 /// 外部 API provider の runtime(`kind: "api"`。PBI-0070 / EP-0009 C)を起こす。
 ///
-/// 実体は端末側の `atn agent <provider> --thread <id>`(PBI-0057) —— 端末に binary は無いので
-/// `resolve_program`(scan の path)ではなく **`PAA_CLI` の argv** で起こす(`atn adopt` と同じ解決)。
+/// 実体は端末側の `openroly agent <provider> --thread <id>`(PBI-0057) —— 端末に binary は無いので
+/// `resolve_program`(scan の path)ではなく **`OPENROLY_CLI` の argv** で起こす(`openroly adopt` と同じ解決)。
 /// runtime id は `<provider>-api` の規約で、provider 名はその接頭辞。
 ///
 /// 判定順序: unknown_runtime / not_launchable(registry。Cloud から来た名前を先に潰す)→
-/// thread_required(thread 無しでは返信先が無い)→ paa_cli_not_found → spawn。
+/// thread_required(thread 無しでは返信先が無い)→ openroly_cli_not_found → spawn。
 /// wake payload に thread が無い時に bare spawn しない —— 何に返信するか決まっていない
 /// session を起こしても、下書きの宛先が無い。
 pub fn launch_api(
@@ -532,13 +613,16 @@ pub fn launch_api(
     thread_id: &str,
     argv: &[String],
 ) -> Result<Child, String> {
-    check_launchable(registry, runtime)?;
+    let custom = is_custom_api_runtime(runtime);
+    if !custom {
+        check_launchable(registry, runtime)?;
+    }
     if thread_id.is_empty() {
         return Err("thread_required".to_string());
     }
     let provider = runtime.strip_suffix("-api").unwrap_or(runtime);
     let Some((program, leading)) = argv.split_first() else {
-        return Err("paa_cli_not_found".to_string());
+        return Err("openroly_cli_not_found".to_string());
     };
     let mut args: Vec<String> = leading.to_vec();
     args.extend([
@@ -547,10 +631,36 @@ pub fn launch_api(
         "--thread".to_string(),
         thread_id.to_string(),
     ]);
-    launch_with_allowlist(runtime, program, &args, &registry.allowlist(), None)
+    // 持ち込みは registry に載らないので allowlist を作れない。**起こす物は他の API provider と
+    // 完全に同じ `OPENROLY_CLI agent <provider> --thread <id>`** で、runtime 名は argv の値にしか
+    // ならない —— だから `is_custom_api_runtime` の狭い形が唯一の門になる
+    let allowlist = if custom {
+        vec![runtime.to_string()]
+    } else {
+        registry.allowlist()
+    };
+    launch_with_allowlist(runtime, program, &args, &allowlist, None)
 }
 
-/// `launch_api` の env を読む面(`PAA_CLI`)。test は argv を値で渡せるよう本体と分ける。
+/// 持ち込みの endpoint(PBI-0276)の runtime か。名前は account ごとに決まるので**署名済み
+/// registry に載せられない**。Cloud から届く未検証の文字列なので、形を厳しく固定して
+/// それ以外は一切通さない: `custom-` + 英数と `-`(先頭末尾は英数)・slug は 2〜32 文字。
+/// 正本は `packages/core/src/providers.ts` の `isCustomProviderId`(この関数はその写し)。
+pub fn is_custom_api_runtime(runtime: &str) -> bool {
+    let Some(slug) = runtime
+        .strip_prefix("custom-")
+        .and_then(|r| r.strip_suffix("-api"))
+    else {
+        return false;
+    };
+    let ok_char = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-';
+    (2..=32).contains(&slug.len())
+        && slug.chars().all(ok_char)
+        && !slug.starts_with('-')
+        && !slug.ends_with('-')
+}
+
+/// `launch_api` の env を読む面(`OPENROLY_CLI`)。test は argv を値で渡せるよう本体と分ける。
 pub fn launch_api_env(registry: &Registry, runtime: &str, thread_id: &str) -> Result<Child, String> {
     launch_api(registry, runtime, thread_id, &cli_argv())
 }
@@ -559,12 +669,14 @@ pub fn launch_api_env(registry: &Registry, runtime: &str, thread_id: &str) -> Re
 /// invalid_request_id → instruction_too_long → session_dir_failed → unknown_runtime / not_launchable
 /// (registry)→ dedicated_unsupported → spawn。
 ///
-/// session_dir(`$PAA_BROKER_HOME/sessions/<requestId>/`)を作り、instruction.txt を残してから
+/// session_dir(`$OPENROLY_BROKER_HOME/sessions/<requestId>/`)を作り、instruction.txt を残してから
 /// spawn する。stdout/stderr は session_dir のファイルへ向ける。返すのは起動した `Child` で、
 /// 終了の wait と session_result 送信は呼び出し側(main.rs)の reaper が引き受ける。
 ///
-/// `scope` は triage session の token(PBI-0117)。`Some` の時だけ子 env `PAA_SESSION_SCOPE` が
+/// `scope` は triage session の token(PBI-0117)。`Some` の時だけ子 env `OPENROLY_SESSION_SCOPE` が
 /// 載る(launch_with_scope)。AUTO / owner lane からは `None` で呼ぶ = env に載らない = 全権。
+///
+/// 返り値の `Egress` は session の proxy。**child と同じ寿命で持つ**(reaper が wait の後に drop = 閉じる)。
 pub fn launch_session_scoped(
     registry: &Registry,
     found: &[Found],
@@ -572,7 +684,8 @@ pub fn launch_session_scoped(
     instruction: &str,
     request_id: &str,
     scope: Option<&str>,
-) -> Result<Child, String> {
+    isolation: &Isolation,
+) -> Result<(Child, Egress), String> {
     launch_session_scoped_in(
         &broker_home(),
         registry,
@@ -582,11 +695,81 @@ pub fn launch_session_scoped(
         request_id,
         scope,
         &containment_env(),
+        isolation,
     )
 }
 
+/// dedicated session の閉じ込めの材料(PBI-0238 / 図72)。main.rs が起動時に決めた backend と、
+/// wake ごとの egress 設定・lane の folder。test は backend と home を値で差し替える。
+pub struct Isolation<'a> {
+    /// 起動時の self_test に通った backend。通らなかった機は `NoSandbox`(= 全 dedicated wake が
+    /// `sandbox_unavailable`)。
+    pub sandbox: &'a dyn SandboxBackend,
+    pub egress: EgressConfig,
+    /// wake payload の `folder`(owner / work lane。server が rule から解決する = PBI-0239)。
+    /// None = `session_dir/scratch`(triage / AUTO / draft)。
+    pub folder: Option<&'a str>,
+    /// user の HOME。`deny_read` / `writable_extra` の既定を組む(env は呼び出し口で 1 回だけ読む)。
+    pub user_home: PathBuf,
+}
+
+/// lane の作業 folder を決める(AC-4)。`folder` 無し = `session_dir/scratch`(空で作る)。
+/// 有りは **rule に照らす前の最低限の門**(PBI-0239 が server 側の rule を持ち込むまでの土台):
+/// 絶対 path・実在する dir・`/` や HOME そのものでない・`deny_read` / `~/Library` / `~/.openroly` /
+/// broker home の下でない。triage(scope 有り)は folder を持たない —— 通知本文を読む lane に
+/// owner の folder を渡す理由が無いので、来たら `folder_not_allowed`。
+fn resolve_folder(
+    folder: Option<&str>,
+    scope: Option<&str>,
+    session_dir: &Path,
+    broker_home: &Path,
+    user_home: &Path,
+) -> Result<PathBuf, String> {
+    let Some(folder) = folder else {
+        let scratch = session_dir.join("scratch");
+        fs::create_dir_all(&scratch).map_err(|e| {
+            eprintln!("broker: could not create the scratch folder ({scratch:?}): {e}");
+            "session_dir_failed".to_string()
+        })?;
+        return Ok(scratch);
+    };
+    let refuse = |why: &str| {
+        eprintln!("broker: folder {folder:?} is not allowed for a dedicated session: {why}");
+        "folder_not_allowed".to_string()
+    };
+    if scope.is_some() {
+        return Err(refuse("triage sessions never get a folder"));
+    }
+    if !folder.starts_with('/') {
+        return Err(refuse("not an absolute path"));
+    }
+    let real = fs::canonicalize(folder).map_err(|e| refuse(&format!("cannot resolve: {e}")))?;
+    if !real.is_dir() {
+        return Err(refuse("not a directory"));
+    }
+    let home = fs::canonicalize(user_home).unwrap_or_else(|_| user_home.to_path_buf());
+    if real == Path::new("/") || real == home {
+        return Err(refuse("the root or the home directory itself"));
+    }
+    let mut fenced = default_deny_read(&home);
+    fenced.push(home.join("Library"));
+    fenced.push(home.join(".openroly"));
+    // 旧 state dir も丸ごと読ませない(PBI-0344 AC-3。改名後も secrets はこちらに在る)
+    fenced.push(home.join(".atn"));
+    fenced.push(fs::canonicalize(broker_home).unwrap_or_else(|_| broker_home.to_path_buf()));
+    if fenced.iter().any(|f| real.starts_with(f)) {
+        return Err(refuse("inside a protected directory"));
+    }
+    Ok(real)
+}
+
+/// 起こせなかった session の置き場を消す(AC-X2: 半端な session_dir を残さない)。
+fn discard_session_dir(session_dir: &Path) {
+    let _ = fs::remove_dir_all(session_dir);
+}
+
 /// `launch_session_scoped` の本体。broker home と `ContainmentEnv` を引数で受けるのはテストのため —— `env::set_var` で
-/// `PAA_BROKER_HOME` を差し替える方式は、並列に走る他テストの spawn 中の子プロセスの環境を壊す
+/// `OPENROLY_BROKER_HOME` を差し替える方式は、並列に走る他テストの spawn 中の子プロセスの環境を壊す
 /// (実測: version probe の子 `sh` が落ちて出力が空になる)。
 pub fn launch_session_scoped_in(
     home: &Path,
@@ -597,7 +780,8 @@ pub fn launch_session_scoped_in(
     request_id: &str,
     scope: Option<&str>,
     env: &ContainmentEnv,
-) -> Result<Child, String> {
+    isolation: &Isolation,
+) -> Result<(Child, Egress), String> {
     if !is_safe_request_id(request_id) {
         return Err("invalid_request_id".to_string());
     }
@@ -615,7 +799,11 @@ pub fn launch_session_scoped_in(
         "session_dir_failed".to_string()
     })?;
     check_launchable(registry, runtime)?;
-    let (args, files) = dedicated_launch(runtime, instruction, &dir_str, env)?;
+    // lane の folder(AC-4)。rule に無い path は起こさない(半端な session_dir も残さない)。
+    let folder = resolve_folder(isolation.folder, scope, &session_dir, home, &isolation.user_home)
+        .inspect_err(|_| discard_session_dir(&session_dir))?;
+    let folder_str = folder.to_string_lossy().to_string();
+    let (args, files) = dedicated_launch(runtime, instruction, &dir_str, &folder_str, env)?;
     // 閉じ込め用の file(claude の `--mcp-config` / gemini の admin policy)を session_dir に置く。
     // spawn より **前** に全部書く —— 置けなかった runtime を「flag だけ付いた丸腰」で起こさない。
     for (rel, content) in &files {
@@ -631,8 +819,35 @@ pub fn launch_session_scoped_in(
             "session_dir_failed".to_string()
         })?;
     }
+    // 閉じ込めの土台(PBI-0238 / 図72): session の egress proxy を先に立て(port が profile に要る)、
+    // その port だけを許す sandbox で包んでから spawn する。proxy が立たない / 包めない(Linux・
+    // Windows・seatbelt が壊れた機)は **何も spawn せず** `sandbox_unavailable`(AC-X2)。
+    let egress = egress::start(isolation.egress.clone(), request_id)
+        .inspect_err(|_| discard_session_dir(&session_dir))?;
+    let spec = SandboxSpec {
+        folder,
+        session_dir: session_dir.clone(),
+        writable_extra: default_writable_extra(&isolation.user_home),
+        deny_read: default_deny_read(&isolation.user_home),
+        proxy_port: egress.port,
+    };
     let program = resolve_program(found, runtime);
-    launch_with_scope(runtime, &program, &args, &registry.allowlist(), Some(&dir_str), scope)
+    let child = launch_in(
+        runtime,
+        &program,
+        &args,
+        &registry.allowlist(),
+        Some(&dir_str),
+        scope,
+        Some(request_id),
+        Some((isolation.sandbox, &spec)),
+    )
+    .inspect_err(|e| {
+        if e == "sandbox_unavailable" {
+            discard_session_dir(&session_dir);
+        }
+    })?;
+    Ok((child, egress))
 }
 
 #[cfg(test)]
@@ -668,7 +883,7 @@ mod tests {
     #[tokio::test]
     async fn name_in_allowlist_but_missing_binary_returns_spawn_error() {
         // allowlist は通るが、そんな名前の実行可能ファイルは存在しない
-        let name = "atn-broker-definitely-not-a-real-binary";
+        let name = "openroly-broker-definitely-not-a-real-binary";
         let result = launch_with_allowlist(name, name, &[], &allow(&[name]), None);
         assert!(result.is_err());
         assert_ne!(result.err(), Some("unknown_runtime".to_string()));
@@ -681,7 +896,7 @@ mod tests {
 
     #[tokio::test]
     async fn dedicated_session_runs_in_session_dir() {
-        let dir = std::env::temp_dir().join(format!("atn-broker-cwd-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("openroly-broker-cwd-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let dir_str = dir.to_string_lossy().to_string();
@@ -708,16 +923,16 @@ mod tests {
         assert!(child.wait().await.unwrap().success());
     }
 
-    // PBI-0117: triage session は scope token を子 env `PAA_SESSION_SCOPE` で受け取る(MCP が
-    // 全 request の `x-paa-session-scope` header で Cloud へ返す)。scope 無しの起動は env を
+    // PBI-0117: triage session は scope token を子 env `OPENROLY_SESSION_SCOPE` で受け取る(MCP が
+    // 全 request の `x-openroly-session-scope` header で Cloud へ返す)。scope 無しの起動は env を
     // 載せない(Manual / AUTO / owner lane が従来どおり全権であることの片側確認)。
     #[tokio::test]
     async fn scoped_session_passes_env_and_unscoped_leaves_it_unset() {
-        let dir = std::env::temp_dir().join(format!("atn-broker-scope-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("openroly-broker-scope-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let dir_str = dir.to_string_lossy().to_string();
-        let print_scope = vec!["-c".to_string(), "printenv PAA_SESSION_SCOPE".to_string()];
+        let print_scope = vec!["-c".to_string(), "printenv OPENROLY_SESSION_SCOPE".to_string()];
 
         let mut child = launch_with_scope(
             "env-probe",
@@ -726,6 +941,7 @@ mod tests {
             &allow(&["env-probe"]),
             Some(&dir_str),
             Some("pst_test_scope_token"),
+            None,
         )
         .expect("sh should spawn");
         assert!(child.wait().await.unwrap().success());
@@ -742,11 +958,91 @@ mod tests {
             &allow(&["env-probe"]),
             Some(&dir_str),
             None,
+            None,
         )
         .expect("sh should spawn");
         // printenv は未設定の変数で非 0 終了する = env に載っていない
         assert!(!child.wait().await.unwrap().success());
         assert_eq!(fs::read_to_string(dir.join("stdout.log")).unwrap().trim(), "");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // PBI-0224 AC-4: dedicated session の子 env に `OPENROLY_SESSION_ID=<request_id>` が載る(MCP server が
+    // session_dir/peek.jsonl を書く鍵)。実 CLI は起動しない —— found の path に「env を印字するだけ」の
+    // fake claude を置き、launch_session_scoped_in の実経路(instruction.txt → dedicated argv → spawn)で
+    // stdout.log に何が出るかを見る。
+    // **PBI-0238 の追随**(merge 時): dedicated 経路は必ず sandbox を通るので、
+    // 働く backend が要る = **macOS だけ**(他 OS は NoSandbox = sandbox_unavailable。
+    // `tests/pbi0238_sandbox_probe.rs` と同じ線引き)
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn dedicated_session_env_has_session_id() {
+        let dir = std::env::temp_dir().join(format!("openroly-broker-peekenv-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("claude");
+        fs::write(&bin, "#!/bin/sh\nprintenv OPENROLY_SESSION_ID\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        let found = vec![Found {
+            id: "claude".into(),
+            version: None,
+            source: "dir".into(),
+            path: bin.to_string_lossy().into(),
+            models: vec![],
+        }];
+        let home = dir.join("home");
+        // **PBI-0238 の追随**(merge 時): 引数に `Isolation` が増え、返りが `(Child, Egress)` に
+        // なった。ここは peek の env(PBI-0224)を測る test なので閉じ込めは要らず、
+        // `test_isolation()`(NoSandbox / allowlist 空)で足りる
+        let iso = Isolation { sandbox: &crate::sandbox::Seatbelt, ..test_isolation() };
+        let (mut child, _egress) = launch_session_scoped_in(
+            &home,
+            &registry::builtin(),
+            &found,
+            "claude",
+            "instr",
+            "req_peek_1",
+            None,
+            &test_env(),
+            &iso,
+        )
+        .expect("fake claude should spawn");
+        assert!(child.wait().await.unwrap().success(), "printenv OPENROLY_SESSION_ID が非 0 = env に無い");
+        let printed = fs::read_to_string(home.join("sessions").join("req_peek_1").join("stdout.log")).unwrap();
+        assert_eq!(printed.trim(), "req_peek_1", "dedicated session の子 env OPENROLY_SESSION_ID が request_id でない");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // PBI-0224 AC-4 の裏側: manual `launch`(bare spawn)の子 env には OPENROLY_SESSION_ID が**無い**。
+    // stdout は継承なので marker file に printenv の結果と exit code を書かせる。
+    #[tokio::test]
+    async fn manual_launch_env_has_no_session_id() {
+        let reg = reg_with_ollama();
+        let dir = std::env::temp_dir().join(format!("openroly-broker-nopeekenv-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("env.out");
+        let bin = dir.join("superagent");
+        fs::write(
+            &bin,
+            format!("#!/bin/sh\nprintenv OPENROLY_SESSION_ID > \"{m}\"; echo \"rc=$?\" >> \"{m}\"\n", m = marker.display()),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        let found = vec![Found {
+            id: "superagent".into(),
+            version: None,
+            source: "dir".into(),
+            path: bin.to_string_lossy().into(),
+            models: vec![],
+        }];
+        let mut child = launch(&reg, &found, "superagent", "new").expect("spawn by found path");
+        child.wait().await.unwrap();
+        let out = fs::read_to_string(&marker).unwrap();
+        // printenv は未設定の変数で非 0 終了し、何も印字しない
+        assert_eq!(out.trim(), "rc=1", "manual launch の子 env に OPENROLY_SESSION_ID が載っている: {out:?}");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -765,7 +1061,7 @@ mod tests {
     #[tokio::test]
     async fn registry_added_runtime_launches_by_found_path() {
         let reg = reg_with_ollama();
-        let dir = std::env::temp_dir().join(format!("atn-broker-launch-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("openroly-broker-launch-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let marker = dir.join("ran");
@@ -801,27 +1097,27 @@ mod tests {
     // PBI-0019 AC-1/AC-2 + PBI-0167 AC-1〜AC-4: dedicated session の argv が実測どおりに組まれ、
     // 3 runtime とも閉じ込め(組込み tool を通さない)が argv / file として載ること。
 
-    /// paa MCP が登録済みの claude user config と、admin policy の無い gemini を模した env。
+    /// openroly MCP が登録済みの claude user config と、admin policy の無い gemini を模した env。
     fn test_env() -> ContainmentEnv {
-        let dir = std::env::temp_dir().join(format!("atn-broker-cenv-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("openroly-broker-cenv-{}", std::process::id()));
         let _ = fs::create_dir_all(&dir);
         let config = dir.join(".claude.json");
         fs::write(
             &config,
-            r#"{"mcpServers":{"atn":{"type":"stdio","command":"bun","args":["/x/server.ts"],
-               "env":{"PAA_RUNTIME_KIND":"claude","PAA_URL":"http://localhost:8787"}},
+            r#"{"mcpServers":{"openroly":{"type":"stdio","command":"bun","args":["/x/server.ts"],
+               "env":{"OPENROLY_RUNTIME_KIND":"claude","OPENROLY_URL":"http://localhost:8787"}},
                "other":{"command":"other"}}}"#,
         )
         .unwrap();
         // codex は user の MCP server を全部載せる(--strict-mcp-config が無い)ので、
-        // paa 以外は `-c ….enabled=false` で落とす —— 実機の config.toml と同じ形で置く。
+        // openroly 以外は `-c ….enabled=false` で落とす —— 実機の config.toml と同じ形で置く。
         let codex_config = dir.join("codex-config.toml");
         fs::write(
             &codex_config,
             "model = \"gpt-5\"\n\n[mcp_servers.playwright]\ncommand = \"npx\"\n\n\
              [mcp_servers.playwright.tools.browser_click]\nenabled = true\n\n\
              # [mcp_servers.commented-out]\n\
-             [mcp_servers.atn]\ncommand = \"bun\"\n\n[mcp_servers.obsidian]\ncommand = \"uvx\"\n",
+             [mcp_servers.openroly]\ncommand = \"bun\"\n\n[mcp_servers.obsidian]\ncommand = \"uvx\"\n",
         )
         .unwrap();
         ContainmentEnv {
@@ -834,7 +1130,7 @@ mod tests {
 
     #[test]
     fn dedicated_launch_claude_matches_measured_argv() {
-        let (args, files) = dedicated_launch("claude", "INSTR", "/tmp/sess", &test_env()).unwrap();
+        let (args, files) = dedicated_launch("claude", "INSTR", "/tmp/sess", "/tmp/work", &test_env()).unwrap();
         assert_eq!(
             args,
             vec![
@@ -846,11 +1142,11 @@ mod tests {
                 "project",
                 "--strict-mcp-config",
                 "--mcp-config",
-                "/tmp/sess/atn-mcp.json",
+                "/tmp/sess/openroly-mcp.json",
                 "--permission-mode",
                 "dontAsk",
                 "--allowedTools",
-                "mcp__atn",
+                "mcp__openroly",
                 "--output-format",
                 "json",
                 "--max-turns",
@@ -872,19 +1168,19 @@ mod tests {
                 "{flag} の値の後ろが flag でない: {args:?}"
             );
         }
-        // user settings を落とすと MCP 登録ごと消えるので、paa の定義を session_dir に複製する
+        // user settings を落とすと MCP 登録ごと消えるので、openroly の定義を session_dir に複製する
         assert_eq!(files.len(), 1);
-        assert_eq!(files[0].0, "atn-mcp.json");
+        assert_eq!(files[0].0, "openroly-mcp.json");
         let cfg: serde_json::Value = serde_json::from_str(&files[0].1).unwrap();
-        assert_eq!(cfg["mcpServers"]["atn"]["command"], "bun");
-        assert!(cfg["mcpServers"].get("other").is_none(), "paa 以外の MCP まで持ち込まない");
+        assert_eq!(cfg["mcpServers"]["openroly"]["command"], "bun");
+        assert!(cfg["mcpServers"].get("other").is_none(), "openroly 以外の MCP まで持ち込まない");
     }
 
-    // AC-4(claude 側): paa MCP の定義を複製できない環境では起こさない。閉じ込めを緩めて
+    // AC-4(claude 側): openroly MCP の定義を複製できない環境では起こさない。閉じ込めを緩めて
     // 起こす(user settings を読ませる)選択はしない。
     #[test]
-    fn dedicated_launch_claude_without_paa_mcp_is_containment_unavailable() {
-        let dir = std::env::temp_dir().join(format!("atn-broker-cenv-none-{}", std::process::id()));
+    fn dedicated_launch_claude_without_openroly_mcp_is_containment_unavailable() {
+        let dir = std::env::temp_dir().join(format!("openroly-broker-cenv-none-{}", std::process::id()));
         let _ = fs::create_dir_all(&dir);
         let no_plugin = dir.join("no-such-plugins.json");
         let missing = ContainmentEnv {
@@ -894,42 +1190,42 @@ mod tests {
             gemini_admin_dirs: vec![],
         };
         assert_eq!(
-            dedicated_launch("claude", "I", "/tmp/s", &missing).err(),
+            dedicated_launch("claude", "I", "/tmp/s", "/tmp/work", &missing).err(),
             Some("containment_unavailable".to_string())
         );
         let broken = dir.join("broken.json");
         fs::write(&broken, "{ not json").unwrap();
         assert_eq!(
-            dedicated_launch("claude", "I", "/tmp/s", &ContainmentEnv { claude_config: broken, claude_plugin_registry: no_plugin.clone(), codex_config: dir.join("no-such-codex.toml"), gemini_admin_dirs: vec![] }).err(),
+            dedicated_launch("claude", "I", "/tmp/s", "/tmp/work", &ContainmentEnv { claude_config: broken, claude_plugin_registry: no_plugin.clone(), codex_config: dir.join("no-such-codex.toml"), gemini_admin_dirs: vec![] }).err(),
             Some("containment_unavailable".to_string())
         );
-        let no_paa = dir.join("no-paa.json");
-        fs::write(&no_paa, r#"{"mcpServers":{"other":{"command":"x"}}}"#).unwrap();
+        let no_openroly = dir.join("no-openroly.json");
+        fs::write(&no_openroly, r#"{"mcpServers":{"other":{"command":"x"}}}"#).unwrap();
         assert_eq!(
-            dedicated_launch("claude", "I", "/tmp/s", &ContainmentEnv { claude_config: no_paa, claude_plugin_registry: no_plugin.clone(), codex_config: dir.join("no-such-codex.toml"), gemini_admin_dirs: vec![] }).err(),
+            dedicated_launch("claude", "I", "/tmp/s", "/tmp/work", &ContainmentEnv { claude_config: no_openroly, claude_plugin_registry: no_plugin.clone(), codex_config: dir.join("no-such-codex.toml"), gemini_admin_dirs: vec![] }).err(),
             Some("containment_unavailable".to_string())
         );
         let _ = fs::remove_dir_all(&dir);
     }
 
     // review 指摘(順95): **plugin-first**(配布戦略 §7.1・図10)で入れた claude は
-    // `.claude.json` の `mcpServers` に paa を持たない —— ① だけを見ていた実装では、
+    // `.claude.json` の `mcpServers` に openroly を持たない —— ① だけを見ていた実装では、
     // plugin で入れた user の全 dedicated session が containment_unavailable になり、
     // AUTO が dispatch_skip の log 1 行だけ残して黙って止まっていた。
     // ② plugin 台帳 → `<installPath>/.mcp.json` を複製元にし、`${CLAUDE_PLUGIN_ROOT}` を畳む。
     #[test]
     fn dedicated_launch_claude_falls_back_to_plugin_mcp_config() {
-        let dir = std::env::temp_dir().join(format!("atn-broker-cenv-plugin-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("openroly-broker-cenv-plugin-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         // local scope の install は壊れた plugin dir を指す(user scope が先に選ばれることの確認)
-        let local_root = dir.join("cache/paa/local");
-        let user_root = dir.join("cache/paa/0.1.0");
+        let local_root = dir.join("cache/openroly/local");
+        let user_root = dir.join("cache/openroly/0.1.0");
         fs::create_dir_all(&user_root).unwrap();
         fs::write(
             user_root.join(".mcp.json"),
-            r#"{"mcpServers":{"atn":{"command":"${CLAUDE_PLUGIN_ROOT}/atn-mcp",
+            r#"{"mcpServers":{"openroly":{"command":"${CLAUDE_PLUGIN_ROOT}/openroly-mcp",
                "args":["${CLAUDE_PLUGIN_ROOT}/mcp-server.bundle.js"],
-               "env":{"PAA_RUNTIME_KIND":"claude"}}}}"#,
+               "env":{"OPENROLY_RUNTIME_KIND":"claude"}}}}"#,
         )
         .unwrap();
         let registry = dir.join("installed_plugins.json");
@@ -938,7 +1234,7 @@ mod tests {
             format!(
                 r#"{{"version":2,"plugins":{{
                    "other@mkt":[{{"scope":"user","installPath":"{other}"}}],
-                   "atn@atn-marketplace":[
+                   "openroly@openroly-marketplace":[
                      {{"scope":"local","installPath":"{local}"}},
                      {{"scope":"user","installPath":"{user}"}}]}}}}"#,
                 other = dir.join("cache/other").display(),
@@ -948,7 +1244,7 @@ mod tests {
         )
         .unwrap();
         let env = ContainmentEnv {
-            // user config は「有るが paa は未登録」= plugin で入れた人の実態
+            // user config は「有るが openroly は未登録」= plugin で入れた人の実態
             claude_config: {
                 let c = dir.join(".claude.json");
                 fs::write(&c, r#"{"mcpServers":{"other":{"command":"x"}}}"#).unwrap();
@@ -958,12 +1254,12 @@ mod tests {
             codex_config: dir.join("no-such-codex.toml"),
             gemini_admin_dirs: vec![],
         };
-        let (_, files) = dedicated_launch("claude", "I", "/tmp/sess", &env).expect("起こせること");
+        let (_, files) = dedicated_launch("claude", "I", "/tmp/sess", "/tmp/work", &env).expect("起こせること");
         let cfg: serde_json::Value = serde_json::from_str(&files[0].1).unwrap();
         let root = user_root.display().to_string();
-        assert_eq!(cfg["mcpServers"]["atn"]["command"], format!("{root}/atn-mcp"));
-        assert_eq!(cfg["mcpServers"]["atn"]["args"][0], format!("{root}/mcp-server.bundle.js"));
-        assert_eq!(cfg["mcpServers"]["atn"]["env"]["PAA_RUNTIME_KIND"], "claude");
+        assert_eq!(cfg["mcpServers"]["openroly"]["command"], format!("{root}/openroly-mcp"));
+        assert_eq!(cfg["mcpServers"]["openroly"]["args"][0], format!("{root}/mcp-server.bundle.js"));
+        assert_eq!(cfg["mcpServers"]["openroly"]["env"]["OPENROLY_RUNTIME_KIND"], "claude");
         assert!(
             !files[0].1.contains("CLAUDE_PLUGIN_ROOT"),
             "変数が畳まれずに残ると command が見つからず、閉じ込めただけの丸腰 session になる: {}",
@@ -972,19 +1268,19 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    // ① が有る時は ① を使う(plugin 台帳より user 登録が優先。`atn install claude` した人の実態)。
+    // ① が有る時は ① を使う(plugin 台帳より user 登録が優先。`openroly install claude` した人の実態)。
     #[test]
     fn dedicated_launch_claude_prefers_user_config_over_plugin() {
-        let (_, files) = dedicated_launch("claude", "I", "/tmp/sess", &test_env()).unwrap();
+        let (_, files) = dedicated_launch("claude", "I", "/tmp/sess", "/tmp/work", &test_env()).unwrap();
         let cfg: serde_json::Value = serde_json::from_str(&files[0].1).unwrap();
-        assert_eq!(cfg["mcpServers"]["atn"]["command"], "bun");
+        assert_eq!(cfg["mcpServers"]["openroly"]["command"], "bun");
     }
 
     // AC-3: codex は既定に頼らず `--sandbox read-only` を明示する(既定は user の
     // ~/.codex/config.toml で上書きできる)。
     #[test]
     fn dedicated_launch_codex_matches_measured_argv() {
-        let (args, files) = dedicated_launch("codex", "INSTR", "/tmp/sess", &test_env()).unwrap();
+        let (args, files) = dedicated_launch("codex", "INSTR", "/tmp/sess", "/tmp/work", &test_env()).unwrap();
         assert_eq!(
             args,
             vec![
@@ -992,13 +1288,13 @@ mod tests {
                 "--skip-git-repo-check",
                 "--sandbox",
                 "read-only",
-                // review 指摘: paa 以外の MCP server は sandbox の外で動くので明示的に落とす
+                // review 指摘: openroly 以外の MCP server は sandbox の外で動くので明示的に落とす
                 "-c",
                 "mcp_servers.playwright.enabled=false",
                 "-c",
                 "mcp_servers.obsidian.enabled=false",
                 "-C",
-                "/tmp/sess",
+                "/tmp/work",
                 "-o",
                 "/tmp/sess/result.txt",
                 "INSTR",
@@ -1007,8 +1303,8 @@ mod tests {
         assert!(files.is_empty());
         let sandbox = args.iter().position(|a| a == "--sandbox").expect("--sandbox が無い");
         assert_eq!(args[sandbox + 1], "read-only");
-        // paa 自身は落とさない(落とすと閉じ込めただけで何も出来ない session になる)
-        assert!(!args.iter().any(|a| a == "mcp_servers.atn.enabled=false"));
+        // openroly 自身は落とさない(落とすと閉じ込めただけで何も出来ない session になる)
+        assert!(!args.iter().any(|a| a == "mcp_servers.openroly.enabled=false"));
         // instruction は最後(可変長の `-c` の直後に positional を置かない)
         assert_eq!(args.last().unwrap(), "INSTR");
     }
@@ -1017,7 +1313,7 @@ mod tests {
     // 名前を取り切れない config は「server 無し」ではなく **判定不能**として起こさない。
     #[test]
     fn dedicated_launch_codex_with_unreadable_mcp_names_is_containment_unavailable() {
-        let dir = std::env::temp_dir().join(format!("atn-broker-codex-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("openroly-broker-codex-{}", std::process::id()));
         let _ = fs::create_dir_all(&dir);
         let env_with = |file: &str, body: &str| {
             let path = dir.join(file);
@@ -1032,23 +1328,23 @@ mod tests {
         // inline table: 行単位では名前を取り切れない
         let inline = env_with("inline.toml", "mcp_servers = { github = { command = \"x\" } }\n");
         assert_eq!(
-            dedicated_launch("codex", "I", "/tmp/s", &inline).err(),
+            dedicated_launch("codex", "I", "/tmp/s", "/tmp/work", &inline).err(),
             Some("containment_unavailable".to_string())
         );
         // quoted key: `-c` の key に埋められない
         let quoted = env_with("quoted.toml", "[mcp_servers.\"we ird\"]\ncommand = \"x\"\n");
         assert_eq!(
-            dedicated_launch("codex", "I", "/tmp/s", &quoted).err(),
+            dedicated_launch("codex", "I", "/tmp/s", "/tmp/work", &quoted).err(),
             Some("containment_unavailable".to_string())
         );
-        // config.toml 自体が無い = 落とす相手が居ない(paa は plugin 側から来る)。起こしてよい
+        // config.toml 自体が無い = 落とす相手が居ない(openroly は plugin 側から来る)。起こしてよい
         let none = ContainmentEnv {
             claude_config: dir.join("no.json"),
             claude_plugin_registry: dir.join("no-plugins.json"),
             codex_config: dir.join("absent.toml"),
             gemini_admin_dirs: vec![],
         };
-        let (args, _) = dedicated_launch("codex", "I", "/tmp/s", &none).unwrap();
+        let (args, _) = dedicated_launch("codex", "I", "/tmp/s", "/tmp/work", &none).unwrap();
         assert!(!args.iter().any(|a| a == "-c"));
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1060,7 +1356,7 @@ mod tests {
     // admin tier の deny policy が唯一の壁になる(実測 E: policy 無しで shell が動いた)。
     #[test]
     fn dedicated_launch_gemini_matches_measured_argv() {
-        let (args, files) = dedicated_launch("gemini", "INSTR", "/tmp/sess", &test_env()).unwrap();
+        let (args, files) = dedicated_launch("gemini", "INSTR", "/tmp/sess", "/tmp/work", &test_env()).unwrap();
         assert_eq!(
             args,
             vec![
@@ -1070,7 +1366,7 @@ mod tests {
                 "yolo",
                 "--skip-trust",
                 "--allowed-mcp-server-names",
-                "atn",
+                "openroly",
                 "--admin-policy",
                 "/tmp/sess/policies",
                 "-o",
@@ -1081,16 +1377,16 @@ mod tests {
         assert!(args.iter().any(|a| a == "--skip-trust"));
         // policy は session_dir に置く(workspace tier は 0.46.0 では機能しない)
         assert_eq!(files.len(), 1);
-        assert_eq!(files[0].0, "policies/paa-containment.toml");
+        assert_eq!(files[0].0, "policies/openroly-containment.toml");
         assert!(files[0].1.contains("decision = \"deny\""), "{}", files[0].1);
-        assert!(files[0].1.contains("mcpName = \"atn\""), "{}", files[0].1);
+        assert!(files[0].1.contains("mcpName = \"openroly\""), "{}", files[0].1);
     }
 
     // AC-4(gemini 側): 標準 admin policy dir に .toml が在ると --admin-policy は無視される
     // (gemini の security guard)= 閉じ込められないので起こさない。
     #[test]
     fn dedicated_launch_gemini_with_system_policy_is_containment_unavailable() {
-        let dir = std::env::temp_dir().join(format!("atn-broker-admin-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("openroly-broker-admin-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("corp.toml"), "").unwrap();
@@ -1101,13 +1397,13 @@ mod tests {
             gemini_admin_dirs: vec![dir.clone()],
         };
         assert_eq!(
-            dedicated_launch("gemini", "I", "/tmp/s", &env).err(),
+            dedicated_launch("gemini", "I", "/tmp/s", "/tmp/work", &env).err(),
             Some("containment_unavailable".to_string())
         );
         // .toml 以外しか無い dir は素通し(閉じ込めは効く)
         fs::remove_file(dir.join("corp.toml")).unwrap();
         fs::write(dir.join("README.md"), "").unwrap();
-        assert!(dedicated_launch("gemini", "I", "/tmp/s", &env).is_ok());
+        assert!(dedicated_launch("gemini", "I", "/tmp/s", "/tmp/work", &env).is_ok());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1115,11 +1411,11 @@ mod tests {
     fn dedicated_launch_unknown_runtime_is_unsupported() {
         let env = test_env();
         assert_eq!(
-            dedicated_launch("hermes", "INSTR", "/tmp/sess", &env).err(),
+            dedicated_launch("hermes", "INSTR", "/tmp/sess", "/tmp/work", &env).err(),
             Some("dedicated_unsupported".to_string())
         );
         assert_eq!(
-            dedicated_launch("superagent", "INSTR", "/tmp/sess", &env).err(),
+            dedicated_launch("superagent", "INSTR", "/tmp/sess", "/tmp/work", &env).err(),
             Some("dedicated_unsupported".to_string())
         );
     }
@@ -1127,8 +1423,8 @@ mod tests {
     // registry で足した runtime を AUTO で起こそうとしても bare spawn にはならない(dedicated_unsupported)
     #[test]
     fn launch_session_refuses_runtime_without_dedicated_argv() {
-        let tmp = std::env::temp_dir().join(format!("atn-broker-ded-{}", std::process::id()));
-        let result = launch_session_scoped_in(&tmp, &reg_with_ollama(), &[], "superagent", "instr", "req-ded", None, &test_env());
+        let tmp = std::env::temp_dir().join(format!("openroly-broker-ded-{}", std::process::id()));
+        let result = launch_session_scoped_in(&tmp, &reg_with_ollama(), &[], "superagent", "instr", "req-ded", None, &test_env(), &test_isolation());
         assert_eq!(result.err(), Some("dedicated_unsupported".to_string()));
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -1141,7 +1437,7 @@ mod tests {
         // だけで確定するので実 runtime 名である必要が無い。判定順序を触る改修が入っても spawn に
         // 届かないための多層防御(launch_session_writes_instruction_file_and_reports_dir_failure と同じ意図)。
         let big = "x".repeat(MAX_INSTRUCTION_BYTES + 1);
-        let result = launch_session_scoped(&registry::builtin(), &[], "not-a-real-runtime", &big, "req-1", None);
+        let result = launch_session_scoped(&registry::builtin(), &[], "not-a-real-runtime", &big, "req-1", None, &test_isolation());
         assert_eq!(result.err(), Some("instruction_too_long".to_string()));
     }
 
@@ -1152,9 +1448,9 @@ mod tests {
         // 落ちることで「長さ判定は通った」ことだけを確認する(実 CLI は spawn しない)。
         let at_limit = "x".repeat(MAX_INSTRUCTION_BYTES);
         // request_id を安全な値にし、broker home を temp に向ける(env は触らない)
-        let tmp = std::env::temp_dir().join(format!("atn-broker-limit-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("openroly-broker-limit-{}", std::process::id()));
         let result =
-            launch_session_scoped_in(&tmp, &registry::builtin(), &[], "not-a-real-runtime", &at_limit, "req-limit", None, &test_env());
+            launch_session_scoped_in(&tmp, &registry::builtin(), &[], "not-a-real-runtime", &at_limit, "req-limit", None, &test_env(), &test_isolation());
         // instruction_too_long ではないこと(registry で弾かれるのが正しい)
         assert_eq!(result.err(), Some("unknown_runtime".to_string()));
         let _ = fs::remove_dir_all(&tmp);
@@ -1165,7 +1461,7 @@ mod tests {
         // runtime は registry 外のダミー名(PBI-0040) —— invalid_request_id は他の全判定より先に
         // 確定するので実 runtime 名である必要が無い。
         for bad in ["", "../escape", "a/b", "with space", &"z".repeat(129)] {
-            let result = launch_session_scoped(&registry::builtin(), &[], "not-a-real-runtime", "instr", bad, None);
+            let result = launch_session_scoped(&registry::builtin(), &[], "not-a-real-runtime", "instr", bad, None, &test_isolation());
             assert_eq!(
                 result.err(),
                 Some("invalid_request_id".to_string()),
@@ -1188,10 +1484,10 @@ mod tests {
         // 6引数化で一度落ちたので PBI-0040 で復元): 成功経路では session_dir に instruction.txt が
         // 中身ごと残る。runtime は registry 外のダミー名 —— 万一 dir 判定をすり抜けても実 CLI に
         // 到達しない。
-        let home = std::env::temp_dir().join(format!("atn-broker-instr-{}", std::process::id()));
+        let home = std::env::temp_dir().join(format!("openroly-broker-instr-{}", std::process::id()));
         let _ = fs::remove_dir_all(&home);
         let result =
-            launch_session_scoped_in(&home, &registry::builtin(), &[], "not-a-real-runtime", "INSTR", "req-ok", None, &test_env());
+            launch_session_scoped_in(&home, &registry::builtin(), &[], "not-a-real-runtime", "INSTR", "req-ok", None, &test_env(), &test_isolation());
         assert_eq!(result.err(), Some("unknown_runtime".to_string()));
         assert_eq!(
             fs::read_to_string(home.join("sessions").join("req-ok").join("instruction.txt")).unwrap(),
@@ -1202,13 +1498,177 @@ mod tests {
 
         // 後半: session_dir が作れない状況(broker home が既存の通常ファイル)では session_dir_failed。
         // runtime は registry 外のダミー名 —— 万一 dir 判定をすり抜けても実 CLI に到達しない。
-        let tmp_file = std::env::temp_dir().join(format!("atn-broker-file-{}", std::process::id()));
+        let tmp_file = std::env::temp_dir().join(format!("openroly-broker-file-{}", std::process::id()));
         fs::write(&tmp_file, "not a dir").unwrap();
         let result =
-            launch_session_scoped_in(&tmp_file, &registry::builtin(), &[], "not-a-real-runtime", "instr", "req-dir", None, &test_env());
+            launch_session_scoped_in(&tmp_file, &registry::builtin(), &[], "not-a-real-runtime", "instr", "req-dir", None, &test_env(), &test_isolation());
         // AC-11: reason は bare token 'session_dir_failed'(詳細は付けない)。
         assert_eq!(result.err(), Some("session_dir_failed".to_string()));
         let _ = fs::remove_file(&tmp_file);
+    }
+
+    // ---- PBI-0238: 閉じ込めの土台(図72)—— lane の folder / sandbox_unavailable / proxy env ----
+
+    static NO_SANDBOX: crate::sandbox::NoSandbox = crate::sandbox::NoSandbox { reason: String::new() };
+
+    fn test_isolation() -> Isolation<'static> {
+        Isolation {
+            sandbox: &NO_SANDBOX,
+            egress: EgressConfig { allow: vec![], events: None, upstream_override: None },
+            folder: None,
+            user_home: std::env::temp_dir(),
+        }
+    }
+
+    fn tmp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("openroly-broker-0238-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// `claude` の名前で found に載せる fake runtime(sh script)。found の path が bare name より
+    /// 優先されるので実 claude は起こさない。cwd と proxy env を stdout に出し、`ran` marker を残す。
+    fn fake_claude(dir: &Path) -> (Vec<Found>, PathBuf) {
+        let marker = dir.join("ran");
+        let bin = dir.join("claude");
+        fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\n: > \"{}\"\npwd\necho \"$HTTPS_PROXY|$NO_PROXY|$NODE_USE_ENV_PROXY\"\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        let found = vec![Found {
+            id: "claude".into(),
+            version: None,
+            source: "dir".into(),
+            path: bin.to_string_lossy().into(),
+            models: vec![],
+        }];
+        (found, marker)
+    }
+
+    // AC-4: folder 無し(triage)= cwd は session_dir/scratch(空)。proxy env が載り、profile が残る。
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn dedicated_launch_uses_scratch_for_triage() {
+        let dir = tmp("scratch");
+        let (found, marker) = fake_claude(&dir);
+        let iso = Isolation { sandbox: &crate::sandbox::Seatbelt, ..test_isolation() };
+        let (mut child, egress) = launch_session_scoped_in(
+            &dir.join("home"), &registry::builtin(), &found, "claude", "INSTR", "req-scratch", Some("pst_scope"), &test_env(), &iso,
+        )
+        .expect("spawn");
+        assert!(child.wait().await.unwrap().success());
+        let session = dir.join("home").join("sessions").join("req-scratch");
+        let out = fs::read_to_string(session.join("stdout.log")).unwrap();
+        let mut lines = out.lines();
+        assert_eq!(
+            fs::canonicalize(lines.next().unwrap()).unwrap(),
+            fs::canonicalize(session.join("scratch")).unwrap(),
+            "triage の cwd が session_dir/scratch でない"
+        );
+        assert_eq!(lines.next().unwrap(), format!("http://127.0.0.1:{}||1", egress.port), "proxy env");
+        assert!(marker.exists());
+        assert!(fs::read_dir(session.join("scratch")).unwrap().next().is_none(), "scratch は空");
+        assert!(fs::read_to_string(session.join("sandbox.sb")).unwrap().contains(&format!("localhost:{}", egress.port)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // AC-4: owner wake の folder = cwd。
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn dedicated_launch_owner_folder_is_cwd() {
+        let dir = tmp("owner");
+        let (found, _) = fake_claude(&dir);
+        let proj = dir.join("proj");
+        fs::create_dir_all(&proj).unwrap();
+        let proj_str = proj.to_string_lossy().to_string();
+        let iso = Isolation { sandbox: &crate::sandbox::Seatbelt, folder: Some(&proj_str), ..test_isolation() };
+        let (mut child, _egress) = launch_session_scoped_in(
+            &dir.join("home"), &registry::builtin(), &found, "claude", "INSTR", "req-owner", None, &test_env(), &iso,
+        )
+        .expect("spawn");
+        assert!(child.wait().await.unwrap().success());
+        let out = fs::read_to_string(dir.join("home/sessions/req-owner/stdout.log")).unwrap();
+        assert_eq!(fs::canonicalize(out.lines().next().unwrap()).unwrap(), fs::canonicalize(&proj).unwrap());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // AC-4: rule に無い folder は起こさない(半端な session_dir も残さない)。
+    #[tokio::test]
+    async fn dedicated_launch_refuses_folder_not_allowed() {
+        let dir = tmp("folder");
+        let (found, marker) = fake_claude(&dir);
+        let user_home = dir.join("userhome");
+        fs::create_dir_all(user_home.join(".ssh")).unwrap();
+        fs::create_dir_all(user_home.join("Library").join("x")).unwrap();
+        let ok_folder = dir.join("proj");
+        fs::create_dir_all(&ok_folder).unwrap();
+        let s = |p: &Path| p.to_string_lossy().to_string();
+        let cases: Vec<(String, Option<&str>)> = vec![
+            ("/".to_string(), None),
+            ("relative/x".to_string(), None),
+            (s(&dir.join("does-not-exist")), None),
+            (s(&user_home), None),
+            (s(&user_home.join(".ssh")), None),
+            (s(&user_home.join("Library").join("x")), None),
+            (s(&dir.join("claude")), None),          // file であって dir でない
+            (s(&dir.join("home")), None),            // broker home の下
+            (s(&ok_folder), Some("pst_triage")),     // triage は folder を持たない
+        ];
+        for (i, (folder, scope)) in cases.iter().enumerate() {
+            let iso = Isolation { folder: Some(folder), user_home: user_home.clone(), ..test_isolation() };
+            let rid = format!("req-f{i}");
+            let r = launch_session_scoped_in(
+                &dir.join("home"), &registry::builtin(), &found, "claude", "INSTR", &rid, *scope, &test_env(), &iso,
+            );
+            assert_eq!(r.err(), Some("folder_not_allowed".to_string()), "case {i}: {folder:?}");
+            assert!(!dir.join("home").join("sessions").join(&rid).exists(), "case {i}: 半端な session_dir が残った");
+        }
+        assert!(!marker.exists(), "folder_not_allowed で何かが spawn された");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // AC-5 / AC-X2: backend が無い(Linux / Windows / seatbelt が壊れた機)= 何も spawn せず
+    // `sandbox_unavailable`。session_dir も残さない。
+    #[tokio::test]
+    async fn dedicated_launch_sandbox_unavailable_spawns_nothing() {
+        let dir = tmp("nosb");
+        let (found, marker) = fake_claude(&dir);
+        let proj = dir.join("proj");
+        fs::create_dir_all(&proj).unwrap();
+        let proj_str = proj.to_string_lossy().to_string();
+        let iso = Isolation { folder: Some(&proj_str), ..test_isolation() };
+        let r = launch_session_scoped_in(
+            &dir.join("home"), &registry::builtin(), &found, "claude", "INSTR", "req-nosb", None, &test_env(), &iso,
+        );
+        assert_eq!(r.err(), Some("sandbox_unavailable".to_string()));
+        assert!(!marker.exists(), "sandbox 無しで spawn された");
+        assert!(!dir.join("home/sessions/req-nosb").exists(), "半端な session_dir が残った");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // AC-X1 の入口側: folder 名で profile に規則を注入できない(`"` を含む dir は起こさない)。
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn dedicated_launch_refuses_folder_that_would_inject_profile_rules() {
+        let dir = tmp("inject");
+        let (found, marker) = fake_claude(&dir);
+        let evil = dir.join("x\") (allow network*) (subpath \"");
+        fs::create_dir_all(&evil).unwrap();
+        let evil_str = evil.to_string_lossy().to_string();
+        let iso = Isolation { sandbox: &crate::sandbox::Seatbelt, folder: Some(&evil_str), ..test_isolation() };
+        let r = launch_session_scoped_in(
+            &dir.join("home"), &registry::builtin(), &found, "claude", "INSTR", "req-inject", None, &test_env(), &iso,
+        );
+        assert_eq!(r.err(), Some("sandbox_unavailable".to_string()));
+        assert!(!marker.exists());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     // ---- 外部 API provider runtime(PBI-0070 / EP-0009 C)----
@@ -1225,13 +1685,13 @@ mod tests {
         .merged_with_builtin()
     }
 
-    /// argv を marker file に書くだけの fake CLI(実 paa には到達させない。EP-0001 LEARN 13)
+    /// argv を marker file に書くだけの fake CLI(実 openroly には到達させない。EP-0001 LEARN 13)
     fn fake_cli(name: &str) -> (PathBuf, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("paa-launch-api-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("openroly-launch-api-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let marker = dir.join("argv.log");
-        let bin = dir.join("fake-paa");
+        let bin = dir.join("fake-openroly");
         fs::write(&bin, format!("#!/bin/sh\necho \"$@\" >> {}\nexit 0\n", marker.display())).unwrap();
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
@@ -1239,7 +1699,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn api_runtime_spawns_paa_agent_with_thread() {
+    async fn api_runtime_spawns_openroly_agent_with_thread() {
         let (bin, marker) = fake_cli("ok");
         let argv = vec![bin.to_string_lossy().to_string()];
         let mut child = launch_api(&reg_with_api(), "openai-api", "th_1", &argv).expect("spawn");
@@ -1249,16 +1709,84 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn api_runtime_keeps_leading_argv_from_paa_cli() {
-        // PAA_CLI="bun:<path>" 相当。argv0 の後ろの先行引数を落とさない
+    async fn api_runtime_keeps_leading_argv_from_openroly_cli() {
+        // OPENROLY_CLI="bun:<path>" 相当。argv0 の後ろの先行引数を落とさない
         let (bin, marker) = fake_cli("leading");
-        let argv = vec![bin.to_string_lossy().to_string(), "/repo/paa.ts".to_string()];
+        let argv = vec![bin.to_string_lossy().to_string(), "/repo/openroly.ts".to_string()];
         let mut child = launch_api(&reg_with_api(), "openai-api", "th_2", &argv).expect("spawn");
         let _ = child.wait().await;
         assert_eq!(
             fs::read_to_string(&marker).unwrap().trim(),
-            "/repo/paa.ts agent openai --thread th_2"
+            "/repo/openroly.ts agent openai --thread th_2"
         );
+    }
+
+    // ---- 持ち込みの endpoint(PBI-0276)----
+
+    #[test]
+    fn custom_api_runtime_shape_is_the_only_gate() {
+        for ok in [
+            "custom-omnirouter-api",
+            "custom-work-gw-api",
+            "custom-a1-api",
+            "custom-01234567890123456789012345678901-api", // slug 32 文字
+        ] {
+            assert!(is_custom_api_runtime(ok), "{ok} は通るべき");
+        }
+        for bad in [
+            "custom-api",                                    // slug が無い
+            "custom--api",                                   // slug が空
+            "custom-a-api",                                  // slug 1 文字
+            "custom-A-api",                                  // 大文字
+            "custom-a_b-api",                                // `_`
+            "custom-a b-api",                                // 空白
+            "custom-a;rm -rf-api",                           // shell の記号
+            "custom--x-api",                                 // slug が `-` 始まり
+            "custom-x--api",                                 // slug が `-` 終わり
+            "custom-012345678901234567890123456789012-api",  // slug 33 文字
+            "custom-omnirouter",                             // `-api` が無い
+            "openai-api",                                    // 名前付きは registry 側で判定する
+            "../../etc/passwd-api",
+        ] {
+            assert!(!is_custom_api_runtime(bad), "{bad} は通してはいけない");
+        }
+    }
+
+    #[tokio::test]
+    async fn custom_api_runtime_spawns_the_same_cli_without_registry() {
+        // registry に載らない(名前が account ごと)ので allowlist は作れない。起こす物は
+        // 他の API provider と完全に同じ `OPENROLY_CLI agent <provider> --thread <id>`
+        let (bin, marker) = fake_cli("custom");
+        let argv = vec![bin.to_string_lossy().to_string()];
+        let mut child =
+            launch_api(&reg_with_api(), "custom-omnirouter-api", "th_c", &argv).expect("spawn");
+        let _ = child.wait().await;
+        assert_eq!(
+            fs::read_to_string(&marker).unwrap().trim(),
+            "agent custom-omnirouter --thread th_c"
+        );
+    }
+
+    #[tokio::test]
+    async fn custom_api_runtime_off_shape_is_rejected_before_spawn() {
+        let (bin, marker) = fake_cli("custom-bad");
+        let argv = vec![bin.to_string_lossy().to_string()];
+        for bad in ["custom-A-api", "custom-a;id-api", "custom--api"] {
+            let result = launch_api(&reg_with_api(), bad, "th_c", &argv);
+            assert_eq!(result.err(), Some("unknown_runtime".to_string()), "{bad}");
+        }
+        assert!(!marker.exists(), "spawn してはいけない");
+    }
+
+    #[tokio::test]
+    async fn custom_api_runtime_still_needs_a_thread() {
+        let (bin, marker) = fake_cli("custom-nothread");
+        let argv = vec![bin.to_string_lossy().to_string()];
+        assert_eq!(
+            launch_api(&reg_with_api(), "custom-omnirouter-api", "", &argv).err(),
+            Some("thread_required".to_string())
+        );
+        assert!(!marker.exists(), "spawn してはいけない");
     }
 
     #[tokio::test]
@@ -1280,7 +1808,7 @@ mod tests {
         );
         assert_eq!(
             launch_api(&reg_with_api(), "openai-api", "th_1", &[]).err(),
-            Some("paa_cli_not_found".to_string())
+            Some("openroly_cli_not_found".to_string())
         );
         // adapter: null(検出のみ)の api runtime も起こさない
         assert_eq!(

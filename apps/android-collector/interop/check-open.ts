@@ -1,4 +1,4 @@
-// PBI-0115 AC-1 の TS 側検査: Java+BouncyCastle が作った envelope を @paa/crypto-envelope の
+// PBI-0115 AC-1 の TS 側検査: Java+BouncyCastle が作った envelope を @openroly/crypto-envelope の
 // open で開け、deriveKeyId も一致する事を確かめる。apps/android-collector/interop/check-interop.sh
 // から呼ばれる(単体では: bun apps/android-collector/interop/check-open.ts <envelope.json>)。
 // workspace link が無い app dir からでも動く様に、source を直接 import する
@@ -21,5 +21,5 @@ if (plain !== data.plaintext) {
   process.exit(1);
 }
 console.log(
-  "OK: BC-sealed envelope opened by @paa/crypto-envelope (deriveKeyId + plaintext match)",
+  "OK: BC-sealed envelope opened by @openroly/crypto-envelope (deriveKeyId + plaintext match)",
 );

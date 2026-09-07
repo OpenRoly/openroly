@@ -1,8 +1,8 @@
 # tag を打つと単体実行ファイル + broker(Rust)binary を作って Release に添付する(PBI-0137・PBI-0154)。
 #
-# `atn install` / `atn login` と plugin の launcher はここで公開された asset を取りに来る
-# (`https://github.com/<owner>/<repo>/releases/download/v<version>/atn-mcp-<target>`)。
-# **公開 repo(personal-agent-account/all-together-now)側で走った Release だけが token 無しで取れる** ——
+# `openroly install` / `openroly login` と plugin の launcher はここで公開された asset を取りに来る
+# (`https://github.com/<owner>/<repo>/releases/download/v<version>/openroly-mcp-<target>`)。
+# **公開 repo(openroly/openroly)側で走った Release だけが token 無しで取れる** ——
 # 正本 repo(private)で走らせた場合、asset は private になり取得側は 404 になる。
 # action の版は 2026-09-01 に GitHub API で実測した最新 major:
 #   actions/checkout v7.0.1 / oven-sh/setup-bun v2.2.0 / softprops/action-gh-release v3.0.3 /
@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.14
       - run: bun install --frozen-lockfile
 
       # cross target の runtime は bun が自分で download するので、3 target とも 1 job で作れる
@@ -49,18 +49,18 @@ jobs:
       - uses: actions/checkout@v7
       - run: rustup target add x86_64-apple-darwin
 
-      # PAA_REGISTRY_PUBLIC_KEY は compile-time pin(broker/src/registry.rs)。本番の署名鍵は
+      # OPENROLY_REGISTRY_PUBLIC_KEY は compile-time pin(broker/src/registry.rs)。本番の署名鍵は
       # dev と同一(shibubu-manager/secrets/REGISTRY.md 実測)なので、broker/registry.pub の
       # 値がそのまま本番向けの正しい public key ——secret ではないのでそのまま焼く
       - name: build broker (darwin-arm64 / darwin-x64)
         working-directory: broker
         run: |
           key="$(cat registry.pub)"
-          PAA_REGISTRY_PUBLIC_KEY="$key" cargo build --release
-          PAA_REGISTRY_PUBLIC_KEY="$key" cargo build --release --target x86_64-apple-darwin
+          OPENROLY_REGISTRY_PUBLIC_KEY="$key" cargo build --release
+          OPENROLY_REGISTRY_PUBLIC_KEY="$key" cargo build --release --target x86_64-apple-darwin
           mkdir -p ../dist
-          cp target/release/atn-broker ../dist/atn-broker-darwin-arm64
-          cp target/x86_64-apple-darwin/release/atn-broker ../dist/atn-broker-darwin-x64
+          cp target/release/openroly-broker ../dist/openroly-broker-darwin-arm64
+          cp target/x86_64-apple-darwin/release/openroly-broker ../dist/openroly-broker-darwin-x64
 
       - uses: actions/upload-artifact@v7
         with:
@@ -76,9 +76,9 @@ jobs:
         working-directory: broker
         run: |
           key="$(cat registry.pub)"
-          PAA_REGISTRY_PUBLIC_KEY="$key" cargo build --release
+          OPENROLY_REGISTRY_PUBLIC_KEY="$key" cargo build --release
           mkdir -p ../dist
-          cp target/release/atn-broker ../dist/atn-broker-linux-x64
+          cp target/release/openroly-broker ../dist/openroly-broker-linux-x64
 
       - uses: actions/upload-artifact@v7
         with:
@@ -99,18 +99,18 @@ jobs:
       # ここで作らないと、どちらも「照合表が無い」として取得を諦める(壊れた binary は流れない)
       - name: SHA256SUMS
         working-directory: dist
-        run: sha256sum atn-mcp-* atn-darwin-* atn-linux-* atn-broker-* > SHA256SUMS
+        run: sha256sum openroly-mcp-* openroly-darwin-* openroly-linux-* openroly-broker-* > SHA256SUMS
 
       - uses: softprops/action-gh-release@v3
         with:
           files: |
-            dist/atn-mcp-darwin-arm64
-            dist/atn-mcp-darwin-x64
-            dist/atn-mcp-linux-x64
-            dist/atn-darwin-arm64
-            dist/atn-darwin-x64
-            dist/atn-linux-x64
-            dist/atn-broker-darwin-arm64
-            dist/atn-broker-darwin-x64
-            dist/atn-broker-linux-x64
+            dist/openroly-mcp-darwin-arm64
+            dist/openroly-mcp-darwin-x64
+            dist/openroly-mcp-linux-x64
+            dist/openroly-darwin-arm64
+            dist/openroly-darwin-x64
+            dist/openroly-linux-x64
+            dist/openroly-broker-darwin-arm64
+            dist/openroly-broker-darwin-x64
+            dist/openroly-broker-linux-x64
             dist/SHA256SUMS

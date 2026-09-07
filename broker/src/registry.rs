@@ -16,20 +16,20 @@ use serde::Deserialize;
 const BUILTIN_JSON: &str = include_str!("../builtin-detectors.json");
 
 /// pin する public key(hex 32byte)。**compile-time** で決まる —
-/// 本番 / E2E build は `PAA_REGISTRY_PUBLIC_KEY` で差し替え、無ければ dev 鍵の `registry.pub`。
+/// 本番 / E2E build は `OPENROLY_REGISTRY_PUBLIC_KEY` で差し替え、無ければ dev 鍵の `registry.pub`。
 /// 実行時 env で差し替えられる口は作らない(pin の意味が無くなる)。
-const PINNED_PUBLIC_KEY_HEX: &str = match option_env!("PAA_REGISTRY_PUBLIC_KEY") {
+const PINNED_PUBLIC_KEY_HEX: &str = match option_env!("OPENROLY_REGISTRY_PUBLIC_KEY") {
     Some(k) => k,
     None => include_str!("../registry.pub"),
 };
 
 /// Cloud が署名を載せる header 名(apps/server/src/app.ts の route と対)。
-pub const SIGNATURE_HEADER: &str = "X-PAA-Registry-Signature";
+pub const SIGNATURE_HEADER: &str = "X-OpenRoly-Registry-Signature";
 const CACHE_BODY: &str = "detectors.json";
 const CACHE_SIG: &str = "detectors.sig";
 const CACHE_ETAG: &str = "detectors.etag";
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
-/// 取得間隔の既定(6h)。`PAA_REGISTRY_REFRESH_SECS` で上書き。
+/// 取得間隔の既定(6h)。`OPENROLY_REGISTRY_REFRESH_SECS` で上書き。
 pub const DEFAULT_REFRESH: Duration = Duration::from_secs(6 * 60 * 60);
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
@@ -67,19 +67,28 @@ pub struct Detector {
     /// models 列挙の出所(PBI-0025)。`source: "service"` なら `detect.services` の応答から抽出する
     #[serde(default)]
     pub models: Option<ModelsSpec>,
+    /// generic adapter の材料(PBI-0210 / EP-0017)。**中身は解釈しない** —— 署名検証済み registry の
+    /// bytes 由来のまま `openroly adopt --spec-stdin` へ渡すだけ(config の書き方の正本は TS 側 1 箇所)。
+    /// `verify` 前に読まない(allowlist と同じ不変条件 = 署名不一致の `native` は捨てる)。
+    #[serde(default)]
+    pub native: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 pub struct Detect {
     /// 「この端末では常に利用できる」(PBI-0070 / EP-0009 C)。外部 API provider のように
     /// 探すべき binary / app / service を持たない runtime のための宣言 —— true なら
-    /// discovery は一切探索せずに Found を返す(実体は `atn agent <provider>`)。
+    /// discovery は一切探索せずに Found を返す(実体は `openroly agent <provider>`)。
     #[serde(default)]
     pub always: bool,
     #[serde(default)]
     pub binaries: Vec<String>,
     #[serde(default)]
     pub apps: Vec<String>,
+    /// home 配下の marker dir(`~/.kiro` 等。PBI-0210 / vercel-labs/skills の表の「検知 path」)。
+    /// binary も app も無い時の fallback で、実在すれば `source: "dir"` で Found にする
+    #[serde(default)]
+    pub dirs: Vec<String>,
     /// local HTTP service(Ollama :11434 等。要件 §45.3 層 1 / PBI-0025)。**existence**(見つかる/
     /// 見つからない・path・source)は binaries / apps どちらも見つからない時だけの fallback だが、
     /// `models.source == "service"` の detector では **models だけは binary/app 発見済みでも常に
@@ -224,7 +233,7 @@ pub fn verify(body: &[u8], signature_b64: &str, key: &VerifyingKey) -> Result<()
 
 // ---------- cache ----------
 
-/// 起動時: cache(`$PAA_BROKER_HOME/detectors.json` + `.sig`)を**再検証してから**使う。
+/// 起動時: cache(`$OPENROLY_BROKER_HOME/detectors.json` + `.sig`)を**再検証してから**使う。
 /// 無い / 壊れている / 署名不一致 → built-in。cache の改ざんで allowlist が広がらない。
 ///
 /// 捨てた cache は **etag ごと消す**: etag だけ残ると次の fetch が `If-None-Match` で 304 を受け、
@@ -294,7 +303,7 @@ pub enum FetchOutcome {
     Failed(String),
 }
 
-/// `ws://host:port/v1/broker/ws` → `http://host:port/v1/registry/detectors`(`PAA_REGISTRY_URL` で上書き可)。
+/// `ws://host:port/v1/broker/ws` → `http://host:port/v1/registry/detectors`(`OPENROLY_REGISTRY_URL` で上書き可)。
 pub fn registry_url_from_ws(ws_url: &str) -> String {
     let http = if let Some(rest) = ws_url.strip_prefix("wss://") {
         format!("https://{rest}")
@@ -408,6 +417,25 @@ mod tests {
         assert_eq!(reg.allowlist(), vec!["zeta"]);
     }
 
+    // PBI-0210: `native`(generic adapter の材料)と `detect.dirs` は解釈せずに保持する
+    #[test]
+    fn parse_keeps_native_and_detect_dirs_without_interpreting_them() {
+        let reg = parse(
+            r#"{"version":1,"detectors":[{"id":"kiro","adapter":"generic/native",
+                "detect":{"dirs":["~/.kiro"]},
+                "native":{"mcp":{"strategy":"file","path":"~/.kiro/settings/mcp.json","format":"json","key":"mcpServers","entry":{}}}}]}"#,
+            "t",
+        )
+        .unwrap();
+        let d = reg.detector("kiro").unwrap();
+        assert_eq!(d.detect.dirs, vec!["~/.kiro"]);
+        assert_eq!(d.native.as_ref().unwrap()["mcp"]["strategy"], "file");
+        // 無い entry は None(古い registry でも壊れない)
+        let old = parse(r#"{"version":1,"detectors":[{"id":"claude","adapter":"official/claude"}]}"#, "t").unwrap();
+        assert!(old.detector("claude").unwrap().native.is_none());
+        assert!(old.detector("claude").unwrap().detect.dirs.is_empty());
+    }
+
     #[test]
     fn merged_with_builtin_keeps_fetched_entries_and_fills_missing() {
         let reg = parse(
@@ -451,15 +479,41 @@ mod tests {
 
     #[test]
     fn pinned_public_key_is_valid_32_bytes() {
-        // registry.pub / PAA_REGISTRY_PUBLIC_KEY が壊れていたら build 済み binary が丸ごと built-in 固定になる。
+        // registry.pub / OPENROLY_REGISTRY_PUBLIC_KEY が壊れていたら build 済み binary が丸ごと built-in 固定になる。
         // ここで気付く
         assert!(pinned_public_key().is_ok(), "pin された public key が不正: {PINNED_PUBLIC_KEY_HEX:?}");
+    }
+
+    // PBI-0210 AC-X1: 署名の合わない body に `native` が載っていても、broker はそれを読まない
+    // —— allowlist も `native` も広がらない(「検証前に読む」実装なら、`native` を持つ id が
+    // detector() から取れてしまう)
+    #[test]
+    fn tampered_body_with_native_widens_neither_allowlist_nor_native() {
+        let dir = std::env::temp_dir().join(format!("openroly-broker-reg-native-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let key = test_key();
+        let honest = br#"{"version":1,"detectors":[{"id":"claude","adapter":"official/claude"}]}"#;
+        let sig = sign_b64(&key, honest); // 署名は honest の物のまま
+        // 攻撃者が body だけ差し替える: 新しい id + generic adapter + 他人の config を書く native
+        let tampered = br#"{"version":1,"detectors":[{"id":"evil","adapter":"generic/native",
+            "native":{"mcp":{"strategy":"file","path":"~/.ssh/config","format":"json","key":"x","entry":{}}}}]}"#;
+        store(&dir, tampered, &sig, Some("\"e\"")).unwrap();
+        let reg = load(&dir);
+        assert_eq!(reg.origin, "builtin", "改ざん body を採用した");
+        assert!(reg.detector("evil").is_none(), "改ざんされた id が registry に入った");
+        assert!(!reg.allowlist().contains(&"evil".to_string()), "allowlist が改ざんで広がった");
+        // built-in の entry には native が無い(= 改ざん body の native がどこにも漏れていない)
+        for id in reg.ids().iter().map(|s| s.to_string()).collect::<Vec<_>>() {
+            assert!(reg.detector(&id).unwrap().native.is_none(), "{id} に native が漏れた");
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 
     // AC-2c: cache の body を改ざんすると load は built-in に落ちる(署名は元のまま)
     #[test]
     fn load_rejects_tampered_cache_and_falls_back_to_builtin() {
-        let dir = std::env::temp_dir().join(format!("atn-broker-reg-cache-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("openroly-broker-reg-cache-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         // 署名は pin された鍵ではないので、正しい body でも load は built-in になる(pin 検証の実在確認)
@@ -492,8 +546,8 @@ mod tests {
             "http://127.0.0.1:8787/v1/registry/detectors"
         );
         assert_eq!(
-            registry_url_from_ws("wss://paa.example.com/v1/broker/ws"),
-            "https://paa.example.com/v1/registry/detectors"
+            registry_url_from_ws("wss://openroly.example.com/v1/broker/ws"),
+            "https://openroly.example.com/v1/registry/detectors"
         );
         assert_eq!(registry_url_from_ws("ws://localhost:1"), "http://localhost:1/v1/registry/detectors");
     }

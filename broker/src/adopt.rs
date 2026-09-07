@@ -1,5 +1,5 @@
 //! 自動登録(PBI-0023 / REQ-19、図18)の materialize 面。Cloud が hello の応答で返した
-//! `registered` を受け、kind ごとに `atn adopt` を起こして credential + MCP config を書かせる。
+//! `registered` を受け、kind ごとに `openroly adopt` を起こして credential + MCP config を書かせる。
 //!
 //! credentials.json の書式・lock 手順・`claude mcp add` の呼び方の正本は TS 側(Common
 //! Installation Engine)の 1 箇所に置く —— Rust に写すと正本が 2 枚になり、片方だけ直る。
@@ -16,7 +16,7 @@ use tokio::process::Command;
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::paa_cli::cli_argv;
+use crate::openroly_cli::cli_argv;
 
 /// `registered.runtimes[]` の 1 件。
 #[derive(Debug, Clone, PartialEq)]
@@ -26,11 +26,14 @@ pub struct Adoption {
     pub token: String,
     pub base_url: String,
     pub name: String,
+    /// generic adapter の材料(PBI-0210)。Cloud が `registered` に載せた `native`(署名検証済み
+    /// registry 由来)をそのまま `openroly adopt --spec-stdin` の JSON に添える。broker は解釈しない
+    pub native: Option<Value>,
 }
 
 /// materialize 1 件の上限。CLI が対話待ちで固まっても WS ループを巻き込まない。
 ///
-/// **5 秒では足りない**(PBI-0190 で本番実測): `atn adopt` は bun を起動し、その先で
+/// **5 秒では足りない**(PBI-0190 で本番実測): `openroly adopt` は bun を起動し、その先で
 /// `claude mcp add` のような **runtime 自身の CLI** を呼ぶ。その CLI の起動が数秒かかる機械では
 /// 5 秒を超え、全部 `adopt_timeout` で落ちて **MCP が 1 つも登録されない**
 /// (同じ機械で `claude --version` の probe も 5 秒で timeout していた)。
@@ -39,13 +42,13 @@ pub struct Adoption {
 const ADOPT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// **同時に走らせる materialize の上限**(PBI-0235)。`registered` の件数は Cloud が決めるので、
-/// 1000 件返ってくれば端末で 1000 個の子プロセスが同時に立つ —— 1 件あたり `atn adopt`(bun)と
+/// 1000 件返ってくれば端末で 1000 個の子プロセスが同時に立つ —— 1 件あたり `openroly adopt`(bun)と
 /// その先の runtime CLI(`claude mcp add` 等)で 2 プロセス以上、しかも `ADOPT_TIMEOUT` の 60 秒
 /// 居座る。Cloud は信頼している(TLS + token)が、broker は「Cloud の言葉で**端末の process を
 /// 起こす**」唯一の場所なので、信頼していても量の上限は持つ。
 ///
 /// **4 にした根拠**: 端末に同時に立つ子を `2 × 4 = 8` プロセスに抑えつつ、catalog の
-/// adapter 付き detector は現状 6 種(`apps/server/registry/detectors.v1.json`)なので
+/// adapter 付き detector は現状 6 種(`packages/core/registry/detectors.v1.json`)なので
 /// 実運用の最大 6 件でも 2 波(最悪 `2 × ADOPT_TIMEOUT`)で終わり、通常の 1〜3 件は待ちが
 /// 一度も発生しない。
 ///
@@ -74,6 +77,8 @@ pub fn parse_registered(msg: &Value) -> Vec<Adoption> {
                 token: field("token")?,
                 base_url: field("base_url")?,
                 name: field("name").unwrap_or_default(),
+                // object だけ受ける(文字列や配列の `native` は無い物として扱う = 推測で組まない)
+                native: v.get("native").filter(|n| n.is_object()).cloned(),
             })
         })
         .collect()
@@ -98,7 +103,7 @@ pub async fn adopt_all(adoptions: &[Adoption], acks: &UnboundedSender<Value>) {
     adopt_all_with(&cli_argv(), ADOPT_CONCURRENCY, ADOPT_TIMEOUT, adoptions, acks).await
 }
 
-/// `adopt_all` の本体。argv / 上限 / timeout を引数で受けるので、test は env(`PAA_CLI`)を
+/// `adopt_all` の本体。argv / 上限 / timeout を引数で受けるので、test は env(`OPENROLY_CLI`)を
 /// 触らずに「同時に何本走ったか」と「1 件が timeout で詰まっても他が完了するか」を測れる ——
 /// cargo test は同一プロセスでスレッド並列に走るため、env を書き換える test は互いを壊す。
 pub async fn adopt_all_with(
@@ -137,11 +142,20 @@ pub async fn adopt_all_with(
     .await;
 }
 
+/// `openroly adopt --spec-stdin` に渡す 1 行(改行を含まない JSON)。`native` が無ければ key ごと出さない。
+fn spec_line(a: &Adoption) -> String {
+    let mut spec = json!({ "token": a.token });
+    if let Some(n) = &a.native {
+        spec["native"] = n.clone();
+    }
+    spec.to_string()
+}
+
 /// 1 件を materialize する。戻り値 `(ok, detail)` の `detail` は `register_ack` に載る短い理由。
-/// CLI 不在は `paa_cli_not_found`(配布で PATH に paa が無い、を運用で名指しできるようにする)。
+/// CLI 不在は `openroly_cli_not_found`(配布で PATH に openroly が無い、を運用で名指しできるようにする)。
 async fn adopt_one(argv: &[String], timeout: Duration, a: &Adoption) -> (bool, String) {
     let Some((program, leading)) = argv.split_first() else {
-        return (false, "paa_cli_not_found".to_string());
+        return (false, "openroly_cli_not_found".to_string());
     };
     let mut cmd = Command::new(program);
     cmd.args(leading);
@@ -154,7 +168,10 @@ async fn adopt_one(argv: &[String], timeout: Duration, a: &Adoption) -> (bool, S
         .arg(&a.base_url)
         .arg("--name")
         .arg(&a.name)
-        .arg("--token-stdin")
+        // PBI-0210: stdin は JSON 1 行 `{token, native?}`(`--spec-stdin`)。token を argv に載せない
+        // 理由(ps で見える)はそのまま。旧 CLI(`--token-stdin` しか知らない)は exit 2 になり
+        // `register_ack ok:false` → 次 hello で再試行 = CLI を更新すれば直る(PBI-0250 の型)
+        .arg("--spec-stdin")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -164,13 +181,13 @@ async fn adopt_one(argv: &[String], timeout: Duration, a: &Adoption) -> (bool, S
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("broker: cannot start the atn CLI ({e})");
-            return (false, "paa_cli_not_found".to_string());
+            eprintln!("broker: cannot start the openroly CLI ({e})");
+            return (false, "openroly_cli_not_found".to_string());
         }
     };
-    // token は stdin へ 1 行書いて close する(EOF を送らないと CLI 側の読み取りが返らない)
+    // spec は stdin へ 1 行書いて close する(EOF を送らないと CLI 側の読み取りが返らない)
     if let Some(mut stdin) = child.stdin.take() {
-        if let Err(e) = stdin.write_all(format!("{}\n", a.token).as_bytes()).await {
+        if let Err(e) = stdin.write_all(format!("{}\n", spec_line(a)).as_bytes()).await {
             return (false, format!("stdin write failed: {e}"));
         }
         drop(stdin);
@@ -212,7 +229,27 @@ mod tests {
             token: "par_x".into(),
             base_url: "http://127.0.0.1:1".into(),
             name: "M / Codex".into(),
+            native: None,
         }
+    }
+
+    // PBI-0210: `native`(object)は解釈せず持ち回り、stdin の JSON に添える。object でない物は捨てる
+    #[test]
+    fn parse_registered_は_native_を_object_の時だけ持ち回る() {
+        let msg = json!({"runtimes": [
+            {"kind": "opencode", "runtime_id": "rt_1", "token": "par_x", "base_url": "http://h", "name": "M",
+             "native": {"mcp": {"strategy": "file", "path": "~/.config/opencode/opencode.json"}}},
+            {"kind": "claude", "runtime_id": "rt_2", "token": "par_y", "base_url": "http://h", "name": "M",
+             "native": "not-an-object"}
+        ]});
+        let got = parse_registered(&msg);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].native.as_ref().unwrap()["mcp"]["strategy"], "file");
+        assert!(got[1].native.is_none());
+        assert_eq!(spec_line(&got[0]), r#"{"native":{"mcp":{"path":"~/.config/opencode/opencode.json","strategy":"file"}},"token":"par_x"}"#);
+        assert_eq!(spec_line(&got[1]), r#"{"token":"par_y"}"#);
+        // 1 行(改行を含まない)= CLI は 1 行読んで parse する
+        assert!(!spec_line(&got[0]).contains('\n'));
     }
 
     #[test]
@@ -247,19 +284,19 @@ mod tests {
 
     // PBI-0023 AC-4b: CLI が居ない環境でも broker は落ちず、名前の付いた reason を返す
     #[tokio::test]
-    async fn adopt_は_cli_が無ければ_paa_cli_not_found() {
+    async fn adopt_は_cli_が無ければ_openroly_cli_not_found() {
         let (ok, detail) = adopt_one(
-            &argv(&["/nonexistent/atn-broker-test"]),
+            &argv(&["/nonexistent/openroly-broker-test"]),
             ADOPT_TIMEOUT,
             &sample("codex"),
         )
         .await;
         assert!(!ok);
-        assert_eq!(detail, "paa_cli_not_found");
-        // PAA_CLI が空文字(= 分割後 0 要素)でも同じ扱い
+        assert_eq!(detail, "openroly_cli_not_found");
+        // OPENROLY_CLI が空文字(= 分割後 0 要素)でも同じ扱い
         let (ok2, detail2) = adopt_one(&[], ADOPT_TIMEOUT, &sample("codex")).await;
         assert!(!ok2);
-        assert_eq!(detail2, "paa_cli_not_found");
+        assert_eq!(detail2, "openroly_cli_not_found");
     }
 
     // PBI-0023 AC-4: exit != 0 は stderr の 1 行目を detail にして ok:false
@@ -271,17 +308,17 @@ mod tests {
         assert_eq!(detail, "no config");
     }
 
-    // 成功時は stdin から token を受け取れている(CLI 側で読める形で渡している)
+    // 成功時は stdin から spec(JSON 1 行)を受け取れている(CLI 側で読める形で渡している)
     #[tokio::test]
-    async fn adopt_は_成功時に_ok_true_と_空_detail_を返し_token_を_stdin_で渡す() {
-        let dir = std::env::temp_dir().join(format!("paa-adopt-{}", std::process::id()));
+    async fn adopt_は_成功時に_ok_true_と_空_detail_を返し_spec_を_stdin_で渡す() {
+        let dir = std::env::temp_dir().join(format!("openroly-adopt-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let out = dir.join("stdin.txt");
         let cli = argv(&["/bin/sh", "-c", &format!("cat > {}", out.display())]);
         let (ok, detail) = adopt_one(&cli, ADOPT_TIMEOUT, &sample("codex")).await;
         assert!(ok, "detail={detail}");
         assert_eq!(detail, "");
-        assert_eq!(std::fs::read_to_string(&out).unwrap().trim(), "par_x");
+        assert_eq!(std::fs::read_to_string(&out).unwrap().trim(), r#"{"token":"par_x"}"#);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -308,11 +345,12 @@ mod tests {
             token: "par_x".into(),
             base_url: "http://127.0.0.1:1".into(),
             name: format!("M / {i}"),
+            native: None,
         }
     }
 
     fn tmp_dir(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("paa-adopt-{}-{tag}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("openroly-adopt-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("live")).unwrap();
         dir
@@ -373,7 +411,7 @@ mod tests {
             .unwrap_or(0)
     }
 
-    // AC-1: registered に 100 件来ても、同時に走る `atn adopt` は上限以下
+    // AC-1: registered に 100 件来ても、同時に走る `openroly adopt` は上限以下
     #[tokio::test]
     async fn adopt_all_は同時に走る_adopt_を上限以下に抑える() {
         let items: Vec<Adoption> = (0..20).map(|i| sample_n(i, "codex")).collect();

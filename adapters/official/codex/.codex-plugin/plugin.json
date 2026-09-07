@@ -1,5 +1,5 @@
 {
-  "name": "atn",
+  "name": "openroly",
   "version": "0.2.1",
-  "description": "All Together Now — attach Codex to your @handle so it can use the account's inbox and contacts (pairing via `atn pair codex`)"
+  "description": "OpenRoly — attach Codex to your @handle so it can use the account's inbox and contacts (pairing via `openroly pair codex`)"
 }

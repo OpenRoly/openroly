@@ -1,4 +1,4 @@
-// atn-mask の stdio proxy 本体(PBI-0177)。JSON-RPC(MCP)を newline framing で親↔子の間に
+// openroly-mask の stdio proxy 本体(PBI-0177)。JSON-RPC(MCP)を newline framing で親↔子の間に
 // 挟み、`tools/call` / `resources/read` / `prompts/get` の **result** の文字列値を mask し、
 // `tools/call` の **params** に含まれる placeholder を子へ渡す前に復元する。request id・
 // notification はそのまま(id を書き換えると応答の対応が取れなくなる)。
@@ -74,7 +74,7 @@ export interface ProxyDeps {
 }
 
 /**
- * 親(Claude Code 等) ⇄ atn-mask ⇄ 子(任意の MCP server) を繋ぐ。id → method の対応表を持ち、
+ * 親(Claude Code 等) ⇄ openroly-mask ⇄ 子(任意の MCP server) を繋ぐ。id → method の対応表を持ち、
  * 応答が来た時に**その id が指す method**で mask するかを決める(応答の順不同に対応・AC-X3)。
  * 非 JSON 行(壊れた行・子の debug print 等)は解釈できないので**無変更で素通し**する
  * (子の log を壊さない・パース不能で proxy が落ちない)。

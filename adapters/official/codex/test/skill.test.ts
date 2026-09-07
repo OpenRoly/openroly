@@ -1,4 +1,4 @@
-import type { AdapterContext } from "@paa/adapter";
+import type { AdapterContext } from "@openroly/adapter";
 import { chmod, mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,7 +14,7 @@ async function makeCtx(opts?: {
   configServers?: string; // config.toml の内容(無ければ空 file)
   fakeCli?: boolean; // fake `codex` を PATH に置く(mcp 経路の検査用)
 }): Promise<{ ctx: AdapterContext; home: string }> {
-  const home = await mkdtemp(join(tmpdir(), "paa-codex-skill-"));
+  const home = await mkdtemp(join(tmpdir(), "openroly-codex-skill-"));
   const codexDir = join(home, ".codex");
   await mkdir(codexDir, { recursive: true });
   await writeFile(join(codexDir, "config.toml"), opts?.configServers ?? "");
@@ -45,7 +45,7 @@ describe("codexAdapter — kind=skill(W20 / PBI-0091)", () => {
       env: {},
     });
     const dir = join(home, ".codex", "skills", "foo");
-    expect((await readdir(dir)).sort()).toEqual([".paa-managed", "SKILL.md", "references"]);
+    expect((await readdir(dir)).sort()).toEqual([".openroly-managed", "SKILL.md", "references"]);
     const skillMd = await readFile(join(dir, "SKILL.md"), "utf8");
     expect(skillMd).toBe(`---\nname: "foo"\ndescription: "D"\n---\n# Foo\n本文`);
     expect(await readFile(join(dir, "references", "api.md"), "utf8")).toBe("REF");
@@ -63,7 +63,7 @@ describe("codexAdapter — kind=skill(W20 / PBI-0091)", () => {
 
   test("AC-3: disable は skill と mcp の両経路を見る(marker 無しの私物 skill は消さない)", async () => {
     const { ctx, home } = await makeCtx({ fakeCli: true });
-    // PAA 管理の skill(marker 有り)と人間の私物 skill(marker 無し)を同居させる
+    // OpenRoly 管理の skill(marker 有り)と人間の私物 skill(marker 無し)を同居させる
     await codexAdapter.applyExtension(ctx, {
       action: "install",
       kind: "skill",
@@ -97,13 +97,13 @@ describe("codexAdapter — kind=skill(W20 / PBI-0091)", () => {
     expect((await readdir(join(home, ".codex"))).sort()).toEqual(before);
   });
 
-  test("AC-6: extensionKinds が mcp と skill を持つ", () => {
-    expect(codexAdapter.extensionKinds).toEqual(["mcp", "skill"]);
+  test("AC-6: extensionKinds が mcp と skill を持つ(PBI-0214 で instructions も)", () => {
+    expect(codexAdapter.extensionKinds).toEqual(["mcp", "skill", "instructions"]);
   });
 
   test("AC-X2: CODEX_HOME 設定時はその配下の skills に分離される(HOME 側は触らない)", async () => {
-    const home = await mkdtemp(join(tmpdir(), "paa-codex-skill-home-"));
-    const codexHome = await mkdtemp(join(tmpdir(), "paa-codex-skill-codex-"));
+    const home = await mkdtemp(join(tmpdir(), "openroly-codex-skill-home-"));
+    const codexHome = await mkdtemp(join(tmpdir(), "openroly-codex-skill-codex-"));
     await writeFile(join(codexHome, "config.toml"), "");
     const ctx: AdapterContext = { env: { HOME: home, CODEX_HOME: codexHome } };
     await codexAdapter.applyExtension(ctx, {

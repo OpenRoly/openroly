@@ -97,12 +97,12 @@ describe("planReconciliation(図8 の判定順序)", () => {
     const plan = planReconciliation({
       desired: [],
       materialized: [],
-      actual: ["paa", "other"],
+      actual: ["openroly", "other"],
       supportedKinds: ["mcp"],
     });
     expect(plan).toHaveLength(2);
     expect(plan.every((a) => a.action === "noop")).toBe(true);
-    expect(plan.map((a) => a.name).sort()).toEqual(["other", "paa"]);
+    expect(plan.map((a) => a.name).sort()).toEqual(["openroly", "other"]);
   });
 
   test("AC-9: enabled=false は disable。既に disabled 記録済みなら noop(冪等性)", () => {

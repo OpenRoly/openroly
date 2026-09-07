@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
-// atn-mask CLI(PBI-0177)。
-//   atn-mask -- <MCP server の command と args>   … proxy として起動
-//   atn-mask --dry-run < text                     … 何が伏せられるか確認(stdin → stdout)
+// openroly-mask CLI(PBI-0177)。
+//   openroly-mask -- <MCP server の command と args>   … proxy として起動
+//   openroly-mask --dry-run < text                     … 何が伏せられるか確認(stdin → stdout)
 //
 // **stdout には JSON-RPC 行(または --dry-run の結果)以外を絶対に書かない** — proxy 経路は
 // MCP の stdio 面そのもので、1 行でも混ぜると親の handshake が壊れる。案内・エラーは全部 stderr。
@@ -11,8 +11,8 @@ import { runProxy } from "./proxy.ts";
 
 function usage(): string {
   return [
-    "atn-mask -- <command> [args...]   run as a proxy in front of any MCP server",
-    "atn-mask --dry-run                show on stdout what would be masked in the text from stdin",
+    "openroly-mask -- <command> [args...]   run as a proxy in front of any MCP server",
+    "openroly-mask --dry-run                show on stdout what would be masked in the text from stdin",
     "",
     `secrets file: ${secretsPath()} (must be 0600; runs without masking if absent)`,
   ].join("\n");
@@ -32,7 +32,7 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
-  // bun は `atn-mask -- foo bar` の `--` 自体を process.argv から取り除く(bun 自身の CLI 引数と
+  // bun は `openroly-mask -- foo bar` の `--` 自体を process.argv から取り除く(bun 自身の CLI 引数と
   // script 引数を区切る記法として消費される — 実測済み)。よって argv には既に子 command だけが
   // 残っている前提で良い(`--` を探して分割する必要が無い。子 command が独自に `--` を含む場合も
   // そのまま args へ渡る)

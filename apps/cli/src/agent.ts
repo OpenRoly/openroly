@@ -6,10 +6,17 @@ import {
   openIfEnvelope,
   sealForHandle,
   type E2eeCall,
-} from "@paa/adapter";
-import type { MessageContent } from "@paa/core";
+} from "@openroly/adapter";
+import {
+  API_PROVIDERS,
+  apiProvider,
+  apiProviderKind,
+  connectionTokenEnvName,
+  isCustomProviderId,
+  type MessageContent,
+} from "@openroly/core";
 
-// `atn agent <provider>` —— 外部 API provider を「端末で動く runtime」として扱う本体
+// `openroly agent <provider>` —— 外部 API provider を「端末で動く runtime」として扱う本体
 // (EP-0009 B / PBI-0057)。E2EE(アーキ §9)により server は本文を復号できないので、
 // provider API を呼べるのは device key を持つ端末側だけ。ここは **1 turn の下書き** に
 // 徹する: tool 実行・自律 loop・streaming は持たない(要件 §35 Model router にしない)。
@@ -18,23 +25,16 @@ import type { MessageContent } from "@paa/core";
 // resolve(初回は Connection-scoped ASK を通る) → OpenAI 互換 /chat/completions を 1 回 →
 // 返信は POST /v1/threads/:id/reply = decideSend の READ/ASK/AUTO を runtime actor として通る。
 
-/** provider ごとの接続先。**model 名は cutoff 後に変わる**ので `--model` / PAA_AGENT_MODEL で上書きできる
- * (2026-08-28 時点の出典は backlog/PBI-0057 の技術設計に URL で残してある) */
-const PROVIDERS = {
-  openai: { baseUrl: "https://api.openai.com/v1", model: "gpt-5.2" },
-  gemini: {
-    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
-    model: "gemini-3-flash",
-  },
-  anthropic: { baseUrl: "https://api.anthropic.com/v1", model: "claude-sonnet-4-5" },
-} as const;
-
-export type AgentProvider = keyof typeof PROVIDERS;
-export const AGENT_PROVIDERS = Object.keys(PROVIDERS) as AgentProvider[];
-export const isAgentProvider = (p: string): p is AgentProvider => p in PROVIDERS;
+/** provider ごとの接続先は **`@openroly/core` の `API_PROVIDERS` 表**(PBI-0210 で 1 箇所に)。
+ * **model 名は cutoff 後に変わる**ので `--model` / OPENROLY_AGENT_MODEL で上書きできる */
+export type AgentProvider = string;
+export const AGENT_PROVIDERS: readonly string[] = API_PROVIDERS.map((p) => p.id);
+/** 持ち込みの endpoint(PBI-0276)は表に載らない —— 接続先と model は `/resolve` が鍵と一緒に返す */
+export const isAgentProvider = (p: string): p is AgentProvider =>
+  apiProvider(p) !== undefined || isCustomProviderId(p);
 
 /** credential store / device key store の単位。claude / codex と同じ 1 kind = 1 runtime_id */
-export const agentKind = (provider: AgentProvider): string => `${provider}-api`;
+export const agentKind = (provider: AgentProvider): string => apiProviderKind(provider);
 
 const SYSTEM_PROMPT =
   "You act on behalf of this account. Write exactly one draft reply to the message you received. " +
@@ -75,7 +75,9 @@ async function resolveApiKey(
   provider: AgentProvider,
   waitSec: number,
   log: (line: string) => void,
-): Promise<{ ok: true; key: string } | { ok: false; detail: string }> {
+): Promise<
+  { ok: true; key: string; endpoint?: { baseUrl: string; model: string } } | { ok: false; detail: string }
+> {
   const deadline = Date.now() + waitSec * 1000;
   for (;;) {
     const res = await apiCall(baseUrl, `/v1/connections/${provider}/resolve`, {
@@ -83,11 +85,16 @@ async function resolveApiKey(
       method: "POST",
     });
     if (res.status === 200) {
-      const key = res.body?.env?.[`${provider.toUpperCase()}_TOKEN`];
+      const key = res.body?.env?.[connectionTokenEnvName(provider)];
       if (typeof key !== "string" || key.length === 0) {
         return { ok: false, detail: "connection_resolve_empty" };
       }
-      return { ok: true, key };
+      // 持ち込みの endpoint は接続先も一緒に返る(表を引けないので行が正本)
+      const url = res.body?.base_url;
+      const model = res.body?.model;
+      return typeof url === "string" && typeof model === "string"
+        ? { ok: true, key, endpoint: { baseUrl: url, model } }
+        : { ok: true, key };
     }
     if (res.status === 202) {
       if (waitSec <= 0) {
@@ -125,7 +132,7 @@ async function draftReply(
   try {
     res = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+      headers: { "content-type": "application/json", ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) },
       body: JSON.stringify({
         model,
         messages: [{ role: "system", content: SYSTEM_PROMPT }, ...history],
@@ -153,7 +160,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   if (!credential) {
     return {
       status: "failed",
-      detail: `${opts.provider} is not connected. Run 'atn login' to connect this machine`,
+      detail: `${opts.provider} is not connected. Run 'openroly login' to connect this machine`,
     };
   }
   const { base_url: baseUrl, token } = credential;
@@ -184,18 +191,33 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     return { status: "failed", detail: "no message body this device can read" };
   }
 
-  const key = await resolveApiKey(baseUrl, token, opts.provider, opts.waitSec ?? 300, log);
+  const table = apiProvider(opts.provider);
+  // 持ち込みの endpoint(PBI-0276)は表に無い。接続先と model は resolve の応答が持つ
+  if (!table && !isCustomProviderId(opts.provider)) {
+    return { status: "failed", detail: `unknown provider ${opts.provider}` };
+  }
+  // `auth: "none"`(Ollama / LM Studio / Jan の local 口)は Connections を持たない = 鍵解決を飛ばす。
+  // 鍵 "" は Authorization を付けない(local 口は header を見ない)
+  const key = table?.auth === "none"
+    ? ({ ok: true, key: "" } as const)
+    : await resolveApiKey(baseUrl, token, opts.provider, opts.waitSec ?? 300, log);
   if (!key.ok) return { status: "failed", detail: key.detail };
 
-  const providerBaseUrl = env.PAA_AGENT_BASE_URL ?? PROVIDERS[opts.provider].baseUrl;
-  const model = opts.model ?? env.PAA_AGENT_MODEL ?? PROVIDERS[opts.provider].model;
+  const endpoint = "endpoint" in key ? key.endpoint : undefined;
+  const resolvedBaseUrl = endpoint?.baseUrl ?? table?.baseUrl;
+  // 持ち込みなのに接続先が返らなかった = 行が壊れている。表の URL に落とすと**別の provider へ
+  // 鍵を投げる**ので、名乗って止める
+  if (!resolvedBaseUrl) return { status: "failed", detail: "connection_endpoint_missing" };
+  const providerBaseUrl = env.OPENROLY_AGENT_BASE_URL ?? resolvedBaseUrl;
+  const model = opts.model ?? env.OPENROLY_AGENT_MODEL ?? endpoint?.model ?? table?.defaultModel;
+  if (!model) return { status: "failed", detail: "connection_endpoint_missing" };
   const draft = await draftReply(opts.provider, key.key, model, providerBaseUrl, history);
   if (!draft.ok) return { status: "failed", detail: draft.detail };
 
-  // seal は @paa/adapter の e2ee(MCP tools と同じ経路)。相手に account 鍵が無い時だけ平文。
+  // seal は @openroly/adapter の e2ee(MCP tools と同じ経路)。相手に account 鍵が無い時だけ平文。
   // 封をできない時は **平文で送らずに止める**(PBI-0254 AC-X1) —— 自分の account 鍵が引けない
   // ままの送信は「送った本人だけが永久に読めない 1 通」になる。無人で動く agent なので生の stack trace では
-  // なく理由を名乗って終わる(PBI-0253 AC-X1: revoke された device は `atn pair <kind>` で鍵を作り直す —— `atn login` は device 鍵に触らない)。
+  // なく理由を名乗って終わる(PBI-0253 AC-X1: revoke された device は `openroly pair <kind>` で鍵を作り直す —— `openroly login` は device 鍵に触らない)。
   let content: MessageContent;
   try {
     content = peerHandle

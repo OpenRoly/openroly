@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 
-// PBI-0177 AC-4/AC-5/AC-X2: atn-mask の CLI を fixture MCP server(echo)越しに実行し、
+// PBI-0177 AC-4/AC-5/AC-X2: openroly-mask の CLI を fixture MCP server(echo)越しに実行し、
 // JSON-RPC の initialize → tools/list → tools/call が protocol を壊さず通る事、
 // result が mask され、次の call の params で復元される事、--dry-run、
 // 子の exit code 伝播、config 異常時の fail-closed を確認する(実 subprocess で end-to-end)。
@@ -13,7 +13,7 @@ function jsonRpc(id: number, method: string, params?: unknown): string {
   return JSON.stringify({ jsonrpc: "2.0", id, method, ...(params !== undefined ? { params } : {}) });
 }
 
-/** atn-mask を fixture 越しに起動し、送った行への応答(id 一致)を返す */
+/** openroly-mask を fixture 越しに起動し、送った行への応答(id 一致)を返す */
 async function withProxy<T>(
   env: Record<string, string>,
   fn: (send: (line: string) => Promise<any>, proc: Bun.Subprocess<"pipe", "pipe", "pipe">) => Promise<T>,
@@ -55,9 +55,9 @@ async function withProxy<T>(
   }
 }
 
-describe("atn-mask proxy (PBI-0177)", () => {
+describe("openroly-mask proxy (PBI-0177)", () => {
   test("AC-4: initialize → tools/list → tools/call が protocol を壊さず通る", async () => {
-    await withProxy({ PAA_SECRETS_PATH: "/nonexistent/secrets.json" }, async (send) => {
+    await withProxy({ OPENROLY_SECRETS_PATH: "/nonexistent/secrets.json" }, async (send) => {
       const init = await send(
         jsonRpc(1, "initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "t", version: "0" } }),
       );
@@ -70,7 +70,7 @@ describe("atn-mask proxy (PBI-0177)", () => {
   });
 
   test("AC-4: 子の exit code 3 → proxy の exit code 3", async () => {
-    await withProxy({ PAA_SECRETS_PATH: "/nonexistent/secrets.json" }, async (send, proc) => {
+    await withProxy({ OPENROLY_SECRETS_PATH: "/nonexistent/secrets.json" }, async (send, proc) => {
       await send(jsonRpc(1, "initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "t", version: "0" } }));
       proc.stdin.write(jsonRpc(2, "tools/call", { name: "echo", arguments: { text: "exit:3" } }) + "\n");
       await proc.stdin.flush();
@@ -84,7 +84,7 @@ describe("atn-mask proxy (PBI-0177)", () => {
     await Bun.write(`${dir}/secrets.json`, JSON.stringify({ PRIVATE: ["Taro Yamada"] }));
     await Bun.$`chmod 600 ${dir}/secrets.json`.quiet();
     try {
-      await withProxy({ PAA_SECRETS_PATH: `${dir}/secrets.json` }, async (send) => {
+      await withProxy({ OPENROLY_SECRETS_PATH: `${dir}/secrets.json` }, async (send) => {
         await send(jsonRpc(1, "initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "t", version: "0" } }));
         const call1 = await send(jsonRpc(2, "tools/call", { name: "echo", arguments: { text: "Taro Yamada said hi" } }));
         const masked = call1.result.content[0].text as string;
@@ -106,7 +106,7 @@ describe("atn-mask proxy (PBI-0177)", () => {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
-      env: { ...process.env, PAA_SECRETS_PATH: "/nonexistent/secrets.json" },
+      env: { ...process.env, OPENROLY_SECRETS_PATH: "/nonexistent/secrets.json" },
     });
     proc.stdin.write("mail a@b.example");
     proc.stdin.end();
@@ -126,7 +126,7 @@ describe("atn-mask proxy (PBI-0177)", () => {
         stdin: "pipe",
         stdout: "pipe",
         stderr: "pipe",
-        env: { ...process.env, PAA_SECRETS_PATH: `${dir}/secrets.json` },
+        env: { ...process.env, OPENROLY_SECRETS_PATH: `${dir}/secrets.json` },
       });
       proc.stdin.end();
       const [stdout, stderr, code] = await Promise.all([
@@ -149,7 +149,7 @@ describe("atn-mask proxy (PBI-0177)", () => {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
-      env: { ...process.env, PAA_SECRETS_PATH: "/nonexistent/secrets.json" },
+      env: { ...process.env, OPENROLY_SECRETS_PATH: "/nonexistent/secrets.json" },
     });
     proc.stdin.end();
     const [stdout, stderr, code] = await Promise.all([

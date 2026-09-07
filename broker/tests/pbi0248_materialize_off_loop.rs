@@ -40,14 +40,14 @@ const CONNECT_DEADLINE: Duration = Duration::from_secs(90);
 // ---------------------------------------------------------------- 足場
 
 fn tmp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("paa-0240-{}-{tag}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("openroly-0240-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("live")).unwrap();
     std::fs::create_dir_all(dir.join("home")).unwrap();
     dir
 }
 
-/// fake `atn adopt`。**子プロセスの入口で数える**:
+/// fake `openroly adopt`。**子プロセスの入口で数える**:
 ///   - `live/<runtime_id>` を作る(既に在れば `overlap` へ 1 行 = 同じ相手が 2 本同時に走った)
 ///   - その瞬間の `live` の件数を `peak` へ 1 行(= 同時実行数)
 ///   - `started` / `done` に runtime_id を 1 行ずつ(起きた / 完走した)
@@ -67,7 +67,12 @@ fn write_fake_cli(dir: &Path, hold: Option<&str>) -> PathBuf {
     };
     let script = format!(
         "#!/bin/sh\n\
-         # PBI-0248 の fake `atn adopt`。token は stdin から読み捨てる(本物と同じ入口)\n\
+         # PBI-0213: broker は adopt 以外に sync / share --auto / watch-dirs でも **同じ CLI** を\n\
+         # 起こす。この fake が数えているのは adopt の同時実行だけなので、他は即 exit する ——\n\
+         # 通すと `--runtime-id` の無い呼びが `live/`(親 dir そのもの)を作ろうとして overlap に\n\
+         # 空行を積み、最後の rmdir で `live/` ごと消して以後の adopt を全部 overlap にする\n\
+         case \"$1\" in adopt) ;; *) exit 0 ;; esac\n\
+         # PBI-0248 の fake `openroly adopt`。token は stdin から読み捨てる(本物と同じ入口)\n\
          cat >/dev/null\n\
          rt=\"\"\n\
          while [ $# -gt 0 ]; do\n\
@@ -84,7 +89,7 @@ fn write_fake_cli(dir: &Path, hold: Option<&str>) -> PathBuf {
          rmdir \"{d}/live/$rt\" 2>/dev/null\n\
          exit 0\n"
     );
-    let path = dir.join("fake-atn");
+    let path = dir.join("fake-openroly");
     let mut f = std::fs::File::create(&path).unwrap();
     f.write_all(script.as_bytes()).unwrap();
     drop(f);
@@ -105,17 +110,17 @@ impl Drop for BrokerProc {
 
 fn spawn_broker(dir: &Path, port: u16) -> BrokerProc {
     let log = std::fs::File::create(dir.join("broker.log")).unwrap();
-    let child = Command::new(env!("CARGO_BIN_EXE_atn-broker"))
-        .env("PAA_BROKER_WS_URL", format!("ws://127.0.0.1:{port}/v1/broker/ws"))
-        .env("PAA_RUNTIME_TOKEN", "par_pbi0248")
-        .env("PAA_CLI", dir.join("fake-atn").display().to_string())
-        .env("PAA_BROKER_HOME", dir.join("home").display().to_string())
+    let child = Command::new(env!("CARGO_BIN_EXE_openroly-broker"))
+        .env("OPENROLY_BROKER_WS_URL", format!("ws://127.0.0.1:{port}/v1/broker/ws"))
+        .env("OPENROLY_RUNTIME_TOKEN", "par_pbi0248")
+        .env("OPENROLY_CLI", dir.join("fake-openroly").display().to_string())
+        .env("OPENROLY_BROKER_HOME", dir.join("home").display().to_string())
         // registry は閉じた port へ向ける(取れなくても built-in で進む = 図18)
-        .env("PAA_REGISTRY_URL", "http://127.0.0.1:1/v1/registry/detectors.v1.json")
-        .env("PAA_REGISTRY_REFRESH_SECS", "86400")
+        .env("OPENROLY_REGISTRY_URL", "http://127.0.0.1:1/v1/registry/detectors.v1.json")
+        .env("OPENROLY_REGISTRY_REFRESH_SECS", "86400")
         // 実マシンの CLI を scan させない(`--version` の probe に数秒取られる)
-        .env("PAA_SCAN_DIRS", "")
-        .env("PAA_APP_DIRS", "")
+        .env("OPENROLY_SCAN_DIRS", "")
+        .env("OPENROLY_APP_DIRS", "")
         .env("PATH", "/bin:/usr/bin")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -151,7 +156,17 @@ async fn next_json(ws: &mut Ws) -> Value {
             .expect("接続が切れた")
             .expect("recv error");
         match msg {
-            Message::Text(t) => return serde_json::from_str(&t).expect("json でない frame"),
+            Message::Text(t) => {
+                // PBI-0277: broker は heartbeat ごとに application の ping を打つ。
+                // 生存確認の frame なので **pong を返して読み飛ばす** —— これを数えると
+                // 「次に来る register_ack」を取り違える
+                let v: Value = serde_json::from_str(&t).expect("json でない frame");
+                if v["type"] == "ping" {
+                    let _ = ws.send(Message::Text(json!({ "type": "pong" }).to_string().into())).await;
+                    continue;
+                }
+                return v;
+            }
             Message::Close(_) => panic!("broker が接続を閉じた"),
             _ => continue,
         }
@@ -299,7 +314,7 @@ async fn ws_ループは_materialize_中でも別の_frame_に応答する() {
 
 // ---------------------------------------------------------------- AC-3 / AC-X3
 
-/// AC-3: `registered` が **2 通**来ても、同時に走る `atn adopt` は上限(4)を超えない。
+/// AC-3: `registered` が **2 通**来ても、同時に走る `openroly adopt` は上限(4)を超えない。
 /// AC-X3: 同じ runtime_id が 2 通に居ても、2 本同時には走らない。
 ///
 /// ここが PBI-0248 で新しく開く穴 —— 通ごとに task を起こすと上限が「通ごとに 4 本」になり、

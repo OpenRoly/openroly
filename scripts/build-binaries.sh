@@ -1,18 +1,18 @@
 #!/bin/sh
-# paa の単体実行ファイルを作る(PBI-0132)。end user から bun を剥がすための前半 ——
-# 「置いてあれば使う」側は launcher(packages/mcp/atn-mcp)と resolveMcpServerCommand が持つ。
+# openroly の単体実行ファイルを作る(PBI-0132)。end user から bun を剥がすための前半 ——
+# 「置いてあれば使う」側は launcher(packages/mcp/openroly-mcp)と resolveMcpServerCommand が持つ。
 #
 #   ./scripts/build-binaries.sh                    配布 target 全部(darwin-arm64 / darwin-x64 / linux-x64)
-#   ./scripts/build-binaries.sh --host-only        今の機械向けだけ → dist/atn-mcp, dist/atn
-#   ./scripts/build-binaries.sh --host-only atn-mcp  1 本だけ
+#   ./scripts/build-binaries.sh --host-only        今の機械向けだけ → dist/openroly-mcp, dist/openroly
+#   ./scripts/build-binaries.sh --host-only openroly-mcp  1 本だけ
 #   ./scripts/build-binaries.sh --out /tmp/x       出力先を変える
 #
 # **binary は git に入れない**(1 本 61MB)。dist/ は .gitignore 済み。
-# Release への添付と `atn install` からの自動取得は PBI-0137(本 PBI のスコープ外)。
+# Release への添付と `openroly install` からの自動取得は PBI-0137(本 PBI のスコープ外)。
 set -eu
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
-out="${PAA_DIST:-$repo/dist}"
+out="${OPENROLY_DIST:-$repo/dist}"
 host_only=0
 names=""
 
@@ -26,13 +26,13 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-[ -n "$names" ] || names="atn-mcp atn"
+[ -n "$names" ] || names="openroly-mcp openroly"
 
 entry_for() {
   case "$1" in
-    atn-mcp) echo "packages/mcp/src/server.ts" ;;
-    atn) echo "apps/cli/src/paa.ts" ;;
-    *) echo "unknown binary: $1 (atn-mcp | atn)" >&2; exit 2 ;;
+    openroly-mcp) echo "packages/mcp/src/server.ts" ;;
+    openroly) echo "apps/cli/src/openroly.ts" ;;
+    *) echo "unknown binary: $1 (openroly-mcp | openroly)" >&2; exit 2 ;;
   esac
 }
 
@@ -51,5 +51,15 @@ for name in $names; do
     done
   fi
 done
+
+# 旧 binary 名の alias(PBI-0344 AC-4)。**黙って消さない** —— 端末の shell rc や launchd が
+# 旧名を叩き続けている間は、同じ中身の binary を旧名でも置いておく(少なくとも 1 release)。
+# glob は既に作った atn-* も拾うので、`*atn-mcp*` は飛ばす(2 回目の実行で self-copy しない)。
+for f in "$out"/openroly-mcp*; do
+  [ -e "$f" ] || continue
+  case "$f" in *atn-mcp*) continue ;; esac
+  cp "$f" "${f/openroly-mcp/atn-mcp}"
+done
+if [ -e "$out/openroly" ]; then cp "$out/openroly" "$out/atn"; fi
 
 echo "done -> $out"

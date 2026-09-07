@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "ai.paa.collector"
+    namespace = "ai.openroly.collector"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "ai.paa.collector"
+        applicationId = "ai.openroly.collector"
         minSdk = 26
         targetSdk = 34
         versionCode = 1

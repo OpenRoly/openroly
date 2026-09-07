@@ -3,15 +3,15 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { saveCredential } from "@paa/adapter";
+import { saveCredential } from "@openroly/adapter";
 
 // PBI-0130: Claude Code の statusline に未読を出す。
-//  - `atn statusline --refresh` が cache を atomic に更新する(AC-4)
+//  - `openroly statusline --refresh` が cache を atomic に更新する(AC-4)
 //  - 引数なしは cache を読むだけ(HTTP を叩かない・AC-5)
 //  - server 断でも既存 cache を壊さない(AC-X2)
 //  - statusline.sh は cache が新鮮なら bun を起こさない(AC-6)、無ければ空 + exit 0(AC-7/X3)
 
-const CLI = fileURLToPath(new URL("../src/paa.ts", import.meta.url));
+const CLI = fileURLToPath(new URL("../src/openroly.ts", import.meta.url));
 const SH = fileURLToPath(new URL("../../../adapters/official/claude/statusline.sh", import.meta.url));
 
 let hits = 0;
@@ -53,9 +53,9 @@ async function run(cmd: string[], env: Record<string, string>) {
   return { exitCode: await proc.exited, stdout, stderr };
 }
 
-/** credential 済みの PAA_HOME を 1 つ作る */
+/** credential 済みの OPENROLY_HOME を 1 つ作る */
 async function setupHome(baseUrl: string) {
-  const home = await mkdtemp(join(tmpdir(), "paa-statusline-"));
+  const home = await mkdtemp(join(tmpdir(), "openroly-statusline-"));
   await saveCredential(
     "claude",
     {
@@ -65,15 +65,15 @@ async function setupHome(baseUrl: string) {
       name: "test",
       paired_at: new Date().toISOString(),
     },
-    { PAA_HOME: home } as any,
+    { OPENROLY_HOME: home } as any,
   );
   return home;
 }
 
-describe("PBI-0130 atn statusline", () => {
+describe("PBI-0130 openroly statusline", () => {
   test("AC-4: --refresh が未読件数の segment を出し、cache に同じ内容を書く", async () => {
     const home = await setupHome(`http://localhost:${stub.port}`);
-    const res = await run(["bun", CLI, "statusline", "--refresh"], { PAA_HOME: home });
+    const res = await run(["bun", CLI, "statusline", "--refresh"], { OPENROLY_HOME: home });
     expect(res.exitCode).toBe(0);
     expect(res.stdout).toContain("📬3");
     expect(res.stdout).toContain("+1"); // requests bucket の 1 件
@@ -85,9 +85,9 @@ describe("PBI-0130 atn statusline", () => {
 
   test("AC-5 / AC-X1: 引数なしは cache を読むだけ(HTTP 0 回・本文も sender も出さない)", async () => {
     const home = await setupHome(`http://localhost:${stub.port}`);
-    await run(["bun", CLI, "statusline", "--refresh"], { PAA_HOME: home });
+    await run(["bun", CLI, "statusline", "--refresh"], { OPENROLY_HOME: home });
     const before = hits;
-    const res = await run(["bun", CLI, "statusline"], { PAA_HOME: home });
+    const res = await run(["bun", CLI, "statusline"], { OPENROLY_HOME: home });
     expect(res.exitCode).toBe(0);
     expect(hits).toBe(before);
     expect(res.stdout).toContain("📬3");
@@ -100,7 +100,7 @@ describe("PBI-0130 atn statusline", () => {
   test("AC-X2: server 断でも既存 cache を消さない・上書きしない", async () => {
     const home = await setupHome("http://127.0.0.1:1"); // 誰も listen していない
     await writeFile(join(home, "statusline"), "OLD");
-    const res = await run(["bun", CLI, "statusline", "--refresh"], { PAA_HOME: home });
+    const res = await run(["bun", CLI, "statusline", "--refresh"], { OPENROLY_HOME: home });
     expect(res.exitCode).toBe(0);
     expect(await readFile(join(home, "statusline"), "utf8")).toBe("OLD");
     await rm(home, { recursive: true, force: true });
@@ -113,7 +113,7 @@ describe("PBI-0130 statusline.sh", () => {
     await writeFile(join(home, "statusline"), "FRESH");
     await writeFile(join(home, "statusline.at"), "");
     const before = hits;
-    const res = await run(["bash", SH], { PAA_HOME: home, PAA_STATUSLINE_TTL: "600" });
+    const res = await run(["bash", SH], { OPENROLY_HOME: home, OPENROLY_STATUSLINE_TTL: "600" });
     expect(res.exitCode).toBe(0);
     expect(res.stdout).toBe("FRESH");
     expect(hits).toBe(before);
@@ -122,7 +122,7 @@ describe("PBI-0130 statusline.sh", () => {
 
   test("AC-7: cache が無ければ出力は空・exit 0(背景更新の印だけ残る)", async () => {
     const home = await setupHome(`http://localhost:${stub.port}`);
-    const res = await run(["bash", SH], { PAA_HOME: home });
+    const res = await run(["bash", SH], { OPENROLY_HOME: home });
     expect(res.exitCode).toBe(0);
     expect(res.stdout).toBe("");
     expect(await readFile(join(home, "statusline.at"), "utf8")).toBe("");
@@ -130,8 +130,8 @@ describe("PBI-0130 statusline.sh", () => {
   }, 30_000);
 
   test("AC-X3: credential が無ければ何も出さず exit 0(error を statusline に出さない)", async () => {
-    const home = await mkdtemp(join(tmpdir(), "paa-statusline-bare-"));
-    const res = await run(["bash", SH], { PAA_HOME: home });
+    const home = await mkdtemp(join(tmpdir(), "openroly-statusline-bare-"));
+    const res = await run(["bash", SH], { OPENROLY_HOME: home });
     expect(res.exitCode).toBe(0);
     expect(res.stdout).toBe("");
     expect(res.stderr).toBe("");
@@ -145,7 +145,7 @@ describe("PBI-0130 statusline.sh", () => {
   // 既存 6 本は全部緑のまま = 未読が永遠に出ない statusline を緑と呼べてしまう)。
   test("攻撃: cache 無しから叩くと背景更新が実際に cache を作り、次の render で出る", async () => {
     const home = await setupHome(`http://localhost:${stub.port}`);
-    const first = await run(["bash", SH], { PAA_HOME: home });
+    const first = await run(["bash", SH], { OPENROLY_HOME: home });
     expect(first.exitCode).toBe(0);
     expect(first.stdout).toBe(""); // 前景では待たない
 
@@ -159,7 +159,7 @@ describe("PBI-0130 statusline.sh", () => {
 
     // 次の render は cat するだけ(TTL 内なので bun を起こさない)
     const before = hits;
-    const second = await run(["bash", SH], { PAA_HOME: home });
+    const second = await run(["bash", SH], { OPENROLY_HOME: home });
     expect(second.stdout).toBe(cache);
     expect(hits).toBe(before);
     await rm(home, { recursive: true, force: true });

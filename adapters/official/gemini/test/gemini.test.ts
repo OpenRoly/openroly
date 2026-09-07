@@ -17,7 +17,7 @@ const ctx = () => ({ env: { PATH: bin, HOME: root, GEMINI_CLI_HOME: geminiHome }
 const settingsPath = () => join(geminiHome, ".gemini", "settings.json");
 
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), "paa-gemini-"));
+  root = await mkdtemp(join(tmpdir(), "openroly-gemini-"));
   bin = join(root, "bin");
   marker = join(root, "argv.log");
   geminiHome = join(root, "gemini-home");
@@ -41,32 +41,32 @@ describe("geminiAdapter (PBI-0061)", () => {
       serverEntry: "/repo/packages/mcp/src/server.ts",
       runtimeKind: "gemini",
       baseUrl: "http://localhost:8787",
-      serverName: "atn",
+      serverName: "openroly",
     });
     const lines = await argvLines();
-    expect(lines[0]).toBe("mcp remove -s user atn");
+    expect(lines[0]).toBe("mcp remove -s user openroly");
     // 実測: gemini mcp add [-s user] [-e K=V ...] <name> <commandOrUrl> [args...]
     // `--` を挟むと commandOrUrl が "--" になってしまう(claude / codex との違い)
     expect(lines[1]).toBe(
-      "mcp add -s user -e PAA_RUNTIME_KIND=gemini -e PAA_URL=http://localhost:8787 atn bun /repo/packages/mcp/src/server.ts",
+      "mcp add -s user -e OPENROLY_RUNTIME_KIND=gemini -e OPENROLY_URL=http://localhost:8787 openroly bun /repo/packages/mcp/src/server.ts",
     );
     expect(lines[1]).not.toContain(" -- ");
   });
 
   test("AC-1: project scope を使わない(cwd 依存と untrusted folder の罠を持ち込まない)", async () => {
-    await geminiAdapter.unregister(ctx(), "atn");
+    await geminiAdapter.unregister(ctx(), "openroly");
     const lines = await argvLines();
-    expect(lines[0]).toBe("mcp remove -s user atn");
+    expect(lines[0]).toBe("mcp remove -s user openroly");
     expect(lines[0]).not.toContain("project");
   });
 
   test("AC-2: GEMINI_CLI_HOME 配下の settings.json を読む(実 ~/.gemini を触らない)", async () => {
-    await writeFile(settingsPath(), JSON.stringify({ mcpServers: { atn: {}, unityMCP: {} } }));
+    await writeFile(settingsPath(), JSON.stringify({ mcpServers: { openroly: {}, unityMCP: {} } }));
     expect((await geminiAdapter.listExtensions(ctx())).map((e) => e.name).sort()).toEqual([
-    "atn",
+    "openroly",
       "unityMCP",
     ]);
-    const [ok] = await geminiAdapter.doctor(ctx(), "atn");
+    const [ok] = await geminiAdapter.doctor(ctx(), "openroly");
     expect(ok!.ok).toBe(true);
     expect(ok!.detail).toContain(settingsPath());
     expect(ok!.label).toBe("Gemini CLI MCP registration");
@@ -74,9 +74,9 @@ describe("geminiAdapter (PBI-0061)", () => {
 
   test("AC-2: 未登録なら doctor が install 案内を出す", async () => {
     await writeFile(settingsPath(), JSON.stringify({ mcpServers: {} }));
-    const [ng] = await geminiAdapter.doctor(ctx(), "atn");
+    const [ng] = await geminiAdapter.doctor(ctx(), "openroly");
     expect(ng!.ok).toBe(false);
-    expect(ng!.detail).toContain("atn install gemini");
+    expect(ng!.detail).toContain("openroly install gemini");
   });
 
   test("detect: CLI が有れば version、無ければ install 案内", async () => {
@@ -84,11 +84,11 @@ describe("geminiAdapter (PBI-0061)", () => {
     expect(found.installed).toBe(true);
     expect(found.configPath).toBe(settingsPath());
 
-    // PAA_EXTRA_PATH_DIRS="" で補強を無効化(review 2026-08-28)— 空けたままだと PBI-0050 の
+    // OPENROLY_EXTRA_PATH_DIRS="" で補強を無効化(review 2026-08-28)— 空けたままだと PBI-0050 の
     // extraPathDirs が実 /usr/local/bin の gemini(この Mac に在る)へ届き、「実 gemini には
     // 到達させない」が self-defeating になり full suite の load 下で timeout していた
     const missing = await geminiAdapter.detect({
-      env: { PATH: "/nonexistent", HOME: root, PAA_EXTRA_PATH_DIRS: "" },
+      env: { PATH: "/nonexistent", HOME: root, OPENROLY_EXTRA_PATH_DIRS: "" },
     });
     expect(missing).toEqual({
       installed: false,
@@ -99,14 +99,15 @@ describe("geminiAdapter (PBI-0061)", () => {
   test("AC-X2: settings.json が無い / 壊れていても throw せず 0 件・ok:false", async () => {
     await rm(settingsPath(), { force: true });
     expect(await geminiAdapter.listExtensions(ctx())).toEqual([]);
-    expect((await geminiAdapter.doctor(ctx(), "atn"))[0]!.ok).toBe(false);
+    expect((await geminiAdapter.doctor(ctx(), "openroly"))[0]!.ok).toBe(false);
     await writeFile(settingsPath(), "{ broken");
     expect(await geminiAdapter.listExtensions(ctx())).toEqual([]);
   });
 
-  test("contract: mcp のみ(skill は claude 固有なので持たない)", () => {
+  test("contract: mcp と instructions(skill は claude / codex 固有なので持たない)", () => {
     expect(geminiAdapter.id).toBe("gemini");
     expect(geminiAdapter.displayName).toBe("Gemini CLI");
-    expect(geminiAdapter.extensionKinds).toEqual(["mcp"]);
+    // PBI-0214 で instructions(~/.gemini/GEMINI.md の管理ブロック)が加わった。skill は持たない
+    expect(geminiAdapter.extensionKinds).toEqual(["mcp", "instructions"]);
   });
 });

@@ -1,0 +1,89 @@
+﻿name,type,platforms,license,github,website
+OpenClaw,Self-hosted AI Agent,"Linux, Windows, MacOS, Docker",MIT,https://github.com/openclaw/openclaw,https://openclaw.ai
+askit-mcp,"CLI, Python library","Linux, Windows, MacOS",Apache 2.0,https://github.com/johnrobinsn/askit,-
+eechat,Desktop app,"Windows, MacOS, Linux",Modified Apache 2.0,https://github.com/Lucassssss/eechat,https://www.ee.chat/
+5ire,Desktop app,"Windows, MacOS, Linux",Modified Apache 2.0 (non-commercial),https://github.com/nanbingxyz/5ire,https://5ire.app/
+Agent Bridge,Web app,Web,MIT,https://github.com/ramblinghermit0403/agent_bridge,-
+AgentOne,Desktop app,"Windows, MacOS, Linux",Proprietary,https://github.com/AgentOne-Dev/agent-one-public,https://www.agent-one.dev
+AIaW,Web app,Web,BSD 3-Clause,https://github.com/NitroRCr/AIaW,https://aiaw.app/
+Ano,"Web, Desktop app","macOS, Windows, Linux, Web",Proprietary,-,https://ano.chat/
+AstrBot,LLM chatbot and development framework,"Windows, MacOS, Linux, Android",AGPL-3.0 license,https://github.com/AstrBotDevs/AstrBot,https://astrbot.app/
+Autohand Code CLI,"CLI, VS Code/Zed extension","Linux, Windows, MacOS",Apache 2.0,https://github.com/autohandai/code-cli,https://www.autohand.ai/code/
+AnythingLLM,"Desktop, Docker, Cloud-hosted","Windows, MacOS, Linux, Docker, Cloud",MIT,https://github.com/Mintplex-Labs/anything-llm,https://anythingllm.com/
+BrowseWiz,Browser extension,Chromium-based desktop browsers,Proprietary,N/A,https://browsewiz.com
+Canvas MCP Client,Web app,Web,MIT,https://github.com/n00bvn/CanvasMCPClient,https://canvas-mcp.com/
+CarrotAI,Web app,Web,,https://github.com/Xingsandesu/CarrotAI,https://jintongshu.com/solutions/agent/
+Chainlit,Web app,Web,Apache 2.0,https://github.com/chainlit/chainlit,https://chainlit.io/
+ChatMCP,Desktop app,"Windows, MacOS, Linux",Apache 2.0,https://github.com/daodao97/chatmcp,-
+Cherry Studio,Desktop app,"Windows, MacOS, Linux",,https://github.com/CherryHQ/cherry-studio,https://cherry-ai.com
+Claude Desktop,Desktop app,"Windows, MacOS",Proprietary,-,https://claude.ai/download
+Claude Code Open,"CLI, Web IDE","Windows, MacOS, Linux",MIT,https://github.com/kill136/claude-code-open,-
+ClaudeMind,"Desktop app, JetBrains extension","Windows, MacOS",Proprietary,-,https://claudemind.com/
+Cline,VSCode extension,"Windows, MacOS",Apache 2.0,https://github.com/cline/cline,https://marketplace.visualstudio.com/items?itemName=saoudrizwan.claude-dev
+console-chat-gpt,CLI,"Windows, MacOS, Linux",MIT,https://github.com/amidabuddha/console-chat-gpt,-
+ContextKit,CLI,"Windows, MacOS, Linux",MIT,https://github.com/eyalzh/context-kit,-
+Copilot-MCP,VSCode Extension,"Windows, MacOS, Linux",GPL-v3,https://github.com/VikashLoomba/copilot-mcp,-
+Cursor,Desktop app,"Windows, MacOS, Linux",Proprietary,https://github.com/getcursor/cursor,https://cursor.com
+Continue,"VSCode extension, JetBrains extension","Windows, MacOS",Apache 2.0,https://github.com/continuedev/continue,https://continue.dev/
+DeepChat,Desktop app,"Windows, MacOS, Linux",Apache 2.0,https://github.com/thinkinaixyz/deepchat,https://deepchat.thinkinai.xyz/
+Dexto,"CLI, Web app","Windows, MacOS, Linux",Elastic 2.0,https://github.com/truffle-ai/dexto,https://dexto.ai
+DocsGPT,"Web app, Self-hosted","Web, Windows, MacOS, Linux",MIT,https://github.com/arc53/DocsGPT,https://www.docsgpt.cloud//
+Dolphin-MCP,"CLI, Python library","Linux, Windows, MacOS",MIT,https://github.com/cognitivecomputations/dolphin-mcp,-
+Fastchat MCP,CLI,"Windows, MacOS, Linux",MIT,https://github.com/rb58853/fastchat-mcp,-
+Enola,Desktop app with CLI and local Web server,"Linux, Windows, MacOS (JVM)",Apache 2.0,https://github.com/enola-dev/enola,https://docs.enola.dev
+FLUJO,Web app,Web,MIT,https://github.com/mario-andreschak/FLUJO,flujo.orchestraight.co
+Goose,AI Agent,"MacOS, Linux",Apache 2.0,https://github.com/block/goose,-
+Glue,"Web app, Desktop app, Mobile app","Web, MacOS, Windows, Mobile",-,-,https://glue.ai
+HyperChat,Desktop app,"Windows, MacOS",,https://github.com/BigSweetPotatoStudio/HyperChat,-
+JDBCX,"CLI, JDBC driver","Windows, MacOS, Linux",Apache 2.0,https://github.com/jdbcx/jdbcx,-
+kibitz,"Mobile app, Desktop app","Mobile, Windows, MacOS, Linux",MIT,https://github.com/nick1udwig/kibitz,https://kibi.tz
+LangBot,Web app,-,AGPL-3.0 license,https://github.com/langbot-app/LangBot,https://langbot.app
+Klavis AI,"Slack/Discord bots, Web UI, Hosted Service","Slack, Discord, Web",MIT,https://github.com/Klavis-AI/klavis,https://www.klavis.ai
+Kiro,"Desktop app, IDE","Windows, MacOS, Linux",https://kiro.dev/license/,https://github.com/kirodotdev/Kiro,https://kiro.dev
+LibreChat,Web app,-,MIT license,https://github.com/danny-avila/LibreChat,https://www.librechat.ai/
+Lutra,Web app,Any,Proprietary,-,https://lutra.ai/
+mcp-agent,Python library,-,Apache 2.0,https://github.com/lastmile-ai/mcp-agent,-
+LobeHub,"Web app, Desktop app","Windows, macOS, Linux, Web",MIT license,https://github.com/lobehub/lobe-chat,https://lobehub.com
+MCP Chatbot,CLI,"Windows, MacOS, Linux",MIT,https://github.com/3choff/mcp-chatbot,-
+MCP CLI client,CLI,"Windows, MacOS, Linux",MIT,https://github.com/adhikasp/mcp-client-cli,-
+MCPHost,Web app,Web,MIT,https://github.com/anthropics/mcp-use-cases,https://mcphost.link
+MCP Playground,Web app,Web,Proprietary,-,https://mcpsplayground.com/chat
+McPico,CLI,Linux,GPL 3,https://github.com/cryptax/mcpico,-
+MCP Simple Slackbot,Slack Bot,Slack,MIT,https://github.com/sooperset/mcp-client-slackbot,-
+Memex,Desktop app,"Windows, MacOS, Linux",Proprietary,Not Open Source,https://memex.tech/
+MCPOmni Connect,CLI,"Windows, MacOS, Linux",MIT,https://github.com/Abiorh001/mcp_omni_connect,-
+MCP SuperAssistant,Chrome Extenstion,"Windows, MacOS, Linux",MIT,https://github.com/srbhptl39/MCP-SuperAssistant,https://mcpsuperassistant.ai/
+Nerve,CLI,"Windows, MacOS, Linux",GPL3,https://github.com/evilsocket/nerve,https://github.com/evilsocket/nerve
+Octomind,CLI,"Linux, Windows, MacOS",Apache 2.0,https://github.com/muvon/octomind,https://muvon.io
+NextChat,Web app,"Windows, MacOS, Linux",MIT,https://github.com/ChatGPTNextWeb/NextChat,https://nextchat.club/
+oterm,CLI,"Windows, MacOS, Linux",MIT,https://github.com/ggozad/oterm,-
+Slack MCP Client,Slack bot client,Slack,MIT,https://github.com/tuannvm/slack-mcp-client,
+Runbear,"Slack, MS Teams, Discord app","Windows, MacOS, Linux",Proprietary,https://github.com/runbear-io,https://runbear.io
+Superinterface,Web app,Web,Proprietary,https://github.com/supercorp-ai/superinterface,https://superinterface.ai
+SeekChat,Desktop app,"Windows, MacOS",Apache 2.0,https://github.com/seekrays/seekchat,https://seekrays.com/chat/
+Simple AI,Web/CLI,Web/npm,Simple AI License,https://github.com/gcc3/simple-ai-chat,https://simple-ai.io
+SwarmClaw,"Desktop app, CLI, Docker","Windows, macOS, Linux",MIT,https://github.com/swarmclawai/swarmclaw,https://swarmclaw.ai
+Tambo,Web app,Web,MIT,https://github.com/tambo-ai/tambo,https://tambo.co
+Taskade,"Web app, Desktop app, Mobile app, Browser extension","Web, MacOS, Windows, Linux, iOS, Android, Chrome, Firefox, Edge",Proprietary,https://github.com/taskade/taskade,https://taskade.com
+Tester MCP Client,Web app,Web,Apache 2.0,https://github.com/apify/tester-mcp-client,https://apify.com/jiri.spilka/tester-mcp-client
+Tiles Notebook,Web app,Web,Apache 2.0,https://github.com/tileshq/tiles,https://www.tiles.run/
+Tome,Desktop app,MacOS,Apache 2.0,https://github.com/runebookai/tome,https://runebook.ai
+Vercade,Discord bot,"Windows, MacOS, Linux",GPL-3.0,https://github.com/lintyourcode/vercade,https://discord.gg/EMnkGjAh9v
+VS Code GitHub Copilot,"Desktop app, Web app","Windows, MacOS, Linux, Web",MIT,https://github.com/microsoft/vscode,https://code.visualstudio.com/
+Windsurf,Desktop app,"Windows, MacOS, Linux",Proprietary,N/A,https://codeium.com/windsurf
+Witsy,Desktop app,"Windows, MacOS, Linux",Apache 2.0,https://github.com/nbonamy/witsy,https://witsyai.com
+Enconvo,Desktop app,MacOS,Proprietary,https://github.com/Enconvo,https://enconvo.com
+y-cli,CLI,"Windows, MacOS, Linux",MIT,https://github.com/luohy15/y-cli,-
+Yume,Desktop app,"MacOS, Windows, Linux",Proprietary,https://github.com/aofp/yume,https://aofp.github.io/yume/
+Zed,Desktop app,"Windows, MacOS, Linux",GNU,https://github.com/zed-industries/zed,https://zed.dev/
+MindPal,Web app,Web,Proprietary,https://github.com/mindpal-ai/mindpal,https://mindpal.io
+WhatsMCP,Mobile app,WhatsApp,Proprietary,N/A,https://wassist.app/mcp/
+mcp-client-go,LIBRARY,,MIT,https://github.com/yincongcyincong/mcp-client-go/tree/main,-
+BoltAI,Mac & Mobile,Mac,Proprietary,N/A,https://boltai.com
+Argo-LocalAI,Desktop app,"Windows, MacOS, Linux",Apache 2.0,https://github.com/xark-argo/argo,https://xark-argo.com
+MCPCLIHost,CLI,"Windows, MacOS, Linux",Apache-2.0,https://github.com/vincent-pli/mcp-cli-host,
+Zin-MCP-Client,Desktop app,"Windows, MacOS, Linux",Apache 2.0,https://github.com/zinja-coder/zin-mcp-client,-
+AdaL,CLI,"Windows, MacOS, Linux",Proprietary,https://github.com/SylphAI-Inc/adal-cli,https://sylph.ai
+Agent-cli,CLI,"Windows, MacOS, Linux",GPLv3,https://github.com/belowthetree/agent-cli,-
+Qordinate,Chatbot,"[Slack](https://qordinate.ai/slack), [WhatsApp](https://qordinate.ai/whatsapp), (coming soon - iMessage, MS Teams)",-,-,https://qordinate.ai/
+PraisonAI,"Python library, CLI, Web app","Windows, MacOS, Linux",MIT,https://github.com/MervinPraison/PraisonAI,https://docs.praison.ai

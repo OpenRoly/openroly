@@ -2,17 +2,18 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   createMcpConfigAdapter,
+  withInstructions,
   withSkills,
   type AdapterContext,
   type RuntimeAdapter,
-} from "@paa/adapter";
+} from "@openroly/adapter";
 
 // Claude Code 用 official adapter。runtime 固有なのは「MCP server をどう登録するか」と
 // 「skill をどこに置くか」だけ。登録は claude CLI に任せる(設定 file の書式は CLI 側の
 // 都合で変わるため直接書かない)。
 //
 // MCP 系の 5 op は generic MCP-config adapter(PBI-0060 / W9b)が生やし、skill kind の
-// materialize(path safety / .paa-managed marker / SKILL.md 組み立て)は
+// materialize(path safety / .openroly-managed marker / SKILL.md 組み立て)は
 // packages/adapter/src/skill.ts の withSkills(W20 / PBI-0091 に共通化)が生やす。
 // ここに残るのは claude 固有の 3 点: ① config の場所と形式 ② `claude mcp add|remove`
 // の argv ③ skills/ の場所。
@@ -28,6 +29,14 @@ const skillsDir = (ctx: AdapterContext): string =>
   ctx.env.CLAUDE_CONFIG_DIR
     ? join(ctx.env.CLAUDE_CONFIG_DIR, "skills")
     : join(ctx.env.HOME ?? homedir(), ".claude", "skills");
+
+// kind = "instructions" の書き先(PBI-0214)。global の指示ファイル = CLAUDE.md。
+// skills/ と同じく CLAUDE_CONFIG_DIR 設定時はその配下(実測: 設定 dir の直下に CLAUDE.md が来る)
+const instructionsFile = (ctx: AdapterContext): { file: string } => ({
+  file: ctx.env.CLAUDE_CONFIG_DIR
+    ? join(ctx.env.CLAUDE_CONFIG_DIR, "CLAUDE.md")
+    : join(ctx.env.HOME ?? homedir(), ".claude", "CLAUDE.md"),
+});
 
 /** MCP 系 5 op の実体。skill を含む最終形は withSkills が重ねる(PBI-0091 で共通化) */
 const base = createMcpConfigAdapter({
@@ -53,4 +62,4 @@ const base = createMcpConfigAdapter({
 });
 
 // skill を materialize できるのは PBI-0008 時点では claude だけだった → W20(PBI-0091)で codex も加わる
-export const claudeAdapter: RuntimeAdapter = withSkills(base, skillsDir);
+export const claudeAdapter: RuntimeAdapter = withInstructions(withSkills(base, skillsDir), instructionsFile);

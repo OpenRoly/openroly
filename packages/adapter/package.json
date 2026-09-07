@@ -1,5 +1,5 @@
 {
-  "name": "@paa/adapter",
+  "name": "@openroly/adapter",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -7,7 +7,10 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@paa/core": "workspace:*",
-    "@paa/crypto-envelope": "workspace:*"
+    "@openroly/core": "workspace:*",
+    "@openroly/crypto-envelope": "workspace:*",
+    "jsonc-parser": "^3.3.1",
+    "smol-toml": "^1.8.0",
+    "yaml": "^2.9.0"
   }
 }

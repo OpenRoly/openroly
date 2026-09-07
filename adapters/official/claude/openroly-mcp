@@ -1,0 +1,118 @@
+#!/bin/sh
+# openroly MCP server の起動口(PBI-0132)。plugin の `.mcp.json` はここを `command` に指す。
+#
+# 静的 JSON では「binary が在れば binary、無ければ bun」を分岐できないので、1 枚だけ挟む。
+# 順序は `packages/adapter/src/mcp-config.ts` の resolveMcpServerCommand と同じ:
+#
+#   1. $OPENROLY_MCP_BINARY   (明示指定)
+#   2. $OPENROLY_HOME/bin/openroly-mcp  (既定 ~/.openroly/bin/openroly-mcp。PBI-0137 の download 先)
+#      **ただし版が合っている物だけ** —— 版が古ければ 2.5 で取り直す(PBI-0172)
+#   3. bun "$@"          (= .mcp.json の args に入っている bundle。従来経路)
+#   4. どれも無ければ公開 Release から binary を取ってきて 2 段目に落とす(PBI-0137)
+#
+# binary 経路では `$@`(bundle path)を渡さない —— bundle は bun 用の材料で、compile 済み
+# binary は自分の entry を内蔵しているため。env はそのまま継承される(exec なので透過)。
+#
+# **stdout に何も書かない**(MCP は stdio で JSON-RPC を流す面。1 byte でも混ぜたら handshake が壊れる)。
+# 何も見つからない時だけ stderr に「何を入れれば動くか」を出して exit 1 ——
+# 黙って無反応にすると runtime 側は「tool が無い」としか見えない。
+set -u
+
+if [ -n "${OPENROLY_MCP_BINARY:-}" ] && [ -x "$OPENROLY_MCP_BINARY" ]; then
+  # exec が失敗したらそのまま落とす(握り潰して bun に落ちない = 壊れた binary を隠さない)
+  exec "$OPENROLY_MCP_BINARY"
+fi
+
+openroly_bin="${OPENROLY_HOME:-${HOME:-}/.openroly}/bin/openroly-mcp"
+# plugin が期待する版。TS 側 `packages/adapter/src/binary.ts` の OPENROLY_BINARY_VERSION と
+# **同じ値**にする(apps/cli/test/login-binary.test.ts が両者の一致を機械検査する)
+ver="${OPENROLY_BINARY_VERSION:-0.2.3}"
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d" " -f1
+  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | cut -d" " -f1
+  fi
+}
+
+# 公開 Release から binary を取ってくる(PBI-0137)。取得の形は TypeScript 側の
+# ensureBinary() と同じ: checksum 必須・tmp → rename・公開 Release のみ(token を要求しない)。
+fetch_binary() {
+  command -v curl >/dev/null 2>&1 || return 1
+  case "$(uname -s)/$(uname -m)" in
+    Darwin/arm64) target=darwin-arm64 ;;
+    Darwin/x86_64) target=darwin-x64 ;;
+    Linux/x86_64) target=linux-x64 ;;
+    *) return 1 ;;  # 未対応 OS/arch
+  esac
+  base="${OPENROLY_BINARY_BASE_URL:-https://github.com/openroly/openroly/releases/download}"
+  dir=$(dirname "$openroly_bin")
+  mkdir -p "$dir" 2>/dev/null || return 1
+
+  # 照合表を先に取る(66MB を引いてから「表が無い」と分かるのは無駄)
+  want=$(curl -fsSL --max-time 60 "$base/v$ver/SHA256SUMS" 2>/dev/null | grep " openroly-mcp-$target$" | cut -d" " -f1)
+  [ -n "$want" ] || return 1
+
+  tmp="$dir/.openroly-mcp.$$.tmp"
+  curl -fsSL --max-time 600 -o "$tmp" "$base/v$ver/openroly-mcp-$target" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  [ "$(sha256_of "$tmp")" = "$want" ] || { rm -f "$tmp"; return 1; }
+  chmod 755 "$tmp" 2>/dev/null && mv "$tmp" "$openroly_bin" || { rm -f "$tmp"; return 1; }
+  printf "%s\n" "$ver" > "$openroly_bin.version" 2>/dev/null
+  return 0
+}
+
+# 版の印 `<binary>.version` は ensureBinary / fetch_binary が binary を**置いた後**に書く 1 行。
+# **在って中身が違う = 前の版の binary が残っている**ので取り直す(PBI-0172 AC-6)。ここを見ないと
+# plugin だけ新しくなった端末が古い binary を exec し続け、runtime からは「その tool は無い」と
+# しか見えない(何が古いのか誰にも分からない形で壊れる)。
+# **印が無い時は取り直さない** —— 下の案内が「binary をここに置け」と言っている手置きの道を、
+# 版が読めないという理由で捨てない(手置きの人は自分で版を管理している)。
+stale=0
+if [ -x "$openroly_bin" ] && [ -f "$openroly_bin.version" ]; then
+  installed=$(tr -d " \t\r\n" < "$openroly_bin.version" 2>/dev/null)
+  [ "$installed" = "$ver" ] || stale=1
+fi
+
+if [ -x "$openroly_bin" ] && [ "$stale" -eq 0 ]; then
+  exec "$openroly_bin"
+fi
+
+# 版が古い: **取り直してから**起動する。取れた時だけ exec —— 取れなければ下の bun に落ち、
+# bun も無ければ最後に古い binary で起動する(取り直せないだけで無反応にはしない)
+fetched=0
+if [ "$stale" -eq 1 ]; then
+  fetched=1
+  if fetch_binary && [ -x "$openroly_bin" ]; then
+    exec "$openroly_bin"
+  fi
+  echo "openroly: the installed MCP binary is not v$ver and could not be refreshed; falling back." >&2
+fi
+
+if command -v bun >/dev/null 2>&1; then
+  exec bun "$@"
+fi
+
+# 最後の手段: 公開 Release から binary を取ってくる(PBI-0137)。
+# ここに来た = binary も bun も無い = **このままでは絶対に起動できない**ので、遅くても取りに行く
+# 方が無反応で終わるより良い(2 回目からは 1 段目で当たる)。上で既に試していれば繰り返さない。
+if [ "$fetched" -eq 0 ] && fetch_binary && [ -x "$openroly_bin" ]; then
+  exec "$openroly_bin"
+fi
+
+# 取り直せなかった古い binary は、ここまで来たら使う —— 版が古いのは
+# 「起動しない」より遥かに軽い(この枝に来るのは network も bun も無い端末だけ)
+if [ -x "$openroly_bin" ]; then
+  exec "$openroly_bin"
+fi
+
+# `echo` だけで書く(builtin) —— ここは PATH が痩せている環境ほど踏む枝なので、
+# 案内を出すために外部 command(cat 等)を要求しない
+{
+  echo "openroly: cannot start the MCP server (neither the binary nor bun was found)."
+  echo "  Either one fixes it:"
+  echo "    1) place the openroly binary at: ~/.openroly/bin/openroly-mcp"
+  echo "       (or point OPENROLY_MCP_BINARY at an absolute path)"
+  echo "    2) install bun:              curl -fsSL https://bun.sh/install | bash"
+  echo "  (fetching it from the public Release was also tried and did not succeed —"
+  echo "   check the network, curl, and that the OS is supported: darwin-arm64, darwin-x64, linux-x64)"
+} >&2
+exit 1

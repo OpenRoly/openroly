@@ -3,11 +3,11 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { saveCredential } from "@paa/adapter";
+import { saveCredential } from "@openroly/adapter";
 
 // AC-12 / AC-14: CLI の公開面。status は metadata のみ、未対応 runtime は成功扱いしない。
 
-const CLI = fileURLToPath(new URL("../src/paa.ts", import.meta.url));
+const CLI = fileURLToPath(new URL("../src/openroly.ts", import.meta.url));
 
 const stub = Bun.serve({
   port: 0,
@@ -33,7 +33,7 @@ const stub = Bun.serve({
 });
 afterAll(() => stub.stop(true));
 
-async function paa(args: string[], env: Record<string, string> = {}) {
+async function openroly(args: string[], env: Record<string, string> = {}) {
   const proc = Bun.spawn(["bun", CLI, ...args], {
     env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", ...env },
     stdout: "pipe",
@@ -46,16 +46,19 @@ async function paa(args: string[], env: Record<string, string> = {}) {
   return { exitCode: await proc.exited, stdout, stderr };
 }
 
-describe("paa CLI", () => {
+describe("openroly CLI", () => {
   test("未対応 runtime は対応一覧を出して失敗する(AC-14)", async () => {
-    const result = await paa(["install", "hermes"]);
+    // 実在の製品名を選ぶと、いつか catalog に入って「対応済み」になり検査が腐る
+    // (PBI-0298: 元は "hermes" だった。PBI-0210 の catalog 90 entry に入って赤くなった)
+    const result = await openroly(["install", "not-a-real-runtime-0298"]);
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("Unsupported runtime: hermes");
+    expect(result.stderr).toContain("Unsupported runtime: not-a-real-runtime-0298");
+    // claude / codex は registry ではなく official adapter なので、catalog が変わっても消えない
     expect(result.stderr).toContain("claude, codex");
   }, 30_000);
 
   test("status は attach 先と未読の要約だけを出す(AC-12 / 要件 §19)", async () => {
-    const env = { PAA_HOME: await mkdtemp(join(tmpdir(), "paa-cli-")) };
+    const env = { OPENROLY_HOME: await mkdtemp(join(tmpdir(), "openroly-cli-")) };
     await saveCredential(
       "claude",
       {
@@ -67,7 +70,7 @@ describe("paa CLI", () => {
       },
       env,
     );
-    const result = await paa(["status"], env);
+    const result = await openroly(["status"], env);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("Attached as @aya");
     expect(result.stdout).toContain("Unread: 2");
@@ -76,14 +79,14 @@ describe("paa CLI", () => {
   }, 30_000);
 
   test("未接続なら status は次の一手を示して失敗する", async () => {
-    const result = await paa(["status"], { PAA_HOME: await mkdtemp(join(tmpdir(), "paa-cli-")) });
+    const result = await openroly(["status"], { OPENROLY_HOME: await mkdtemp(join(tmpdir(), "openroly-cli-")) });
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("atn login");
+    expect(result.stderr).toContain("openroly login");
   }, 30_000);
 
-  test("案内どおり repo 直下の 'bun run atn' で起動できる", async () => {
+  test("案内どおり repo 直下の 'bun run openroly' で起動できる", async () => {
     const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
-    const proc = Bun.spawn(["bun", "run", "atn", "--help"], {
+    const proc = Bun.spawn(["bun", "run", "openroly", "--help"], {
       cwd: repoRoot,
       env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
       stdout: "pipe",
@@ -91,12 +94,12 @@ describe("paa CLI", () => {
     });
     const stdout = await new Response(proc.stdout).text();
     expect(await proc.exited).toBe(0);
-    expect(stdout).toContain("bun run atn <command>");
+    expect(stdout).toContain("bun run openroly <command>");
   }, 30_000);
 
   test("help を出せる", async () => {
-    const result = await paa(["--help"]);
+    const result = await openroly(["--help"]);
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("bun run atn <command>");
+    expect(result.stdout).toContain("bun run openroly <command>");
   }, 30_000);
 });

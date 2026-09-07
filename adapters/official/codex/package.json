@@ -1,5 +1,5 @@
 {
-  "name": "@paa/adapter-codex",
+  "name": "@openroly/adapter-codex",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -7,6 +7,6 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@paa/adapter": "workspace:*"
+    "@openroly/adapter": "workspace:*"
   }
 }

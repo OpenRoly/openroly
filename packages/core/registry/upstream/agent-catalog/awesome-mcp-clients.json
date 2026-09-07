@@ -1,0 +1,706 @@
+[
+ {
+  "name": "OpenClaw",
+  "github": "https://github.com/openclaw/openclaw",
+  "website": "https://openclaw.ai",
+  "license": "MIT",
+  "type": "Self-hosted AI Agent",
+  "platforms": "Linux, Windows, MacOS, Docker"
+ },
+ {
+  "name": "askit-mcp",
+  "github": "https://github.com/johnrobinsn/askit",
+  "website": "-",
+  "license": "Apache 2.0",
+  "type": "CLI, Python library",
+  "platforms": "Linux, Windows, MacOS"
+ },
+ {
+  "name": "eechat",
+  "github": "https://github.com/Lucassssss/eechat",
+  "website": "https://www.ee.chat/",
+  "license": "Modified Apache 2.0",
+  "type": "Desktop app",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "5ire",
+  "github": "https://github.com/nanbingxyz/5ire",
+  "website": "https://5ire.app/",
+  "license": "Modified Apache 2.0 (non-commercial)",
+  "type": "Desktop app",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "Agent Bridge",
+  "github": "https://github.com/ramblinghermit0403/agent_bridge",
+  "website": "-",
+  "license": "MIT",
+  "type": "Web app",
+  "platforms": "Web"
+ },
+ {
+  "name": "AgentOne",
+  "github": "https://github.com/AgentOne-Dev/agent-one-public",
+  "website": "https://www.agent-one.dev",
+  "license": "Proprietary",
+  "type": "Desktop app",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "AIaW",
+  "github": "https://github.com/NitroRCr/AIaW",
+  "website": "https://aiaw.app/",
+  "license": "BSD 3-Clause",
+  "type": "Web app",
+  "platforms": "Web"
+ },
+ {
+  "name": "Ano",
+  "github": "-",
+  "website": "https://ano.chat/",
+  "license": "Proprietary",
+  "type": "Web, Desktop app",
+  "platforms": "macOS, Windows, Linux, Web"
+ },
+ {
+  "name": "AstrBot",
+  "github": "https://github.com/AstrBotDevs/AstrBot",
+  "website": "https://astrbot.app/",
+  "license": "AGPL-3.0 license",
+  "type": "LLM chatbot and development framework",
+  "platforms": "Windows, MacOS, Linux, Android"
+ },
+ {
+  "name": "Autohand Code CLI",
+  "github": "https://github.com/autohandai/code-cli",
+  "website": "https://www.autohand.ai/code/",
+  "license": "Apache 2.0",
+  "type": "CLI, VS Code/Zed extension",
+  "platforms": "Linux, Windows, MacOS"
+ },
+ {
+  "name": "AnythingLLM",
+  "github": "https://github.com/Mintplex-Labs/anything-llm",
+  "website": "https://anythingllm.com/",
+  "license": "MIT",
+  "type": "Desktop, Docker, Cloud-hosted",
+  "platforms": "Windows, MacOS, Linux, Docker, Cloud"
+ },
+ {
+  "name": "BrowseWiz",
+  "github": "N/A",
+  "website": "https://browsewiz.com",
+  "license": "Proprietary",
+  "type": "Browser extension",
+  "platforms": "Chromium-based desktop browsers"
+ },
+ {
+  "name": "Canvas MCP Client",
+  "github": "https://github.com/n00bvn/CanvasMCPClient",
+  "website": "https://canvas-mcp.com/",
+  "license": "MIT",
+  "type": "Web app",
+  "platforms": "Web"
+ },
+ {
+  "name": "CarrotAI",
+  "github": "https://github.com/Xingsandesu/CarrotAI",
+  "website": "https://jintongshu.com/solutions/agent/",
+  "license": "",
+  "type": "Web app",
+  "platforms": "Web"
+ },
+ {
+  "name": "Chainlit",
+  "github": "https://github.com/chainlit/chainlit",
+  "website": "https://chainlit.io/",
+  "license": "Apache 2.0",
+  "type": "Web app",
+  "platforms": "Web"
+ },
+ {
+  "name": "ChatMCP",
+  "github": "https://github.com/daodao97/chatmcp",
+  "website": "-",
+  "license": "Apache 2.0",
+  "type": "Desktop app",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "Cherry Studio",
+  "github": "https://github.com/CherryHQ/cherry-studio",
+  "website": "https://cherry-ai.com",
+  "license": "",
+  "type": "Desktop app",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "Claude Desktop",
+  "github": "-",
+  "website": "https://claude.ai/download",
+  "license": "Proprietary",
+  "type": "Desktop app",
+  "platforms": "Windows, MacOS"
+ },
+ {
+  "name": "Claude Code Open",
+  "github": "https://github.com/kill136/claude-code-open",
+  "website": "-",
+  "license": "MIT",
+  "type": "CLI, Web IDE",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "ClaudeMind",
+  "github": "-",
+  "website": "https://claudemind.com/",
+  "license": "Proprietary",
+  "type": "Desktop app, JetBrains extension",
+  "platforms": "Windows, MacOS"
+ },
+ {
+  "name": "Cline",
+  "github": "https://github.com/cline/cline",
+  "website": "https://marketplace.visualstudio.com/items?itemName=saoudrizwan.claude-dev",
+  "license": "Apache 2.0",
+  "type": "VSCode extension",
+  "platforms": "Windows, MacOS"
+ },
+ {
+  "name": "console-chat-gpt",
+  "github": "https://github.com/amidabuddha/console-chat-gpt",
+  "website": "-",
+  "license": "MIT",
+  "type": "CLI",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "ContextKit",
+  "github": "https://github.com/eyalzh/context-kit",
+  "website": "-",
+  "license": "MIT",
+  "type": "CLI",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "Copilot-MCP",
+  "github": "https://github.com/VikashLoomba/copilot-mcp",
+  "website": "-",
+  "license": "GPL-v3",
+  "type": "VSCode Extension",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "Cursor",
+  "github": "https://github.com/getcursor/cursor",
+  "website": "https://cursor.com",
+  "license": "Proprietary",
+  "type": "Desktop app",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "Continue",
+  "github": "https://github.com/continuedev/continue",
+  "website": "https://continue.dev/",
+  "license": "Apache 2.0",
+  "type": "VSCode extension, JetBrains extension",
+  "platforms": "Windows, MacOS"
+ },
+ {
+  "name": "DeepChat",
+  "github": "https://github.com/thinkinaixyz/deepchat",
+  "website": "https://deepchat.thinkinai.xyz/",
+  "license": "Apache 2.0",
+  "type": "Desktop app",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "Dexto",
+  "github": "https://github.com/truffle-ai/dexto",
+  "website": "https://dexto.ai",
+  "license": "Elastic 2.0",
+  "type": "CLI, Web app",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "DocsGPT",
+  "github": "https://github.com/arc53/DocsGPT",
+  "website": "https://www.docsgpt.cloud//",
+  "license": "MIT",
+  "type": "Web app, Self-hosted",
+  "platforms": "Web, Windows, MacOS, Linux"
+ },
+ {
+  "name": "Dolphin-MCP",
+  "github": "https://github.com/cognitivecomputations/dolphin-mcp",
+  "website": "-",
+  "license": "MIT",
+  "type": "CLI, Python library",
+  "platforms": "Linux, Windows, MacOS"
+ },
+ {
+  "name": "Fastchat MCP",
+  "github": "https://github.com/rb58853/fastchat-mcp",
+  "website": "-",
+  "license": "MIT",
+  "type": "CLI",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "Enola",
+  "github": "https://github.com/enola-dev/enola",
+  "website": "https://docs.enola.dev",
+  "license": "Apache 2.0",
+  "type": "Desktop app with CLI and local Web server",
+  "platforms": "Linux, Windows, MacOS (JVM)"
+ },
+ {
+  "name": "FLUJO",
+  "github": "https://github.com/mario-andreschak/FLUJO",
+  "website": "flujo.orchestraight.co",
+  "license": "MIT",
+  "type": "Web app",
+  "platforms": "Web"
+ },
+ {
+  "name": "Goose",
+  "github": "https://github.com/block/goose",
+  "website": "-",
+  "license": "Apache 2.0",
+  "type": "AI Agent",
+  "platforms": "MacOS, Linux"
+ },
+ {
+  "name": "Glue",
+  "github": "-",
+  "website": "https://glue.ai",
+  "license": "-",
+  "type": "Web app, Desktop app, Mobile app",
+  "platforms": "Web, MacOS, Windows, Mobile"
+ },
+ {
+  "name": "HyperChat",
+  "github": "https://github.com/BigSweetPotatoStudio/HyperChat",
+  "website": "-",
+  "license": "",
+  "type": "Desktop app",
+  "platforms": "Windows, MacOS"
+ },
+ {
+  "name": "JDBCX",
+  "github": "https://github.com/jdbcx/jdbcx",
+  "website": "-",
+  "license": "Apache 2.0",
+  "type": "CLI, JDBC driver",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "kibitz",
+  "github": "https://github.com/nick1udwig/kibitz",
+  "website": "https://kibi.tz",
+  "license": "MIT",
+  "type": "Mobile app, Desktop app",
+  "platforms": "Mobile, Windows, MacOS, Linux"
+ },
+ {
+  "name": "LangBot",
+  "github": "https://github.com/langbot-app/LangBot",
+  "website": "https://langbot.app",
+  "license": "AGPL-3.0 license",
+  "type": "Web app",
+  "platforms": "-"
+ },
+ {
+  "name": "Klavis AI",
+  "github": "https://github.com/Klavis-AI/klavis",
+  "website": "https://www.klavis.ai",
+  "license": "MIT",
+  "type": "Slack/Discord bots, Web UI, Hosted Service",
+  "platforms": "Slack, Discord, Web"
+ },
+ {
+  "name": "Kiro",
+  "github": "https://github.com/kirodotdev/Kiro",
+  "website": "https://kiro.dev",
+  "license": "https://kiro.dev/license/",
+  "type": "Desktop app, IDE",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "LibreChat",
+  "github": "https://github.com/danny-avila/LibreChat",
+  "website": "https://www.librechat.ai/",
+  "license": "MIT license",
+  "type": "Web app",
+  "platforms": "-"
+ },
+ {
+  "name": "Lutra",
+  "github": "-",
+  "website": "https://lutra.ai/",
+  "license": "Proprietary",
+  "type": "Web app",
+  "platforms": "Any"
+ },
+ {
+  "name": "mcp-agent",
+  "github": "https://github.com/lastmile-ai/mcp-agent",
+  "website": "-",
+  "license": "Apache 2.0",
+  "type": "Python library",
+  "platforms": "-"
+ },
+ {
+  "name": "LobeHub",
+  "github": "https://github.com/lobehub/lobe-chat",
+  "website": "https://lobehub.com",
+  "license": "MIT license",
+  "type": "Web app, Desktop app",
+  "platforms": "Windows, macOS, Linux, Web"
+ },
+ {
+  "name": "MCP Chatbot",
+  "github": "https://github.com/3choff/mcp-chatbot",
+  "website": "-",
+  "license": "MIT",
+  "type": "CLI",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "MCP CLI client",
+  "github": "https://github.com/adhikasp/mcp-client-cli",
+  "website": "-",
+  "license": "MIT",
+  "type": "CLI",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "MCPHost",
+  "github": "https://github.com/anthropics/mcp-use-cases",
+  "website": "https://mcphost.link",
+  "license": "MIT",
+  "type": "Web app",
+  "platforms": "Web"
+ },
+ {
+  "name": "MCP Playground",
+  "github": "-",
+  "website": "https://mcpsplayground.com/chat",
+  "license": "Proprietary",
+  "type": "Web app",
+  "platforms": "Web"
+ },
+ {
+  "name": "McPico",
+  "github": "https://github.com/cryptax/mcpico",
+  "website": "-",
+  "license": "GPL 3",
+  "type": "CLI",
+  "platforms": "Linux"
+ },
+ {
+  "name": "MCP Simple Slackbot",
+  "github": "https://github.com/sooperset/mcp-client-slackbot",
+  "website": "-",
+  "license": "MIT",
+  "type": "Slack Bot",
+  "platforms": "Slack"
+ },
+ {
+  "name": "Memex",
+  "github": "Not Open Source",
+  "website": "https://memex.tech/",
+  "license": "Proprietary",
+  "type": "Desktop app",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "MCPOmni Connect",
+  "github": "https://github.com/Abiorh001/mcp_omni_connect",
+  "website": "-",
+  "license": "MIT",
+  "type": "CLI",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "MCP SuperAssistant",
+  "github": "https://github.com/srbhptl39/MCP-SuperAssistant",
+  "website": "https://mcpsuperassistant.ai/",
+  "license": "MIT",
+  "type": "Chrome Extenstion",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "Nerve",
+  "github": "https://github.com/evilsocket/nerve",
+  "website": "https://github.com/evilsocket/nerve",
+  "license": "GPL3",
+  "type": "CLI",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "Octomind",
+  "github": "https://github.com/muvon/octomind",
+  "website": "https://muvon.io",
+  "license": "Apache 2.0",
+  "type": "CLI",
+  "platforms": "Linux, Windows, MacOS"
+ },
+ {
+  "name": "NextChat",
+  "github": "https://github.com/ChatGPTNextWeb/NextChat",
+  "website": "https://nextchat.club/",
+  "license": "MIT",
+  "type": "Web app",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "oterm",
+  "github": "https://github.com/ggozad/oterm",
+  "website": "-",
+  "license": "MIT",
+  "type": "CLI",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "Slack MCP Client",
+  "github": "https://github.com/tuannvm/slack-mcp-client",
+  "website": "",
+  "license": "MIT",
+  "type": "Slack bot client",
+  "platforms": "Slack"
+ },
+ {
+  "name": "Runbear",
+  "github": "https://github.com/runbear-io",
+  "website": "https://runbear.io",
+  "license": "Proprietary",
+  "type": "Slack, MS Teams, Discord app",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "Superinterface",
+  "github": "https://github.com/supercorp-ai/superinterface",
+  "website": "https://superinterface.ai",
+  "license": "Proprietary",
+  "type": "Web app",
+  "platforms": "Web"
+ },
+ {
+  "name": "SeekChat",
+  "github": "https://github.com/seekrays/seekchat",
+  "website": "https://seekrays.com/chat/",
+  "license": "Apache 2.0",
+  "type": "Desktop app",
+  "platforms": "Windows, MacOS"
+ },
+ {
+  "name": "Simple AI",
+  "github": "https://github.com/gcc3/simple-ai-chat",
+  "website": "https://simple-ai.io",
+  "license": "Simple AI License",
+  "type": "Web/CLI",
+  "platforms": "Web/npm"
+ },
+ {
+  "name": "SwarmClaw",
+  "github": "https://github.com/swarmclawai/swarmclaw",
+  "website": "https://swarmclaw.ai",
+  "license": "MIT",
+  "type": "Desktop app, CLI, Docker",
+  "platforms": "Windows, macOS, Linux"
+ },
+ {
+  "name": "Tambo",
+  "github": "https://github.com/tambo-ai/tambo",
+  "website": "https://tambo.co",
+  "license": "MIT",
+  "type": "Web app",
+  "platforms": "Web"
+ },
+ {
+  "name": "Taskade",
+  "github": "https://github.com/taskade/taskade",
+  "website": "https://taskade.com",
+  "license": "Proprietary",
+  "type": "Web app, Desktop app, Mobile app, Browser extension",
+  "platforms": "Web, MacOS, Windows, Linux, iOS, Android, Chrome, Firefox, Edge"
+ },
+ {
+  "name": "Tester MCP Client",
+  "github": "https://github.com/apify/tester-mcp-client",
+  "website": "https://apify.com/jiri.spilka/tester-mcp-client",
+  "license": "Apache 2.0",
+  "type": "Web app",
+  "platforms": "Web"
+ },
+ {
+  "name": "Tiles Notebook",
+  "github": "https://github.com/tileshq/tiles",
+  "website": "https://www.tiles.run/",
+  "license": "Apache 2.0",
+  "type": "Web app",
+  "platforms": "Web"
+ },
+ {
+  "name": "Tome",
+  "github": "https://github.com/runebookai/tome",
+  "website": "https://runebook.ai",
+  "license": "Apache 2.0",
+  "type": "Desktop app",
+  "platforms": "MacOS"
+ },
+ {
+  "name": "Vercade",
+  "github": "https://github.com/lintyourcode/vercade",
+  "website": "https://discord.gg/EMnkGjAh9v",
+  "license": "GPL-3.0",
+  "type": "Discord bot",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "VS Code GitHub Copilot",
+  "github": "https://github.com/microsoft/vscode",
+  "website": "https://code.visualstudio.com/",
+  "license": "MIT",
+  "type": "Desktop app, Web app",
+  "platforms": "Windows, MacOS, Linux, Web"
+ },
+ {
+  "name": "Windsurf",
+  "github": "N/A",
+  "website": "https://codeium.com/windsurf",
+  "license": "Proprietary",
+  "type": "Desktop app",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "Witsy",
+  "github": "https://github.com/nbonamy/witsy",
+  "website": "https://witsyai.com",
+  "license": "Apache 2.0",
+  "type": "Desktop app",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "Enconvo",
+  "github": "https://github.com/Enconvo",
+  "website": "https://enconvo.com",
+  "license": "Proprietary",
+  "type": "Desktop app",
+  "platforms": "MacOS"
+ },
+ {
+  "name": "y-cli",
+  "github": "https://github.com/luohy15/y-cli",
+  "website": "-",
+  "license": "MIT",
+  "type": "CLI",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "Yume",
+  "github": "https://github.com/aofp/yume",
+  "website": "https://aofp.github.io/yume/",
+  "license": "Proprietary",
+  "type": "Desktop app",
+  "platforms": "MacOS, Windows, Linux"
+ },
+ {
+  "name": "Zed",
+  "github": "https://github.com/zed-industries/zed",
+  "website": "https://zed.dev/",
+  "license": "GNU",
+  "type": "Desktop app",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "MindPal",
+  "github": "https://github.com/mindpal-ai/mindpal",
+  "website": "https://mindpal.io",
+  "license": "Proprietary",
+  "type": "Web app",
+  "platforms": "Web"
+ },
+ {
+  "name": "WhatsMCP",
+  "github": "N/A",
+  "website": "https://wassist.app/mcp/",
+  "license": "Proprietary",
+  "type": "Mobile app",
+  "platforms": "WhatsApp"
+ },
+ {
+  "name": "mcp-client-go",
+  "github": "https://github.com/yincongcyincong/mcp-client-go/tree/main",
+  "website": "-",
+  "license": "MIT",
+  "type": "LIBRARY",
+  "platforms": ""
+ },
+ {
+  "name": "BoltAI",
+  "github": "N/A",
+  "website": "https://boltai.com",
+  "license": "Proprietary",
+  "type": "Mac & Mobile",
+  "platforms": "Mac"
+ },
+ {
+  "name": "Argo-LocalAI",
+  "github": "https://github.com/xark-argo/argo",
+  "website": "https://xark-argo.com",
+  "license": "Apache 2.0",
+  "type": "Desktop app",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "MCPCLIHost",
+  "github": "https://github.com/vincent-pli/mcp-cli-host",
+  "website": "",
+  "license": "Apache-2.0",
+  "type": "CLI",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "Zin-MCP-Client",
+  "github": "https://github.com/zinja-coder/zin-mcp-client",
+  "website": "-",
+  "license": "Apache 2.0",
+  "type": "Desktop app",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "AdaL",
+  "github": "https://github.com/SylphAI-Inc/adal-cli",
+  "website": "https://sylph.ai",
+  "license": "Proprietary",
+  "type": "CLI",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "Agent-cli",
+  "github": "https://github.com/belowthetree/agent-cli",
+  "website": "-",
+  "license": "GPLv3",
+  "type": "CLI",
+  "platforms": "Windows, MacOS, Linux"
+ },
+ {
+  "name": "Qordinate",
+  "github": "-",
+  "website": "https://qordinate.ai/",
+  "license": "-",
+  "type": "Chatbot",
+  "platforms": "[Slack](https://qordinate.ai/slack), [WhatsApp](https://qordinate.ai/whatsapp), (coming soon - iMessage, MS Teams)"
+ },
+ {
+  "name": "PraisonAI",
+  "github": "https://github.com/MervinPraison/PraisonAI",
+  "website": "https://docs.praison.ai",
+  "license": "MIT",
+  "type": "Python library, CLI, Web app",
+  "platforms": "Windows, MacOS, Linux"
+ }
+]

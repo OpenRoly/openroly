@@ -6,3 +6,6 @@ export * from "./content.ts";
 export * from "./extension.ts";
 export * from "./auto-register.ts";
 export * from "./mail-identity.ts";
+export * from "./providers.ts";
+export * from "./native.ts";
+export * from "./env.ts";

@@ -2,12 +2,12 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { generateDeviceKeyPair, open, seal } from "@paa/crypto-envelope";
+import { generateDeviceKeyPair, open, seal } from "@openroly/crypto-envelope";
 
-// `atn agent <provider>`(PBI-0057 / EP-0009 B)。実 provider には到達させない ——
+// `openroly agent <provider>`(PBI-0057 / EP-0009 B)。実 provider には到達させない ——
 // OpenAI 互換の fake server と stub Account API を立て、CLI が何を送ったかを観測する。
 
-const CLI = join(import.meta.dir, "../src/paa.ts");
+const CLI = join(import.meta.dir, "../src/openroly.ts");
 const TOKEN = "par_agent_test_token";
 
 // ---- stub Account API ----
@@ -97,20 +97,20 @@ afterAll(() => {
   provider.stop(true);
 });
 
-async function makeHome(withCredential = true): Promise<string> {
-  const home = await mkdtemp(join(tmpdir(), "paa-agent-"));
-  await mkdir(join(home, ".atn"), { recursive: true });
+async function makeHome(withCredential = true, kind = "openai-api"): Promise<string> {
+  const home = await mkdtemp(join(tmpdir(), "openroly-agent-"));
+  await mkdir(join(home, ".openroly"), { recursive: true });
   if (withCredential) {
     await writeFile(
-      join(home, ".atn", "credentials.json"),
+      join(home, ".openroly", "credentials.json"),
       JSON.stringify({
         version: 1,
         runtimes: {
-          "openai-api": {
-            runtime_id: "rt_openai",
+          [kind]: {
+            runtime_id: `rt_${kind}`,
             token: TOKEN,
             base_url: ACCOUNT_URL,
-            name: "OpenAI (API)",
+            name: kind,
           },
         },
       }),
@@ -124,9 +124,9 @@ async function runCli(home: string, extra: string[] = [], provider: string = "op
     env: {
       ...process.env,
       HOME: home,
-      PAA_HOME: join(home, ".atn"),
-      PAA_AGENT_BASE_URL: PROVIDER_URL,
-      PAA_NO_BROWSER: "1",
+      OPENROLY_HOME: join(home, ".openroly"),
+      OPENROLY_AGENT_BASE_URL: PROVIDER_URL,
+      OPENROLY_NO_BROWSER: "1",
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -155,7 +155,7 @@ beforeEach(() => {
   };
 });
 
-describe("atn agent(PBI-0057 AC-1〜AC-5)", () => {
+describe("openroly agent(PBI-0057 AC-1〜AC-5)", () => {
   test("AC-1: 1 turn で provider を 1 回だけ呼び、reply を 1 回送って sent で終わる", async () => {
     const res = await runCli(await makeHome());
     expect(res.code).toBe(0);
@@ -182,7 +182,7 @@ describe("atn agent(PBI-0057 AC-1〜AC-5)", () => {
     // この端末の device key を作り、その key 宛に seal した message を stub に返させる
     const kp = await generateDeviceKeyPair();
     await writeFile(
-      join(home, ".atn", "device-keys.json"),
+      join(home, ".openroly", "device-keys.json"),
       JSON.stringify({
         version: 1,
         devices: {
@@ -266,9 +266,37 @@ describe("atn agent(PBI-0057 AC-1〜AC-5)", () => {
     expect(res.code).toBe(0);
     expect(providerCalls[0]!.body.model).toBe("gpt-x");
   });
+
+  // PBI-0210 AC-5: provider は `@openroly/core` の表から生えるので、**表に足しただけ**で `openroly agent <id>` が
+  // 通ること。openai だけで測ると「hard-code の 3 つが動く」しか分からない
+  test("PBI-0210 AC-5: 表から生えた provider(openrouter)も同じ経路で 1 回だけ叩き、既定 model は表の値", async () => {
+    const { apiProvider } = await import("@openroly/core");
+    // stub の既定 resolve は常に OPENAI_TOKEN を返す(X1 攻撃 b がそれを当てにしている)ので、
+    // ここでは openrouter の鍵を明示的に積む。CLI は `<PROVIDER>_TOKEN` を探す
+    resolveQueue = [{ status: 200, body: { env: { OPENROUTER_TOKEN: API_KEY } } }];
+    const res = await runCli(await makeHome(true, "openrouter-api"), [], "openrouter");
+    expect(res.code, res.err).toBe(0);
+    expect(providerCalls.length).toBe(1);
+    expect(providerCalls[0]!.body.model).toBe(apiProvider("openrouter")!.defaultModel);
+    // 鍵は Connections から解決する(`auth: "key"`)
+    expect(accountCalls.some((c) => c.path === "/v1/connections/openrouter/resolve")).toBe(true);
+  });
+
+  // PBI-0210 AC-5: `auth: "none"` の local 口は **鍵解決を経ずに** 叩く(Connections に無いので、
+  // resolve を通すと必ず 404 で止まる)
+  test("PBI-0210 AC-5: auth:'none' の ollama-local は resolve を 1 度も叩かず、base は 127.0.0.1:11434/v1", async () => {
+    const { apiProvider } = await import("@openroly/core");
+    expect(apiProvider("ollama-local")).toMatchObject({ auth: "none", baseUrl: "http://127.0.0.1:11434/v1" });
+    const res = await runCli(await makeHome(true, "ollama-local-api"), [], "ollama-local");
+    expect(res.code, res.err).toBe(0);
+    expect(providerCalls.length).toBe(1);
+    expect(accountCalls.some((c) => c.path.includes("/resolve"))).toBe(false);
+    // 鍵が無いので Authorization は付けない(空文字の Bearer を送らない)
+    expect(providerCalls[0]!.auth ?? "").not.toContain(API_KEY);
+  });
 });
 
-describe("atn agent の例外(PBI-0057 AC-X1〜X3)", () => {
+describe("openroly agent の例外(PBI-0057 AC-X1〜X3)", () => {
   test("AC-X1: credential が無ければ Account も provider も 1 度も叩かずに exit 1", async () => {
     const res = await runCli(await makeHome(false));
     expect(res.code).toBe(1);
@@ -306,13 +334,13 @@ describe("atn agent の例外(PBI-0057 AC-X1〜X3)", () => {
     const [a, b] = await Promise.all([runCli(home), runCli(home)]);
     expect([0, 1]).toContain(a.code);
     expect([0, 1]).toContain(b.code);
-    const raw = await readFile(join(home, ".atn", "device-keys.json"), "utf8").catch(() => "{}");
+    const raw = await readFile(join(home, ".openroly", "device-keys.json"), "utf8").catch(() => "{}");
     expect(() => JSON.parse(raw)).not.toThrow();
   });
 });
 
 // レビュー(有界)の攻撃 test — 実装コードには触らない。X1/X2/X3 の行を破りに行く
-describe("atn agent への攻撃 (PBI-0057 review)", () => {
+describe("openroly agent への攻撃 (PBI-0057 review)", () => {
   test("X1 攻撃: 別 provider の credential には乗り替えられない(agent gemini に openai-api の接続を使わせない)", async () => {
     // credentials.json に openai-api だけ → gemini 呼び出しは未接続で即 exit 1。
     // Account API も provider も 1 回も叩かせない
@@ -328,14 +356,14 @@ describe("atn agent への攻撃 (PBI-0057 review)", () => {
     // gemini-api credential を同じ stub に足す。stub の resolve は常に OPENAI_TOKEN を返す
     // (= server 側が取り違えた体)。CLI は GEMINI_TOKEN を探すので鍵の取り違えでは provider を呼ばない
     const home = await makeHome();
-    const cred = JSON.parse(await readFile(join(home, ".atn", "credentials.json"), "utf8"));
+    const cred = JSON.parse(await readFile(join(home, ".openroly", "credentials.json"), "utf8"));
     cred.runtimes["gemini-api"] = {
       runtime_id: "rt_gemini_atk",
       token: TOKEN,
       base_url: ACCOUNT_URL,
       name: "Gemini (API)",
     };
-    await writeFile(join(home, ".atn", "credentials.json"), JSON.stringify(cred));
+    await writeFile(join(home, ".openroly", "credentials.json"), JSON.stringify(cred));
     const res = await runCli(home, [], "gemini");
     expect(res.code).toBe(1);
     expect(res.err).toContain("connection_resolve_empty");
@@ -360,7 +388,7 @@ describe("atn agent への攻撃 (PBI-0057 review)", () => {
     expect(accountCalls.filter((c) => c.path.endsWith("/reply")).length).toBe(0);
   });
 
-  test("PBI-0253 AC-X1: revoke された device は黙って止まらず、`atn pair openai-api` を名乗って落ちる", async () => {
+  test("PBI-0253 AC-X1: revoke された device は黙って止まらず、`openroly pair openai-api` を名乗って落ちる", async () => {
     // 相手に account 鍵を置くと seal 経路が ensureOwnDevice を通る = POST /v1/devices を打つ
     const theirs = await generateDeviceKeyPair();
     peerAccountKey = { id: "ack_theirs", public_key_jwk: theirs.publicJwk };
@@ -369,19 +397,19 @@ describe("atn agent への攻撃 (PBI-0057 review)", () => {
     expect(res.code).toBe(1);
     const said = res.out + res.err;
     expect(said).toMatch(/revoked from the account/);
-    expect(said).toMatch(/atn pair openai-api/); // 復帰の手順(= 人が承認し直す pairing)が error 文言そのものに在る(無人の相手が読む)
+    expect(said).toMatch(/openroly pair openai-api/); // 復帰の手順(= 人が承認し直す pairing)が error 文言そのものに在る(無人の相手が読む)
     // 平文で送っていない(reply が 1 本も出ていない = revoke が本当に止めている)
     expect(accountCalls.filter((c) => c.path.endsWith("/reply")).length).toBe(0);
   });
 
-  test("PBI-0264 有界レビュー: credential が 401(Revoke が token ごと落とした)でも黙って止まらず `atn pair openai-api` を名乗る", async () => {
+  test("PBI-0264 有界レビュー: credential が 401(Revoke が token ごと落とした)でも黙って止まらず `openroly pair openai-api` を名乗る", async () => {
     // 0264 以後、revoke された agent は 409 device_revoked の案内の手前で 401 になる。401 にも戻り道が要る
     threadStatus = 401;
     const res = await runCli(await makeHome());
     expect(res.code).toBe(1);
     const said = res.out + res.err;
     expect(said).toMatch(/401/);
-    expect(said).toMatch(/atn pair openai-api/);
+    expect(said).toMatch(/openroly pair openai-api/);
     expect(accountCalls.filter((c) => c.path.endsWith("/reply")).length).toBe(0);
   });
 
@@ -394,7 +422,7 @@ describe("atn agent への攻撃 (PBI-0057 review)", () => {
     const [a, b] = await Promise.all([runCli(home), runCli(home)]);
     expect(a.code).toBe(0);
     expect(b.code).toBe(0);
-    const raw = await readFile(join(home, ".atn", "device-keys.json"), "utf8");
+    const raw = await readFile(join(home, ".openroly", "device-keys.json"), "utf8");
     const parsed = JSON.parse(raw);
     expect(Object.keys(parsed.devices)).toEqual(["openai-api"]);
     expect(parsed.devices["openai-api"].keyId).toBeString();
@@ -402,5 +430,62 @@ describe("atn agent への攻撃 (PBI-0057 review)", () => {
     const replies = accountCalls.filter((c) => c.path.endsWith("/reply"));
     expect(replies.length).toBe(2);
     for (const r of replies) expect(r.body.envelope).toBeDefined();
+  });
+});
+
+// 持ち込みの endpoint(PBI-0276 AC-3)。表に無い provider を、**server の resolve が返す接続先**で叩く。
+// ここだけ `OPENROLY_AGENT_BASE_URL` を積まない —— 積むと「行の base_url を使ったか」が測れなくなる
+describe("openroly agent custom-<name>(PBI-0276 AC-3)", () => {
+  async function runCustom(home: string, providerId: string) {
+    // 上書き env は **key ごと消す**(`undefined` を積むと文字列 "undefined" になる runtime がある)
+    const env = { ...process.env } as Record<string, string>;
+    delete env.OPENROLY_AGENT_BASE_URL;
+    delete env.OPENROLY_AGENT_MODEL;
+    Object.assign(env, { HOME: home, OPENROLY_HOME: join(home, ".openroly"), OPENROLY_NO_BROWSER: "1" });
+    const proc = Bun.spawn(["bun", CLI, "agent", providerId, "--thread", "th_1"], {
+      env,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const out = await new Response(proc.stdout).text();
+    const err = await new Response(proc.stderr).text();
+    return { code: await proc.exited, out, err };
+  }
+
+  test("resolve が返した base_url / model で叩き、返信が本文になる", async () => {
+    resolveQueue = [
+      {
+        status: 200,
+        body: {
+          env: { CUSTOM_OMNI_ROUTER_TOKEN: API_KEY },
+          base_url: PROVIDER_URL,
+          model: "gw-model-1",
+        },
+      },
+    ];
+    const res = await runCustom(await makeHome(true, "custom-omni-router-api"), "custom-omni-router");
+    expect(res.code).toBe(0);
+    expect(providerCalls.length).toBe(1);
+    // 表を引いていない証拠 = 表に無い model がそのまま出ている
+    expect(providerCalls[0]!.body.model).toBe("gw-model-1");
+    expect(providerCalls[0]!.auth).toBe(`Bearer ${API_KEY}`);
+    const replies = accountCalls.filter((c) => c.path.endsWith("/reply"));
+    expect(replies.length).toBe(1);
+    expect(replies[0]!.body.text).toBe("こちらが下書きです");
+  });
+
+  test("接続先の無い応答では **叩かない**(表の URL に落として別の provider へ鍵を投げない)", async () => {
+    resolveQueue = [{ status: 200, body: { env: { CUSTOM_OMNI_ROUTER_TOKEN: API_KEY } } }];
+    const res = await runCustom(await makeHome(true, "custom-omni-router-api"), "custom-omni-router");
+    expect(res.code).toBe(1);
+    expect(providerCalls.length).toBe(0);
+    expect(res.out + res.err).toContain("connection_endpoint_missing");
+  });
+
+  test("形の合わない名前は provider として受け付けない", async () => {
+    const res = await runCustom(await makeHome(true, "custom-A-api"), "custom-A");
+    expect(res.code).toBe(1);
+    expect(res.out + res.err).toContain("agent needs a provider");
+    expect(providerCalls.length).toBe(0);
   });
 });

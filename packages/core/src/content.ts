@@ -4,7 +4,7 @@
 
 export interface FileRef {
   name: string;
-  /** object storage 等への参照。内部 blob は `paa-file:<id>`(PBI-0074)。それ以外は URL 文字列 */
+  /** object storage 等への参照。内部 blob は `openroly-file:<id>`(PBI-0074)。それ以外は URL 文字列 */
   ref: string;
   /**
    * 内部 blob の内容鍵(base64。crypto-envelope の encryptFileBytes が出す keyB64)。
@@ -99,12 +99,12 @@ export const MESSAGE_KINDS = ["chat", "notification", "digest"] as const;
 export type MessageKind = (typeof MESSAGE_KINDS)[number];
 
 /**
- * 通知の流れて来る入口。mail / paa は thread から導出できる(deriveSource)。
+ * 通知の流れて来る入口。mail / openroly は thread から導出できる(deriveSource)。
  * collector(W2b の android 等)と webhook は行に明示的に載る。値は v0.7 §14 の列挙
  */
 export const SOURCE_KINDS = [
   "mail",
-  "paa",
+  "openroly",
   "webhook",
   "android",
   "windows",
@@ -139,12 +139,12 @@ export function deriveSource(thread: {
   peer_account_id: string | null;
 }): NotificationSource {
   if (thread.peer_address) return { kind: "mail" };
-  return { kind: "paa" };
+  return { kind: "openroly" };
 }
 
 // ---------- capture source(EP-0013 W2a / PBI-0114・要件 v0.7 §7.4・§20) ----------
 // 世界からの通知の入口。行を sources 表に持ち、token 認証で POST /v1/inbound/notification に届く。
-// mail / paa / digest は導出・自動なので source 行を作らない(CAPTURE_SOURCE_KINDS から外れている)
+// mail / openroly / digest は導出・自動なので source 行を作らない(CAPTURE_SOURCE_KINDS から外れている)
 
 /** source 行を作る種別。webhook = W2a の endpoint、android/windows/macos/ios = collector(W2b 以降) */
 export const CAPTURE_SOURCE_KINDS = ["webhook", "android", "windows", "macos", "ios"] as const;

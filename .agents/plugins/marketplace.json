@@ -1,11 +1,11 @@
 {
-  "name": "atn",
+  "name": "openroly",
   "interface": {
-    "displayName": "All Together Now"
+    "displayName": "OpenRoly"
   },
   "plugins": [
     {
-      "name": "atn",
+      "name": "openroly",
       "source": {
         "source": "local",
         "path": "./adapters/official/codex"

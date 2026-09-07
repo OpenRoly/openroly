@@ -1,0 +1,278 @@
+[
+ {
+  "slug": "hermes-agent",
+  "rank": "1",
+  "name": "Hermes Agent",
+  "description": "Hermes Agent is an open-source, self-improving AI agent by Nous Research that runs persistently with memory across sessions, and builds reusable skills from experience. It comes with 40+ built-in tools, including web search, browser automation, and vision, plus scheduled automations and subagents."
+ },
+ {
+  "slug": "claude-code",
+  "rank": "2",
+  "name": "Claude Code",
+  "description": "Claude Code is Anthropic's agentic coding tool that reads your entire codebase, plans and executes changes across files, runs tests, and iterates on failures, all from natural language prompts."
+ },
+ {
+  "slug": "kilo-code",
+  "rank": "3",
+  "name": "Kilo Code",
+  "description": "Kilo Code is an open-source AI coding agent that works across VS Code, JetBrains, and CLI to help developers ship code faster with agentic workflows."
+ },
+ {
+  "slug": "cline",
+  "rank": "4",
+  "name": "Cline",
+  "description": "Cline is an open-source AI coding agent that lives inside your IDE, autonomously exploring your codebase, editing files, running terminal commands, and using browser automation."
+ },
+ {
+  "slug": "pi",
+  "rank": "5",
+  "name": "pi",
+  "description": "There are many coding agents, but this one is yours."
+ },
+ {
+  "slug": "url/https%3A%2F%2Fomp.sh%2F",
+  "rank": "6",
+  "name": "omp",
+  "description": "omp.sh"
+ },
+ {
+  "slug": "openclaw",
+  "rank": "7",
+  "name": "OpenClaw",
+  "description": "OpenClaw is an open-source AI agent that connects to your messaging apps and takes real actions on your behalf, from running commands and browsing the web to managing files and sending emails."
+ },
+ {
+  "slug": "codex",
+  "rank": "8",
+  "name": "Codex",
+  "description": "A coding agent that helps you build and ship with AI"
+ },
+ {
+  "slug": "openhands",
+  "rank": "9",
+  "name": "OpenHands",
+  "description": "AI coding agent that can run commands, browse the web, call APIs"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fcursor.com%2F",
+  "rank": "10",
+  "name": "Cursor",
+  "description": "cursor.com"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fstrix.ai%2F",
+  "rank": "11",
+  "name": "Strix",
+  "description": "strix.ai"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fproto.erp.ai%2F",
+  "rank": "12",
+  "name": "Proto Agent",
+  "description": "proto.erp.ai"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fcommandcode.ai%2F",
+  "rank": "13",
+  "name": "Command Code",
+  "description": "commandcode.ai"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fitonami.cloud%2F",
+  "rank": "14",
+  "name": "Itonami By KotobaLabs",
+  "description": "itonami.cloud"
+ },
+ {
+  "slug": "qwen-code",
+  "rank": "15",
+  "name": "Qwen Code",
+  "description": "Powerful command-line AI workflow tool"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fgoose-docs.ai%2F",
+  "rank": "16",
+  "name": "goose",
+  "description": "goose-docs.ai"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fmimo.xiaomi.com%2Fcoder",
+  "rank": "17",
+  "name": "mimocode",
+  "description": "mimo.xiaomi.com"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fagent.openmed.life%2F",
+  "rank": "18",
+  "name": "OpenMed Agent",
+  "description": "agent.openmed.life"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fagent.digen.ai%2F",
+  "rank": "19",
+  "name": "Digen AI",
+  "description": "agent.digen.ai"
+ },
+ {
+  "slug": "letta",
+  "rank": "20",
+  "name": "Letta",
+  "description": "Platform for stateful agents: AI with advanced memory that can learn and self-improve over time."
+ },
+ {
+  "slug": "url/https%3A%2F%2Fraven.evermind.ai%2F",
+  "rank": "21",
+  "name": "Raven Agent",
+  "description": "raven.evermind.ai"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fhermes-studio.ai%2F",
+  "rank": "22",
+  "name": "Hermes Web UI",
+  "description": "hermes-studio.ai"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fgithub.com%2Folixis%2Fpi-openrouter-plus",
+  "rank": "23",
+  "name": "pi",
+  "description": "github.com"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fcharm.land%2F",
+  "rank": "24",
+  "name": "Crush",
+  "description": "Glamorous command-line interface"
+ },
+ {
+  "slug": "url/https%3A%2F%2Ftrenzel.com%2F",
+  "rank": "25",
+  "name": "Trenzel",
+  "description": "trenzel.com"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fpostqode.ai%2F",
+  "rank": "26",
+  "name": "PostQode",
+  "description": "postqode.ai"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fgithub.com%2FAlthenia%2Fycoding",
+  "rank": "27",
+  "name": "YCoding",
+  "description": "github.com"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fagentfield.ai%2F",
+  "rank": "28",
+  "name": "AgentField AI",
+  "description": "agentfield.ai"
+ },
+ {
+  "slug": "url/https%3A%2F%2Ffavur.dev%2F",
+  "rank": "29",
+  "name": "Favur",
+  "description": "favur.dev"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fgithub.com%2Foguzbilgic%2Fkern-ai",
+  "rank": "30",
+  "name": "Kern Agent",
+  "description": "github.com"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fjoni.ai%2F",
+  "rank": "31",
+  "name": "JONI",
+  "description": "joni.ai"
+ },
+ {
+  "slug": "url/https%3A%2F%2Ftraycer.ai%2F",
+  "rank": "32",
+  "name": "Traycer",
+  "description": "traycer.ai"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fp0.systems%2F",
+  "rank": "33",
+  "name": "Peezy Gateway",
+  "description": "p0.systems"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fminara.ai%2F",
+  "rank": "34",
+  "name": "Minara",
+  "description": "minara.ai"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fopenjiuwen.com%2F",
+  "rank": "35",
+  "name": "JiuwenSwarm",
+  "description": "openjiuwen.com"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fgithub.com%2Fgraveland%2Frafiki",
+  "rank": "36",
+  "name": "rafiki",
+  "description": "github.com"
+ },
+ {
+  "slug": "url/https%3A%2F%2Faexol.ai%2F",
+  "rank": "37",
+  "name": "Aexol.ai",
+  "description": "aexol.ai"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fv12.sh%2F",
+  "rank": "38",
+  "name": "V12X",
+  "description": "v12.sh"
+ },
+ {
+  "slug": "aider",
+  "rank": "39",
+  "name": "Aider",
+  "description": "AI pair programming in your terminal"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fwww.vellum.ai%2F",
+  "rank": "40",
+  "name": "Vellum Assistant",
+  "description": "www.vellum.ai"
+ },
+ {
+  "slug": "junie",
+  "rank": "41",
+  "name": "Junie",
+  "description": "Junie is an agentic coding tool by JetBrains that provides an interactive terminal interface for developers to review, write, and modify code."
+ },
+ {
+  "slug": "url/https%3A%2F%2Fapp.stakebetvip.com%2F",
+  "rank": "42",
+  "name": "StakeBetApp",
+  "description": "app.stakebetvip.com"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fclawnify.com%2F",
+  "rank": "43",
+  "name": "Clawnify",
+  "description": "clawnify.com"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fgithub.com%2Fopenamer%2Fopenamer",
+  "rank": "44",
+  "name": "OpenAmer Agent",
+  "description": "github.com"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fromkola.ru%2F",
+  "rank": "45",
+  "name": "claude-mem",
+  "description": "romkola.ru"
+ },
+ {
+  "slug": "url/https%3A%2F%2Fjames-agent.ai%2F",
+  "rank": "46",
+  "name": "James",
+  "description": "james-agent.ai"
+ }
+]

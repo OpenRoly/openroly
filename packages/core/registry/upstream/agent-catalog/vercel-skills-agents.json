@@ -1,0 +1,464 @@
+[
+ {
+  "id": "aider-desk",
+  "display_name": "AiderDesk",
+  "skills_dir_expr": "join(home, '.aider-desk/skills')",
+  "detect_expr": "join(home, '.aider-desk'"
+ },
+ {
+  "id": "amp",
+  "display_name": "Amp",
+  "skills_dir_expr": "join(configHome, 'agents/skills')",
+  "detect_expr": "join(configHome, 'amp'"
+ },
+ {
+  "id": "antigravity",
+  "display_name": "Antigravity",
+  "skills_dir_expr": "join(home, '.gemini/antigravity/skills')",
+  "detect_expr": "join(home, '.gemini/antigravity'"
+ },
+ {
+  "id": "antigravity-cli",
+  "display_name": "Antigravity CLI",
+  "skills_dir_expr": "join(home, '.gemini/antigravity-cli/skills')",
+  "detect_expr": "join(home, '.gemini/antigravity-cli'"
+ },
+ {
+  "id": "astrbot",
+  "display_name": "AstrBot",
+  "skills_dir_expr": "join(home, '.astrbot/data/skills')",
+  "detect_expr": "join(process.cwd("
+ },
+ {
+  "id": "autohand-code",
+  "display_name": "Autohand Code CLI",
+  "skills_dir_expr": "join(autohandHome, 'skills')",
+  "detect_expr": "autohandHome"
+ },
+ {
+  "id": "augment",
+  "display_name": "Augment",
+  "skills_dir_expr": "join(home, '.augment/skills')",
+  "detect_expr": "join(home, '.augment'"
+ },
+ {
+  "id": "bob",
+  "display_name": "IBM Bob",
+  "skills_dir_expr": "join(home, '.bob/skills')",
+  "detect_expr": "join(home, '.bob'"
+ },
+ {
+  "id": "claude-code",
+  "display_name": "Claude Code",
+  "skills_dir_expr": "join(claudeHome, 'skills')",
+  "detect_expr": "claudeHome"
+ },
+ {
+  "id": "openclaw",
+  "display_name": "OpenClaw",
+  "skills_dir_expr": "getOpenClawGlobalSkillsDir()",
+  "detect_expr": "join(home, '.openclaw'"
+ },
+ {
+  "id": "cline",
+  "display_name": "Cline",
+  "skills_dir_expr": "join(home, '.agents', 'skills')",
+  "detect_expr": "join(home, '.cline'"
+ },
+ {
+  "id": "codearts-agent",
+  "display_name": "CodeArts Agent",
+  "skills_dir_expr": "join(home, '.codeartsdoer/skills')",
+  "detect_expr": "join(home, '.codeartsdoer'"
+ },
+ {
+  "id": "codebuddy",
+  "display_name": "CodeBuddy",
+  "skills_dir_expr": "join(home, '.codebuddy/skills')",
+  "detect_expr": "join(process.cwd("
+ },
+ {
+  "id": "codemaker",
+  "display_name": "Codemaker",
+  "skills_dir_expr": "join(home, '.codemaker/skills')",
+  "detect_expr": "join(home, '.codemaker'"
+ },
+ {
+  "id": "codestudio",
+  "display_name": "Code Studio",
+  "skills_dir_expr": "join(home, '.codestudio/skills')",
+  "detect_expr": "join(home, '.codestudio'"
+ },
+ {
+  "id": "codex",
+  "display_name": "Codex",
+  "skills_dir_expr": "join(codexHome, 'skills')",
+  "detect_expr": "codexHome"
+ },
+ {
+  "id": "command-code",
+  "display_name": "Command Code",
+  "skills_dir_expr": "join(home, '.commandcode/skills')",
+  "detect_expr": "join(home, '.commandcode'"
+ },
+ {
+  "id": "continue",
+  "display_name": "Continue",
+  "skills_dir_expr": "join(home, '.continue/skills')",
+  "detect_expr": "join(process.cwd("
+ },
+ {
+  "id": "cortex",
+  "display_name": "Cortex Code",
+  "skills_dir_expr": "join(home, '.snowflake/cortex/skills')",
+  "detect_expr": "join(home, '.snowflake/cortex'"
+ },
+ {
+  "id": "crush",
+  "display_name": "Crush",
+  "skills_dir_expr": "join(home, '.config/crush/skills')",
+  "detect_expr": "join(home, '.config/crush'"
+ },
+ {
+  "id": "cursor",
+  "display_name": "Cursor",
+  "skills_dir_expr": "join(home, '.cursor/skills')",
+  "detect_expr": "join(home, '.cursor'"
+ },
+ {
+  "id": "deepagents",
+  "display_name": "Deep Agents",
+  "skills_dir_expr": "join(home, '.deepagents/agent/skills')",
+  "detect_expr": "join(home, '.deepagents'"
+ },
+ {
+  "id": "devin",
+  "display_name": "Devin for Terminal",
+  "skills_dir_expr": "join(configHome, 'devin/skills')",
+  "detect_expr": "join(configHome, 'devin'"
+ },
+ {
+  "id": "dexto",
+  "display_name": "Dexto",
+  "skills_dir_expr": "join(home, '.agents/skills')",
+  "detect_expr": "join(home, '.dexto'"
+ },
+ {
+  "id": "droid",
+  "display_name": "Droid",
+  "skills_dir_expr": "join(home, '.factory/skills')",
+  "detect_expr": "join(home, '.factory'"
+ },
+ {
+  "id": "eve",
+  "display_name": "Eve",
+  "skills_dir_expr": "undefined",
+  "detect_expr": "join(cwd, 'agent'"
+ },
+ {
+  "id": "firebender",
+  "display_name": "Firebender",
+  "skills_dir_expr": "join(home, '.firebender/skills')",
+  "detect_expr": "join(home, '.firebender'"
+ },
+ {
+  "id": "forgecode",
+  "display_name": "ForgeCode",
+  "skills_dir_expr": "join(home, '.forge/skills')",
+  "detect_expr": "join(home, '.forge'"
+ },
+ {
+  "id": "gemini-cli",
+  "display_name": "Gemini CLI",
+  "skills_dir_expr": "join(home, '.gemini/skills')",
+  "detect_expr": "join(home, '.gemini'"
+ },
+ {
+  "id": "github-copilot",
+  "display_name": "GitHub Copilot",
+  "skills_dir_expr": "join(home, '.copilot/skills')",
+  "detect_expr": "join(home, '.copilot'"
+ },
+ {
+  "id": "goose",
+  "display_name": "Goose",
+  "skills_dir_expr": "join(configHome, 'goose/skills')",
+  "detect_expr": "join(configHome, 'goose'"
+ },
+ {
+  "id": "grok",
+  "display_name": "Grok Build",
+  "skills_dir_expr": "join(grokHome, 'skills')",
+  "detect_expr": "grokHome"
+ },
+ {
+  "id": "hermes-agent",
+  "display_name": "Hermes Agent",
+  "skills_dir_expr": "join(hermesHome, 'skills')",
+  "detect_expr": "hermesHome"
+ },
+ {
+  "id": "inference-sh",
+  "display_name": "inference.sh",
+  "skills_dir_expr": "join(home, '.inferencesh/skills')",
+  "detect_expr": "join(home, '.inferencesh'"
+ },
+ {
+  "id": "jazz",
+  "display_name": "Jazz",
+  "skills_dir_expr": "join(home, '.jazz/skills')",
+  "detect_expr": "join(home, '.jazz'"
+ },
+ {
+  "id": "junie",
+  "display_name": "Junie",
+  "skills_dir_expr": "join(home, '.junie/skills')",
+  "detect_expr": "join(home, '.junie'"
+ },
+ {
+  "id": "iflow-cli",
+  "display_name": "iFlow CLI",
+  "skills_dir_expr": "join(home, '.iflow/skills')",
+  "detect_expr": "join(home, '.iflow'"
+ },
+ {
+  "id": "kilo",
+  "display_name": "Kilo Code",
+  "skills_dir_expr": "join(home, '.kilocode/skills')",
+  "detect_expr": "join(home, '.kilocode'"
+ },
+ {
+  "id": "kimchi",
+  "display_name": "Kimchi",
+  "skills_dir_expr": "join(home, '.config', 'kimchi', 'harness', 'skills')",
+  "detect_expr": ""
+ },
+ {
+  "id": "kimi-code-cli",
+  "display_name": "Kimi Code CLI",
+  "skills_dir_expr": "join(home, '.agents/skills')",
+  "detect_expr": "join(home, '.kimi-code'"
+ },
+ {
+  "id": "kiro-cli",
+  "display_name": "Kiro CLI",
+  "skills_dir_expr": "join(home, '.kiro/skills')",
+  "detect_expr": "join(home, '.kiro'"
+ },
+ {
+  "id": "kode",
+  "display_name": "Kode",
+  "skills_dir_expr": "join(home, '.kode/skills')",
+  "detect_expr": "join(home, '.kode'"
+ },
+ {
+  "id": "lingma",
+  "display_name": "Lingma",
+  "skills_dir_expr": "join(home, '.lingma/skills')",
+  "detect_expr": "join(home, '.lingma'"
+ },
+ {
+  "id": "loaf",
+  "display_name": "Loaf",
+  "skills_dir_expr": "join(home, '.agents/skills')",
+  "detect_expr": "join(home, '.loaf'"
+ },
+ {
+  "id": "mcpjam",
+  "display_name": "MCPJam",
+  "skills_dir_expr": "join(home, '.mcpjam/skills')",
+  "detect_expr": "join(home, '.mcpjam'"
+ },
+ {
+  "id": "minimax-code",
+  "display_name": "MiniMax Code",
+  "skills_dir_expr": "join(home, '.minimax/skills')",
+  "detect_expr": ""
+ },
+ {
+  "id": "mistral-vibe",
+  "display_name": "Mistral Vibe",
+  "skills_dir_expr": "join(vibeHome, 'skills')",
+  "detect_expr": "vibeHome"
+ },
+ {
+  "id": "moxby",
+  "display_name": "Moxby",
+  "skills_dir_expr": "join(home, '.moxby/skills')",
+  "detect_expr": "join(home, '.moxby'"
+ },
+ {
+  "id": "mux",
+  "display_name": "Mux",
+  "skills_dir_expr": "join(home, '.mux/skills')",
+  "detect_expr": "join(home, '.mux'"
+ },
+ {
+  "id": "opencode",
+  "display_name": "OpenCode",
+  "skills_dir_expr": "join(configHome, 'opencode/skills')",
+  "detect_expr": "join(configHome, 'opencode'"
+ },
+ {
+  "id": "openhands",
+  "display_name": "OpenHands",
+  "skills_dir_expr": "join(home, '.openhands/skills')",
+  "detect_expr": "join(home, '.openhands'"
+ },
+ {
+  "id": "ona",
+  "display_name": "Ona",
+  "skills_dir_expr": "join(home, '.ona/skills')",
+  "detect_expr": "join(home, '.ona'"
+ },
+ {
+  "id": "pi",
+  "display_name": "Pi",
+  "skills_dir_expr": "join(home, '.pi/agent/skills')",
+  "detect_expr": "join(home, '.pi/agent'"
+ },
+ {
+  "id": "posit-assistant",
+  "display_name": "Posit Assistant",
+  "skills_dir_expr": "join(home, '.posit/assistant/skills')",
+  "detect_expr": ""
+ },
+ {
+  "id": "qoder",
+  "display_name": "Qoder",
+  "skills_dir_expr": "join(home, '.qoder/skills')",
+  "detect_expr": "join(home, '.qoder'"
+ },
+ {
+  "id": "qoder-cn",
+  "display_name": "Qoder CN",
+  "skills_dir_expr": "join(home, '.qoder-cn/skills')",
+  "detect_expr": "join(home, '.qoder-cn'"
+ },
+ {
+  "id": "qwen-code",
+  "display_name": "Qwen Code",
+  "skills_dir_expr": "join(home, '.qwen/skills')",
+  "detect_expr": "join(home, '.qwen'"
+ },
+ {
+  "id": "replit",
+  "display_name": "Replit",
+  "skills_dir_expr": "join(configHome, 'agents/skills')",
+  "detect_expr": "join(process.cwd("
+ },
+ {
+  "id": "reasonix",
+  "display_name": "Reasonix",
+  "skills_dir_expr": "join(home, '.reasonix/skills')",
+  "detect_expr": "join(home, '.reasonix'"
+ },
+ {
+  "id": "rovodev",
+  "display_name": "Rovo Dev",
+  "skills_dir_expr": "join(home, '.rovodev/skills')",
+  "detect_expr": "join(home, '.rovodev'"
+ },
+ {
+  "id": "roo",
+  "display_name": "Roo Code",
+  "skills_dir_expr": "join(home, '.roo/skills')",
+  "detect_expr": "join(home, '.roo'"
+ },
+ {
+  "id": "tabnine-cli",
+  "display_name": "Tabnine CLI",
+  "skills_dir_expr": "join(home, '.tabnine/agent/skills')",
+  "detect_expr": "join(home, '.tabnine'"
+ },
+ {
+  "id": "terramind",
+  "display_name": "Terramind",
+  "skills_dir_expr": "join(home, '.terramind/skills')",
+  "detect_expr": "join(home, '.terramind'"
+ },
+ {
+  "id": "tinycloud",
+  "display_name": "Tinycloud",
+  "skills_dir_expr": "join(home, '.tinycloud/skills')",
+  "detect_expr": "join(home, '.tinycloud'"
+ },
+ {
+  "id": "trae",
+  "display_name": "Trae",
+  "skills_dir_expr": "join(home, '.trae/skills')",
+  "detect_expr": "join(home, '.trae'"
+ },
+ {
+  "id": "trae-cn",
+  "display_name": "Trae CN",
+  "skills_dir_expr": "join(home, '.trae-cn/skills')",
+  "detect_expr": "join(home, '.trae-cn'"
+ },
+ {
+  "id": "warp",
+  "display_name": "Warp",
+  "skills_dir_expr": "join(home, '.agents/skills')",
+  "detect_expr": "join(home, '.warp'"
+ },
+ {
+  "id": "windsurf",
+  "display_name": "Windsurf",
+  "skills_dir_expr": "join(home, '.codeium/windsurf/skills')",
+  "detect_expr": "join(home, '.codeium/windsurf'"
+ },
+ {
+  "id": "zed",
+  "display_name": "Zed",
+  "skills_dir_expr": "join(home, '.agents/skills')",
+  "detect_expr": "join(configHome, 'zed'"
+ },
+ {
+  "id": "zcode",
+  "display_name": "ZCode",
+  "skills_dir_expr": "join(home, '.zcode/skills')",
+  "detect_expr": ""
+ },
+ {
+  "id": "zencoder",
+  "display_name": "Zencoder",
+  "skills_dir_expr": "join(home, '.zencoder/skills')",
+  "detect_expr": "join(home, '.zencoder'"
+ },
+ {
+  "id": "zenflow",
+  "display_name": "Zenflow",
+  "skills_dir_expr": "join(home, '.zencoder/skills')",
+  "detect_expr": "join(home, '.zencoder'"
+ },
+ {
+  "id": "neovate",
+  "display_name": "Neovate",
+  "skills_dir_expr": "join(home, '.neovate/skills')",
+  "detect_expr": "join(home, '.neovate'"
+ },
+ {
+  "id": "pochi",
+  "display_name": "Pochi",
+  "skills_dir_expr": "join(home, '.pochi/skills')",
+  "detect_expr": "join(home, '.pochi'"
+ },
+ {
+  "id": "promptscript",
+  "display_name": "PromptScript",
+  "skills_dir_expr": "undefined",
+  "detect_expr": "join(process.cwd("
+ },
+ {
+  "id": "adal",
+  "display_name": "AdaL",
+  "skills_dir_expr": "join(home, '.adal/skills')",
+  "detect_expr": "join(home, '.adal'"
+ },
+ {
+  "id": "universal",
+  "display_name": "Universal",
+  "skills_dir_expr": "join(configHome, 'agents/skills')",
+  "detect_expr": ""
+ }
+]

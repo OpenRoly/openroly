@@ -5,11 +5,11 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { saveCredential } from "@paa/adapter";
+import { saveCredential } from "@openroly/adapter";
 
 // AC-10 / AC-11: MCP server の credential 解決。
 // pairing で保存した credential を使う(要件 §15.2「API key の copy/paste を標準 UX にしない」)。
-// credential も PAA_TOKEN も無ければ、対処の分かるエラーで落ちる。
+// credential も OPENROLY_TOKEN も無ければ、対処の分かるエラーで落ちる。
 
 const SERVER = fileURLToPath(new URL("../src/server.ts", import.meta.url));
 
@@ -29,8 +29,8 @@ const base = `http://localhost:${stub.port}`;
 afterAll(() => stub.stop(true));
 
 describe("MCP server の credential 解決", () => {
-  test("credential store から token を解決して tool が動く(PAA_TOKEN 不要)", async () => {
-    const env = { PAA_HOME: await mkdtemp(join(tmpdir(), "atn-mcp-")) };
+  test("credential store から token を解決して tool が動く(OPENROLY_TOKEN 不要)", async () => {
+    const env = { OPENROLY_HOME: await mkdtemp(join(tmpdir(), "openroly-mcp-")) };
     await saveCredential(
       "claude",
       {
@@ -48,7 +48,7 @@ describe("MCP server の credential 解決", () => {
       new StdioClientTransport({
         command: "bun",
         args: [SERVER],
-        env: { PATH: process.env.PATH ?? "", PAA_HOME: env.PAA_HOME, PAA_RUNTIME_KIND: "claude" },
+        env: { PATH: process.env.PATH ?? "", OPENROLY_HOME: env.OPENROLY_HOME, OPENROLY_RUNTIME_KIND: "claude" },
       }),
     );
     const result: any = await client.callTool({ name: "whoami", arguments: {} });
@@ -56,12 +56,12 @@ describe("MCP server の credential 解決", () => {
     await client.close();
   }, 30_000);
 
-  test("credential も PAA_TOKEN も無ければ pairing を促して exit 1", async () => {
+  test("credential も OPENROLY_TOKEN も無ければ pairing を促して exit 1", async () => {
     const proc = Bun.spawn(["bun", SERVER], {
       env: {
         PATH: process.env.PATH ?? "",
-        PAA_HOME: await mkdtemp(join(tmpdir(), "atn-mcp-empty-")),
-        PAA_RUNTIME_KIND: "claude",
+        OPENROLY_HOME: await mkdtemp(join(tmpdir(), "openroly-mcp-empty-")),
+        OPENROLY_RUNTIME_KIND: "claude",
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -69,6 +69,6 @@ describe("MCP server の credential 解決", () => {
     const stderr = await new Response(proc.stderr).text();
     expect(await proc.exited).toBe(1);
     expect(stderr).toContain("credential was found");
-    expect(stderr).toContain("atn install claude");
+    expect(stderr).toContain("openroly install claude");
   }, 30_000);
 });

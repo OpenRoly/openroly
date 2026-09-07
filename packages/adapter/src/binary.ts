@@ -1,23 +1,23 @@
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { paaHome } from "./credentials.ts";
+import { openrolyHome } from "./credentials.ts";
 
 // 単体実行ファイルの取得(PBI-0137)。PBI-0132 が「置いてあれば bun を使わない」を作ったので、
 // ここが「置いてある状態を配布で作る」を担う —— ここまでで end user の bun 依存が 0 になる。
 //
-// 置き場は credential と同じ PAA_HOME(`~/.atn/bin`)。**公開 Release からの取得だけ**を扱い、
+// 置き場は credential と同じ OPENROLY_HOME(`~/.openroly/bin`)。**公開 Release からの取得だけ**を扱い、
 // token を要求しない(要求する配布物なら、それは私的な binary なので手で置く方が正しい)。
 //
-// 同じ取得は launcher(`packages/mcp/atn-mcp`)にも sh で在る —— bun も binary も無い環境では
+// 同じ取得は launcher(`packages/mcp/openroly-mcp`)にも sh で在る —— bun も binary も無い環境では
 // TypeScript を動かす手段自体が無いため。URL の形・checksum の必須・tmp → rename は
 // 両方で同じ(diagrams-check の PBI-0137 規則が version と URL の形を両側で固定する)。
 
-/** Release の tag。`v${PAA_BINARY_VERSION}` が tag 名になる(plugin.json の version と一致させる) */
-export const PAA_BINARY_VERSION = "0.2.3";
+/** Release の tag。`v${OPENROLY_BINARY_VERSION}` が tag 名になる(plugin.json の version と一致させる) */
+export const OPENROLY_BINARY_VERSION = "0.2.3";
 
-/** 公開 Release の置き場。private な mirror へ向けたい時は `PAA_BINARY_BASE_URL` で差し替える */
+/** 公開 Release の置き場。private な mirror へ向けたい時は `OPENROLY_BINARY_BASE_URL` で差し替える */
 export const DEFAULT_BINARY_BASE_URL =
-  "https://github.com/personal-agent-account/all-together-now/releases/download";
+  "https://github.com/openroly/openroly/releases/download";
 
 type Env = Record<string, string | undefined>;
 
@@ -33,7 +33,7 @@ export function binaryTarget(
 }
 
 export function binDir(env: Env = process.env): string {
-  return join(paaHome(env), "bin");
+  return join(openrolyHome(env), "bin");
 }
 
 export type EnsureBinaryOutcome =
@@ -67,19 +67,19 @@ function sha256From(sums: string, asset: string): string | undefined {
 }
 
 /**
- * `~/.atn/bin/<name>` を「公開 Release から取ってきて置く」まで面倒を見る。
+ * `~/.openroly/bin/<name>` を「公開 Release から取ってきて置く」まで面倒を見る。
  *
  * 失敗は**全部 fallback**(bun 経路)に倒す —— ここで throw すると、network が無いだけで
- * `atn install` そのものが失敗し、従来どおり動くはずの人まで止めてしまう。
+ * `openroly install` そのものが失敗し、従来どおり動くはずの人まで止めてしまう。
  * ただし checksum 不一致だけは黙って落とさない(壊れた / すり替えられた binary を使わせない)。
  */
 export async function ensureBinary(
-  name: "atn-mcp" | "atn" | "atn-broker",
+  name: "openroly-mcp" | "openroly" | "openroly-broker",
   options: EnsureBinaryOptions = {},
 ): Promise<EnsureBinaryOutcome> {
   const env = options.env ?? process.env;
-  const version = options.version ?? env.PAA_BINARY_VERSION ?? PAA_BINARY_VERSION;
-  const base = (options.baseUrl ?? env.PAA_BINARY_BASE_URL ?? DEFAULT_BINARY_BASE_URL).replace(
+  const version = options.version ?? env.OPENROLY_BINARY_VERSION ?? OPENROLY_BINARY_VERSION;
+  const base = (options.baseUrl ?? env.OPENROLY_BINARY_BASE_URL ?? DEFAULT_BINARY_BASE_URL).replace(
     /\/$/,
     "",
   );

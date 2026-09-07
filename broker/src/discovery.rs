@@ -36,25 +36,33 @@ pub struct Found {
 pub struct ScanEnv {
     /// PATH の各 dir(順序どおり)
     pub path_dirs: Vec<PathBuf>,
-    /// 固定 bin dir(`PAA_SCAN_DIRS` で丸ごと置換。空文字 = なし)
+    /// 固定 bin dir(`OPENROLY_SCAN_DIRS` で丸ごと置換。空文字 = なし)
     pub extra_dirs: Vec<PathBuf>,
-    /// app bundle dir(`PAA_APP_DIRS` で丸ごと置換。空文字 = なし)
+    /// app bundle dir(`OPENROLY_APP_DIRS` で丸ごと置換。空文字 = なし)
     pub app_dirs: Vec<PathBuf>,
+    /// `detect.dirs` の `~/` を解く HOME(PBI-0210)。None なら `~/` 形の dir は探さない
+    pub home: Option<PathBuf>,
 }
 
 impl ScanEnv {
     pub fn from_env() -> ScanEnv {
+        // 旧 `PAA_*` 名に倒す(PBI-0344 AC-3)。新名は var_os のまま(非 UTF-8 の path も受ける)。
+        // fallback 側は env_compat を通し、旧名を使った時だけ 1 行警告する
+        fn with_legacy(name: &str) -> Option<OsString> {
+            env::var_os(name)
+                .or_else(|| crate::env_compat::env_new_or_legacy(name).map(Into::into))
+        }
         ScanEnv::from_vars(
             env::var_os("PATH"),
-            env::var_os("PAA_SCAN_DIRS"),
-            env::var_os("PAA_APP_DIRS"),
+            with_legacy("OPENROLY_SCAN_DIRS"),
+            with_legacy("OPENROLY_APP_DIRS"),
             env::var_os("HOME").map(PathBuf::from),
             env::var_os("NPM_CONFIG_PREFIX").map(PathBuf::from),
         )
     }
 
     /// env を引数に分離した純粋版(テストが `env::set_var` を使わずに済む — set_var は他スレッドの
-    /// spawn 中の子プロセスの環境を壊す)。`PAA_SCAN_DIRS` / `PAA_APP_DIRS` は **set されていれば**
+    /// spawn 中の子プロセスの環境を壊す)。`OPENROLY_SCAN_DIRS` / `OPENROLY_APP_DIRS` は **set されていれば**
     /// 固定 dir を丸ごと置換する(空文字 = なし)。
     pub fn from_vars(
         path: Option<OsString>,
@@ -72,7 +80,7 @@ impl ScanEnv {
             Some(v) => env::split_paths(&v).filter(|p| !p.as_os_str().is_empty()).collect(),
             None => default_app_dirs(home.as_deref()),
         };
-        ScanEnv { path_dirs, extra_dirs, app_dirs }
+        ScanEnv { path_dirs, extra_dirs, app_dirs, home }
     }
 }
 
@@ -136,7 +144,7 @@ fn run_version_probe(path: &Path, args: &[String]) -> Option<String> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let out_path = std::env::temp_dir().join(format!("paa-probe-{}-{nanos}.out", std::process::id()));
+    let out_path = std::env::temp_dir().join(format!("openroly-probe-{}-{nanos}.out", std::process::id()));
     let out_file = match fs::File::create(&out_path) {
         Ok(f) => f,
         Err(e) => {
@@ -227,7 +235,7 @@ fn infer_source(p: &Path, default: &str) -> String {
 }
 
 /// `Found.path` は **絶対パス**にする(symlink は解かない — AC-4 は symlink 側の path を期待する)。
-/// PATH / `PAA_SCAN_DIRS` に相対 entry が混じっていると、cwd を session_dir に固定する dedicated
+/// PATH / `OPENROLY_SCAN_DIRS` に相対 entry が混じっていると、cwd を session_dir に固定する dedicated
 /// 経路(launch.rs)だけが空の session_dir 基準で解決して `spawn failed` になるため、scan の時点で
 /// broker の cwd を基準に固定する。
 fn absolutize(p: PathBuf) -> PathBuf {
@@ -255,6 +263,27 @@ fn find_binary(names: &[String], env: &ScanEnv) -> Option<(PathBuf, String)> {
     None
 }
 
+/// `detect.dirs`(PBI-0210): `~/x` は HOME、絶対 path はそのまま。実在する dir が 1 つでも在れば
+/// 「入っている」(vercel-labs/skills の表の検知 path = その agent の設定 dir)。相対 path は見ない
+/// (cwd 依存の検知は broker の起動場所で結果が変わるので不採用)。
+fn find_dir(dirs: &[String], home: Option<&Path>) -> Option<PathBuf> {
+    for d in dirs {
+        let p = if let Some(rest) = d.strip_prefix("~/") {
+            let Some(h) = home else { continue };
+            h.join(rest)
+        } else if d == "~" {
+            let Some(h) = home else { continue };
+            h.to_path_buf()
+        } else {
+            PathBuf::from(d)
+        };
+        if p.is_absolute() && p.is_dir() {
+            return Some(p);
+        }
+    }
+    None
+}
+
 fn find_app(names: &[String], app_dirs: &[PathBuf]) -> Option<PathBuf> {
     for name in names {
         for dir in app_dirs {
@@ -276,8 +305,12 @@ const MAX_MODELS: usize = 200;
 
 #[derive(Deserialize)]
 struct ServiceModelsResponse {
+    /// Ollama `/api/tags` の形 `{"models":[{"name":"…"}]}`
     #[serde(default)]
     models: Vec<ServiceModel>,
+    /// OpenAI 互換 `/v1/models` の形 `{"data":[{"id":"…"}]}`(LM Studio / Jan / llama.cpp / vLLM。PBI-0210)
+    #[serde(default)]
+    data: Vec<OpenAiModel>,
 }
 
 #[derive(Deserialize)]
@@ -285,8 +318,14 @@ struct ServiceModel {
     name: String,
 }
 
-/// `{"models":[{"name":"..."}]}` 形(Ollama `/api/tags` の実形)を読み、name を sort + dedup して返す
-/// (`Found.models` の doc コメントどおり、等値の安定性のため)。パース失敗・空は空配列。
+#[derive(Deserialize)]
+struct OpenAiModel {
+    id: String,
+}
+
+/// `{"models":[{"name":"..."}]}` 形(Ollama `/api/tags` の実形)と `{"data":[{"id":"..."}]}` 形
+/// (OpenAI 互換 `/v1/models`)を読み、名前を sort + dedup して返す(`Found.models` の doc コメント
+/// どおり、等値の安定性のため)。パース失敗・空は空配列。
 fn parse_service_models(body: &str) -> Vec<String> {
     let Ok(parsed) = serde_json::from_str::<ServiceModelsResponse>(body) else {
         return Vec::new();
@@ -294,7 +333,9 @@ fn parse_service_models(body: &str) -> Vec<String> {
     let mut names: Vec<String> = parsed
         .models
         .into_iter()
-        .map(|m| m.name.chars().take(MODEL_NAME_MAX_CHARS).collect::<String>())
+        .map(|m| m.name)
+        .chain(parsed.data.into_iter().map(|m| m.id))
+        .map(|name| name.chars().take(MODEL_NAME_MAX_CHARS).collect::<String>())
         .collect();
     names.sort();
     names.dedup();
@@ -347,8 +388,8 @@ pub fn scan(registry: &Registry, env: &ScanEnv, versions: &mut VersionCache) -> 
     let mut out = Vec::new();
     for d in &registry.detectors {
         // `detect.always`(PBI-0070): 探索せずに常に見つかったことにする。外部 API provider は
-        // 端末に binary を持たない —— 実体は `atn agent <provider>` で、端末の device key が
-        // あれば必ず使える(EP-0009 C)。path は空(spawn 先は PAA_CLI が決める)
+        // 端末に binary を持たない —— 実体は `openroly agent <provider>` で、端末の device key が
+        // あれば必ず使える(EP-0009 C)。path は空(spawn 先は OPENROLY_CLI が決める)
         if d.detect.always {
             out.push(Found {
                 id: d.id.clone(),
@@ -369,6 +410,16 @@ pub fn scan(registry: &Registry, env: &ScanEnv, versions: &mut VersionCache) -> 
                     id: d.id.clone(),
                     version: None,
                     source: "app".to_string(),
+                    path: path.to_string_lossy().to_string(),
+                    models: Vec::new(),
+                })
+            })
+            .or_else(|| {
+                // PBI-0210 AC-9: binary も app も無ければ marker dir(`~/.kiro` 等)の実在で見つける
+                find_dir(&d.detect.dirs, env.home.as_deref()).map(|path| Found {
+                    id: d.id.clone(),
+                    version: None,
+                    source: "dir".to_string(),
                     path: path.to_string_lossy().to_string(),
                     models: Vec::new(),
                 })
@@ -406,7 +457,7 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     fn tmp(name: &str) -> PathBuf {
-        let dir = env::temp_dir().join(format!("atn-broker-scan-{name}-{}", std::process::id()));
+        let dir = env::temp_dir().join(format!("openroly-broker-scan-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -461,6 +512,44 @@ mod tests {
         assert_eq!(scan(&reg(), &env, &mut cache), found);
         assert_eq!(cache.entries.len(), 1);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // PBI-0210 AC-9: binary も app も無い runtime は `detect.dirs`(`~/.kiro` 等)の実在で見つかる(source dir)。
+    // HOME が無ければ `~/` 形は探さない。dir も無ければ載らない
+    #[test]
+    fn finds_marker_dir_under_home_when_no_binary_or_app() {
+        let dir = tmp("dirs");
+        let reg = crate::registry::parse(
+            r#"{"version":1,"detectors":[
+                {"id":"kiro","adapter":"generic/native","detect":{"binaries":["kiro-cli"],"dirs":["~/.kiro"]}},
+                {"id":"amp","adapter":"generic/native","detect":{"binaries":["amp"],"dirs":["~/.config/amp"]}}]}"#,
+            "t",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.join("home").join(".kiro")).unwrap();
+        let env = ScanEnv { home: Some(dir.join("home")), ..Default::default() };
+        let mut cache = VersionCache::default();
+        let found = scan(&reg, &env, &mut cache);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].id, "kiro");
+        assert_eq!(found[0].source, "dir");
+        assert_eq!(found[0].path, dir.join("home").join(".kiro").to_string_lossy());
+        assert!(found[0].version.is_none());
+        // HOME 無し = `~/` の dir は探さない(絶対 path の dirs だけ見る)
+        assert!(scan(&reg, &ScanEnv::default(), &mut cache).is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // PBI-0210 AC-6: OpenAI 互換 `/v1/models`(LM Studio / Jan / llama.cpp / vLLM)の `{data:[{id}]}` も読める
+    #[test]
+    fn parse_service_models_reads_openai_data_form_too() {
+        assert_eq!(
+            parse_service_models(r#"{"object":"list","data":[{"id":"b","object":"model"},{"id":"a"}]}"#),
+            vec!["a", "b"]
+        );
+        // Ollama 形と混在しても 1 つの sort + dedup
+        assert_eq!(parse_service_models(r#"{"models":[{"name":"a"}],"data":[{"id":"a"},{"id":"c"}]}"#), vec!["a", "c"]);
+        assert!(parse_service_models(r#"{"data":"x"}"#).is_empty());
     }
 
     #[test]
@@ -583,7 +672,7 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    // `PAA_SCAN_DIRS=""` は固定 dir を空にする(E2E が実マシンの /opt/homebrew/bin 等を見ないための契約)
+    // `OPENROLY_SCAN_DIRS=""` は固定 dir を空にする(E2E が実マシンの /opt/homebrew/bin 等を見ないための契約)
     #[test]
     fn empty_scan_dirs_env_disables_default_dirs() {
         // env は触らない(set_var は並列テストの spawn を壊す)。from_vars に値を渡して検証する
@@ -853,7 +942,7 @@ mod tests {
         let reg = registry::parse(
             r#"{"version":1,"detectors":[
                 {"id":"openai-api","kind":"api","detect":{"always":true},"adapter":"official/api"},
-                {"id":"nothere","detect":{"binaries":["atn-broker-not-a-real-binary"]},"adapter":"official/x"}
+                {"id":"nothere","detect":{"binaries":["openroly-broker-not-a-real-binary"]},"adapter":"official/x"}
             ]}"#,
             "t",
         )
@@ -863,13 +952,14 @@ mod tests {
             path_dirs: vec![dir.clone()],
             app_dirs: vec![dir.clone()],
             extra_dirs: Vec::new(),
+            home: None,
         };
         let mut versions = VersionCache::default();
         let found = scan(&reg, &env, &mut versions);
         let ids: Vec<&str> = found.iter().map(|f| f.id.as_str()).collect();
         assert_eq!(ids, vec!["openai-api"], "always だけが見つかる");
         assert_eq!(found[0].source, "always");
-        assert!(found[0].path.is_empty(), "path は空(spawn 先は PAA_CLI が決める)");
+        assert!(found[0].path.is_empty(), "path は空(spawn 先は OPENROLY_CLI が決める)");
         let _ = fs::remove_dir_all(&dir);
     }
 }

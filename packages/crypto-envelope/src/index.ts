@@ -1,4 +1,4 @@
-// Native PAA E2EE の versioned envelope(アーキ §9-11)。
+// Native OpenRoly E2EE の versioned envelope(アーキ §9-11)。
 // 平文を random content key で 1 回だけ AEAD 暗号化し、content key を
 // 宛先 device ごとに HPKE で wrap する。独自暗号は作らない:
 // HPKE = RFC 9180(@hpke/core)、content AEAD = WebCrypto AES-GCM。
@@ -279,9 +279,9 @@ export const KDF_WRAP_ITERATIONS = 300_000 as const;
  * 固定でよいのは、これが保存される hash ではないから —— server 側で Better Auth が
  * 改めて per-user の乱数 salt で scrypt する。包みの方は account ごとの乱数 salt を使う。
  */
-const KDF_AUTH_SALT = "atn/account-key/v1/auth-salt";
-const KDF_INFO_AUTH = "atn/account-key/v1/auth";
-const KDF_INFO_WRAP = "atn/account-key/v1/wrap";
+const KDF_AUTH_SALT = "openroly/account-key/v1/auth-salt";
+const KDF_INFO_AUTH = "openroly/account-key/v1/auth";
+const KDF_INFO_WRAP = "openroly/account-key/v1/wrap";
 
 /** 包みが開かなかった時の理由を名乗る(PBI-0247 AC-X5。黙って空にしない) */
 export class WrapOpenError extends Error {

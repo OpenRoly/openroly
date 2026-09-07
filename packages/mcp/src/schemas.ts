@@ -50,7 +50,7 @@ export const rulesPutInputShape = {
   nl: z.string().describe("the owner's words verbatim (e.g. 'batch newsletters at 9 every morning')"),
   scope: z
     .object({
-      source_kind: z.enum(["mail", "paa", "webhook", "android", "windows", "macos", "ios", "digest"]).optional(),
+      source_kind: z.enum(["mail", "openroly", "webhook", "android", "windows", "macos", "ios", "digest"]).optional(),
       app_id: z.string().optional().describe("source app (e.g. com.example.app). Values given here are stored in the clear as metadata"),
       time_window: z.string().optional(),
       sender: z.string().optional().describe("a sender term. Setting it makes this a content rule, stored encrypted on the server"),

@@ -1,11 +1,11 @@
 import { accessSync, constants, statSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { paaHome } from "./credentials.ts";
+import { openrolyHome } from "./credentials.ts";
 import {
   run,
   type AdapterContext,
   type DetectResult,
+  type ExportedExtension,
   type ExtensionApplyAction,
   type ExtensionListing,
   type Finding,
@@ -13,6 +13,7 @@ import {
   type RuntimeAdapter,
 } from "./contract.ts";
 import { STAGE0_CAPABILITIES } from "./contract.ts";
+import { exportMcpFromConfig, readConfigNames } from "./native.ts";
 
 // generic MCP-config adapter(PBI-0060 / W9b)。
 //
@@ -34,7 +35,7 @@ export interface McpServerCommand {
   args: string[];
 }
 
-/** 実行可能な **file** か。dir は X_OK が立つので除く(`~/.atn/bin/atn-mcp` が dir でも exec できない) */
+/** 実行可能な **file** か。dir は X_OK が立つので除く(`~/.openroly/bin/openroly-mcp` が dir でも exec できない) */
 function isExecutableFile(path: string): boolean {
   try {
     if (!statSync(path).isFile()) return false;
@@ -47,19 +48,19 @@ function isExecutableFile(path: string): boolean {
 
 /**
  * MCP server の起動 command を解決する(PBI-0132)。
- * `PAA_MCP_BINARY` → `<PAA_HOME>/bin/atn-mcp` → `bun <entry>` の順で、**実際に実行できる物だけ**を
+ * `OPENROLY_MCP_BINARY` → `<OPENROLY_HOME>/bin/openroly-mcp` → `bun <entry>` の順で、**実際に実行できる物だけ**を
  * 採る —— 指定された path が無い / 実行権が無い時に黙って次へ落ちるのは、存在しない command を
  * runtime の config に書き込むと「登録は成功したのに起動だけ静かに失敗する」形になるため。
  *
  * bun は最後の fallback = 「開発者が使う道具」に降りる。binary が置かれている環境では bun を呼ばない。
- * plugin 側の同じ順序は `packages/mcp/atn-mcp`(sh launcher)が持つ —— 静的 JSON は分岐できないので、
+ * plugin 側の同じ順序は `packages/mcp/openroly-mcp`(sh launcher)が持つ —— 静的 JSON は分岐できないので、
  * **判定は 2 箇所にあるが順序は 1 つ**(検査で両方を固定する)。
  */
 export function resolveMcpServerCommand(
   serverEntry: string,
   env: Record<string, string | undefined> = process.env,
 ): McpServerCommand {
-  for (const candidate of [env.PAA_MCP_BINARY, join(paaHome(env), "bin", "atn-mcp")]) {
+  for (const candidate of [env.OPENROLY_MCP_BINARY, join(openrolyHome(env), "bin", "openroly-mcp")]) {
     if (candidate && isExecutableFile(candidate)) return { command: candidate, args: [] };
   }
   return { command: "bun", args: [serverEntry] };
@@ -93,20 +94,16 @@ export interface McpConfigSpec {
 
 /**
  * config の MCP server 名一覧。**読めない / 壊れている時は空**を返す(= 「登録されていない」)。
- * ここで throw すると `atn doctor` が生の stack trace で落ちる —— doctor は「無い」と言って
+ * ここで throw すると `openroly doctor` が生の stack trace で落ちる —— doctor は「無い」と言って
  * install の案内に繋ぐのが仕事なので、config が無いことは失敗ではない。
+ * 読み方は generic adapter(native.ts)と共通の 1 箇所(PBI-0210: format handler を 2 枚持たない)。
  */
-async function readServerNames(spec: McpConfigSpec, ctx: AdapterContext): Promise<string[]> {
-  try {
-    const text = await readFile(spec.configPath(ctx), "utf8");
-    const parsed = (spec.format === "toml" ? Bun.TOML.parse(text) : JSON.parse(text)) as
-      | Record<string, unknown>
-      | null;
-    const servers = parsed?.[spec.serversKey];
-    return servers && typeof servers === "object" ? Object.keys(servers) : [];
-  } catch {
-    return [];
-  }
+function readServerNames(spec: McpConfigSpec, ctx: AdapterContext): Promise<string[]> {
+  return readConfigNames(configLocation(spec, ctx), spec.configPath(ctx));
+}
+
+function configLocation(spec: McpConfigSpec, ctx: AdapterContext) {
+  return { path: spec.configPath(ctx), format: spec.format, key: spec.serversKey, shape: "map" } as const;
 }
 
 /** MCP 対応 CLI の RuntimeAdapter を spec から生やす。skill 等の runtime 固有 op は呼び出し側で上書きする */
@@ -138,8 +135,8 @@ export function createMcpConfigAdapter(spec: McpConfigSpec): RuntimeAdapter {
       await removeThenAdd(ctx, {
         name: input.serverName,
         env: [
-          ["PAA_RUNTIME_KIND", input.runtimeKind],
-          ["PAA_URL", input.baseUrl],
+          ["OPENROLY_RUNTIME_KIND", input.runtimeKind],
+          ["OPENROLY_URL", input.baseUrl],
         ],
         ...resolveMcpServerCommand(input.serverEntry, ctx.env),
       });
@@ -161,15 +158,25 @@ export function createMcpConfigAdapter(spec: McpConfigSpec): RuntimeAdapter {
           label: `${spec.displayName} MCP registration`,
           detail: registered
             ? `"${serverName}" in ${path}`
-            : `"${serverName}" is missing from ${path}. Run 'atn install ${spec.id}'`,
+            : `"${serverName}" is missing from ${path}. Run 'openroly install ${spec.id}'`,
         },
       ];
     },
 
     extensionKinds: ["mcp"],
 
+    /** PBI-0213: 見張る場所は config file 1 つ。skills dir は withSkills が足す */
+    watchPaths(ctx): string[] {
+      return [spec.configPath(ctx)];
+    },
+
     async listExtensions(ctx): Promise<ExtensionListing[]> {
       return (await readServerNames(spec, ctx)).map((name) => ({ name }));
+    },
+
+    /** 人が `claude mcp add` 等で自分で入れた MCP を提案に上げる(PBI-0212。generic と同じ 1 本) */
+    async exportExtensions(ctx): Promise<ExportedExtension[]> {
+      return exportMcpFromConfig(configLocation(spec, ctx), spec.configPath(ctx));
     },
 
     async applyExtension(ctx, action: ExtensionApplyAction): Promise<void> {

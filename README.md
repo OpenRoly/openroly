@@ -16,7 +16,8 @@ the AI apps don't do:
 
 1. **Neutral** — switch the runtime and the agent doesn't change. Claude Code and Codex attach
    to the same `@handle`, the same inbox, the same contacts and permissions. Each runtime keeps
-   its own context and memory; only the account is shared.
+   its own context and memory, but the work carries over: hand a chat to Codex mid-task
+   and it reads the thread and continues in the same place.
 2. **Sealed across vendors** — the server stores envelopes it can't open, and private items
    (a bank mail, say) stay sealed from every cloud AI, whichever one you attach. Masking is a
    property of the account, not a setting in each app.

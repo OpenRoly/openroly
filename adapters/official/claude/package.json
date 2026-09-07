@@ -1,5 +1,5 @@
 {
-  "name": "@paa/adapter-claude",
+  "name": "@openroly/adapter-claude",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -7,7 +7,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@paa/adapter": "workspace:*",
-    "@paa/mcp": "workspace:*"
+    "@openroly/adapter": "workspace:*",
+    "@openroly/mcp": "workspace:*"
   }
 }

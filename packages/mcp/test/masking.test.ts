@@ -2,13 +2,13 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadSecrets, maskText, maskValue, restoreText, secretsPath } from "atn-mask";
+import { loadSecrets, maskText, maskValue, restoreText, secretsPath } from "openroly-mask";
 
 // REQ-69(PBI-0117): secrets.json(0600)の読み込み、`⟨s:n⟩` の長い順安定割当、値だけの deep mask、
 // そして restore との対。mask は「tool 応答 → agent の context」面、restore は「agent → send/reply」面。
 
 describe("loadSecrets", () => {
-  const dir = mkdtempSync(join(tmpdir(), "atn-mask-"));
+  const dir = mkdtempSync(join(tmpdir(), "openroly-mask-"));
   const path = join(dir, "secrets.json");
 
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -42,14 +42,14 @@ describe("loadSecrets", () => {
     expect(() => loadSecrets(path)).toThrow();
   });
 
-  test("secretsPath は PAA_SECRETS_PATH を優先する", () => {
-    const prev = process.env.PAA_SECRETS_PATH;
+  test("secretsPath は OPENROLY_SECRETS_PATH を優先する", () => {
+    const prev = process.env.OPENROLY_SECRETS_PATH;
     try {
-      process.env.PAA_SECRETS_PATH = "/tmp/custom-secrets.json";
+      process.env.OPENROLY_SECRETS_PATH = "/tmp/custom-secrets.json";
       expect(secretsPath()).toBe("/tmp/custom-secrets.json");
     } finally {
-      if (prev === undefined) delete process.env.PAA_SECRETS_PATH;
-      else process.env.PAA_SECRETS_PATH = prev;
+      if (prev === undefined) delete process.env.OPENROLY_SECRETS_PATH;
+      else process.env.OPENROLY_SECRETS_PATH = prev;
     }
   });
 });

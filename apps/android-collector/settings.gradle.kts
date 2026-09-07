@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "paa-collector"
+rootProject.name = "openroly-collector"
 include(":app")

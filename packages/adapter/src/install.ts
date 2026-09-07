@@ -21,14 +21,14 @@ export const MCP_SERVER_ENTRY = fileURLToPath(
 );
 
 /** runtime 側の設定に載る MCP server 名 */
-export const MCP_SERVER_NAME = "atn";
+export const MCP_SERVER_NAME = "openroly";
 
 export const DEFAULT_BASE_URL = "http://localhost:8787";
 
 /**
  * この端末が繋ぐ Account API の URL を決める **唯一の関数**(PBI-0246・図7.1)。
  *
- * 順序: 明示(`--url` / `$PAA_URL`)> `atn login` が決めた account の URL >
+ * 順序: 明示(`--url` / `$OPENROLY_URL`)> `openroly login` が決めた account の URL >
  * 呼び手が既に持っている credential の base_url > `DEFAULT_BASE_URL`。
  *
  * - **明示が必ず勝つ**: ここを崩すと、別 server へ繋ぎ替える手段が無くなる。
@@ -57,7 +57,7 @@ export interface EngineOptions {
   adapter: RuntimeAdapter;
   ctx: AdapterContext;
   baseUrl?: string;
-  /** credential store 用の環境(PAA_HOME)。既定は process.env */
+  /** credential store 用の環境(OPENROLY_HOME)。既定は process.env */
   env?: Env;
   serverEntry?: string;
   serverName?: string;
@@ -83,7 +83,7 @@ export async function installRuntime(options: InstallOptions): Promise<InstallOu
   const { adapter, ctx } = options;
   const env = options.env ?? process.env;
   const serverName = options.serverName ?? MCP_SERVER_NAME;
-  // 呼び手が明示した URL(`--url` / `$PAA_URL`)。**ここで既定値に潰さない** —— 潰すと
+  // 呼び手が明示した URL(`--url` / `$OPENROLY_URL`)。**ここで既定値に潰さない** —— 潰すと
   // 「明示された」と「省略された」が区別できなくなり、resolver の 1 行目が常に勝ってしまう
   const requestedUrl = options.baseUrl?.replace(/\/$/, "");
 
@@ -98,7 +98,7 @@ export async function installRuntime(options: InstallOptions): Promise<InstallOu
   // URL 未指定なら account の URL(login が決めた物)→ 既存 credential の server の順(図7.1)
   const baseUrl = await accountBaseUrl(requestedUrl, credential?.base_url, env);
   // 比べるのは **resolver が決めた行き先**であって、明示された値ではない(PBI-0246 レビュー)。
-  // 明示だけを見ていると、`atn login --url <prod>` の後も、dev で作った credential が
+  // 明示だけを見ていると、`openroly login --url <prod>` の後も、dev で作った credential が
   // まだ 200 を返す間は install がそこに留まる —— doctor は prod を名乗り register は dev を
   // 書く「名乗る先と繋ぐ先が割れた」状態になる。account_url が無い時は baseUrl が
   // credential.base_url に落ちるので、この式は今までどおり false(AC-16 は動いたまま)
@@ -120,7 +120,7 @@ export async function installRuntime(options: InstallOptions): Promise<InstallOu
 
   // register の**前**に binary を置く —— register が書き込む command は
   // resolveMcpServerCommand(PBI-0132)の結果なので、順序が逆だと今回の install だけ bun のまま残る
-  const binary = await ensureBinary("atn-mcp", { env });
+  const binary = await ensureBinary("openroly-mcp", { env });
 
   await adapter.register(ctx, {
     serverEntry: options.serverEntry ?? MCP_SERVER_ENTRY,
@@ -139,7 +139,7 @@ export async function installRuntime(options: InstallOptions): Promise<InstallOu
 
 /**
  * binary 取得の結果を 1 finding に。**取れなかったこと自体は失敗ではない**(bun 経路で動く)ので
- * ok:true —— ここを false にすると network が無いだけで `atn install` が exit 1 になる。
+ * ok:true —— ここを false にすると network が無いだけで `openroly install` が exit 1 になる。
  * checksum 不一致だけは ok:false(壊れた / すり替えられた binary は黙って流さない)。
  */
 function binaryFinding(outcome: EnsureBinaryOutcome): Finding {
@@ -213,7 +213,7 @@ export async function doctorRuntime(options: EngineOptions): Promise<Finding[]> 
       ok: false,
       label: "credential",
       detail:
-        `not paired. Run 'atn install ${adapter.id}' ` +
+        `not paired. Run 'openroly install ${adapter.id}' ` +
         `(it will connect to ${await accountBaseUrl(options.baseUrl, undefined, env)})`,
     });
     return findings;
@@ -237,7 +237,7 @@ export async function doctorRuntime(options: EngineOptions): Promise<Finding[]> 
           label: "Account connection",
           detail:
             who.status === 401
-              ? `the credential was revoked. Reconnect with 'atn install ${adapter.id}'`
+              ? `the credential was revoked. Reconnect with 'openroly install ${adapter.id}'`
               : `whoami returned ${who.status}`,
         },
   );
@@ -250,7 +250,7 @@ export async function doctorRuntime(options: EngineOptions): Promise<Finding[]> 
 /**
  * extension sync の drift(failed / revision 未追随)を 1 finding にまとめる。
  * fetch 失敗(旧 server・一時的ネットワーク断)や extension が 0 件の場合は ok:true にする ——
- * ここを false にすると 'atn install' の成否が Extension Sync という無関係な機能に
+ * ここを false にすると 'openroly install' の成否が Extension Sync という無関係な機能に
  * 引きずられて exit code 1 になってしまう
  */
 async function extensionDriftFinding(

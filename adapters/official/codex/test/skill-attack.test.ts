@@ -1,7 +1,7 @@
 // PBI-0091 レビュー(有界)の攻撃 test。withSkills の path safety / marker 規約を codex 経由で
 // 破りに行く。防御群の本体は packages/adapter/src/skill.ts(claude 側 20 検査が担保)なので、
 // ここは「codex adapter からも同じ防御が効く」事の回帰として固定する。
-import type { AdapterContext } from "@paa/adapter";
+import type { AdapterContext } from "@openroly/adapter";
 import { mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +9,7 @@ import { describe, expect, test } from "bun:test";
 import { codexAdapter } from "../src/index.ts";
 
 async function makeCtx(): Promise<{ ctx: AdapterContext; home: string }> {
-  const home = await mkdtemp(join(tmpdir(), "paa-codex-attack-"));
+  const home = await mkdtemp(join(tmpdir(), "openroly-codex-attack-"));
   const codexDir = join(home, ".codex");
   await mkdir(codexDir, { recursive: true });
   await writeFile(join(codexDir, "config.toml"), "");
@@ -85,7 +85,7 @@ describe("PBI-0091 攻撃 — skill materialize の path safety(codex 経由)", 
       env: {},
     });
     const dir = join(home, ".codex", "skills", "foo");
-    expect((await readdir(dir)).sort()).toEqual([".paa-managed", "SKILL.md"]);
+    expect((await readdir(dir)).sort()).toEqual([".openroly-managed", "SKILL.md"]);
     expect(await stat(join(dir, "old", "keep.txt")).catch(() => null)).toBeNull();
   });
 

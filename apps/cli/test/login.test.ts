@@ -3,10 +3,10 @@ import { readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { saveCredential } from "@paa/adapter";
+import { saveCredential } from "@openroly/adapter";
 
-// PBI-0046 AC-1〜5 / X2〜X3: `atn login` / `atn broker`。実 broker binary へは到達させず、
-// `PAA_BROKER_BIN` に fake shell script を注入する(apps/cli/test/adopt.test.ts と同じ手法。
+// PBI-0046 AC-1〜5 / X2〜X3: `openroly login` / `openroly broker`。実 broker binary へは到達させず、
+// `OPENROLY_BROKER_BIN` に fake shell script を注入する(apps/cli/test/adopt.test.ts と同じ手法。
 // EP-0001 LEARN 13)。自動 open(AC-3)は `process.stdout.isTTY` が pipe 経由の子プロセスでは
 // 常に false になり test harness から正の検証ができないため、「非対話実行では発火しない」
 // safety の固定に倒す(PBI-0046 の「未決の問い」参照)。
@@ -14,7 +14,7 @@ import { saveCredential } from "@paa/adapter";
 // AC-X1(別 actor)は既存契約(/v1/pair/approve の human_only)の再確認であり新規テストは
 // 追加しない(PBI-0046 テスト設計に明記)。
 
-const CLI = join(import.meta.dir, "../src/paa.ts");
+const CLI = join(import.meta.dir, "../src/openroly.ts");
 
 type ClaimBody = { status: "approved"; token: string; runtime_id: string } | { __http: number };
 
@@ -86,7 +86,7 @@ beforeEach(() => {
 
 let root = "";
 beforeAll(async () => {
-  root = await mkdtemp(join(tmpdir(), "paa-login-"));
+  root = await mkdtemp(join(tmpdir(), "openroly-login-"));
 });
 afterAll(async () => {
   await rm(root, { recursive: true, force: true });
@@ -100,7 +100,7 @@ afterAll(async () => {
  * 残り続けないよう、使った test は `killFakeBrokers` で必ず止める
  */
 function fakeBrokerScript(liveSeconds: number): string {
-  return `#!/bin/sh\necho "spawn pid=$$ token=$PAA_RUNTIME_TOKEN ws=$PAA_BROKER_WS_URL cli=$PAA_CLI"\n${
+  return `#!/bin/sh\necho "spawn pid=$$ token=$OPENROLY_RUNTIME_TOKEN ws=$OPENROLY_BROKER_WS_URL cli=$OPENROLY_CLI"\n${
     liveSeconds > 0 ? `sleep ${liveSeconds}\n` : "exit 0\n"
   }`;
 }
@@ -137,7 +137,7 @@ async function freshEnv(
   await mkdir(home, { recursive: true });
   await mkdir(brokerHome, { recursive: true });
   await mkdir(launchAgentsDir, { recursive: true });
-  const bin = join(dir, "atn-broker-fake");
+  const bin = join(dir, "openroly-broker-fake");
   await writeFile(bin, fakeBrokerScript(opts.liveSeconds ?? 0));
   await chmod(bin, 0o755);
   const openLog = join(dir, "open.log");
@@ -159,22 +159,22 @@ async function freshEnv(
     brokerPid: join(brokerHome, "broker.pid"),
     openLog,
     launchAgentsDir,
-    plistPath: join(launchAgentsDir, "com.atn.broker.plist"),
+    plistPath: join(launchAgentsDir, "com.openroly.broker.plist"),
     launchctlLog,
     env: {
       PATH: `${fakeOpenDir}:${process.env.PATH ?? ""}`,
       HOME: process.env.HOME ?? "",
-      PAA_HOME: home,
-      PAA_BROKER_HOME: brokerHome,
-      PAA_BROKER_BIN: bin,
-      PAA_URL: BASE_URL,
-      PAA_LAUNCH_AGENTS_DIR: launchAgentsDir,
-      PAA_LAUNCHCTL: launchctlBin,
+      OPENROLY_HOME: home,
+      OPENROLY_BROKER_HOME: brokerHome,
+      OPENROLY_BROKER_BIN: bin,
+      OPENROLY_URL: BASE_URL,
+      OPENROLY_LAUNCH_AGENTS_DIR: launchAgentsDir,
+      OPENROLY_LAUNCHCTL: launchctlBin,
     } as Record<string, string>,
   };
 }
 
-async function paa(
+async function openroly(
   args: string[],
   env: Record<string, string>,
 ): Promise<{ code: number; out: string; err: string }> {
@@ -263,10 +263,10 @@ async function killFakeBrokers(binPath: string): Promise<number[]> {
   return pids;
 }
 
-describe("atn login / atn broker (PBI-0046)", () => {
+describe("openroly login / openroly broker (PBI-0046)", () => {
   test("AC-1: credential 無しから pairing して broker を detached 起動する", async () => {
     const { env, home, brokerLog, brokerPid } = await freshEnv();
-    const res = await paa(["login", "--no-open"], env);
+    const res = await openroly(["login", "--no-open"], env);
     expect(res.code).toBe(0);
     expect(res.out).toContain("This machine is now connected to @aya");
     expect(res.out).toContain("appear under Your AI");
@@ -283,15 +283,15 @@ describe("atn login / atn broker (PBI-0046)", () => {
     const log = await waitForContent(brokerLog, (s) => s.includes("token=par_login_"));
     expect(log).toContain("token=par_login_");
     expect(log).toContain(`ws=${BASE_URL.replace(/^http/, "ws")}/v1/broker/ws`);
-    // PAA_CLI の argv0 は process.execPath(bun 自体の絶対 path)。launchd の最小 PATH は
+    // OPENROLY_CLI の argv0 は process.execPath(bun 自体の絶対 path)。launchd の最小 PATH は
     // bare な "bun" を解決できないため(PBI-0048)
     expect(log).toContain(`cli=${process.execPath}:`);
-    expect(log).toContain("paa.ts");
+    expect(log).toContain("openroly.ts");
   }, 120_000);
 
   test("PBI-0237 AC-2: 接続コードは **端末の画面に**出る(URL の中ではない)", async () => {
     const { env } = await freshEnv();
-    const res = await paa(["login", "--no-open"], env);
+    const res = await openroly(["login", "--no-open"], env);
     expect(res.code).toBe(0);
     // ① code が独立した 1 行として出る(人がここから読んで打つ)
     expect(res.out).toContain("Type this code:    LOGN2345");
@@ -320,9 +320,9 @@ describe("atn login / atn broker (PBI-0046)", () => {
         name: hostname(),
         paired_at: new Date().toISOString(),
       },
-      { PAA_HOME: home },
+      { OPENROLY_HOME: home },
     );
-    const res = await paa(["login", "--no-open"], env);
+    const res = await openroly(["login", "--no-open"], env);
     expect(res.code).toBe(0);
     expect(res.out).toContain("This machine is now connected to @aya");
     expect(pairStartCalls).toBe(0);
@@ -341,11 +341,11 @@ describe("atn login / atn broker (PBI-0046)", () => {
         name: hostname(),
         paired_at: new Date().toISOString(),
       },
-      { PAA_HOME: home },
+      { OPENROLY_HOME: home },
     );
     // 接続不能な別 server を明示 —— 既存 credential(BASE_URL 向け)を無条件に使い回して
     // 「接続しました」を偽陽性で出さないことを固定する
-    const res = await paa(["login", "--no-open", "--url", "http://127.0.0.1:1"], env);
+    const res = await openroly(["login", "--no-open", "--url", "http://127.0.0.1:1"], env);
     expect(res.code).not.toBe(0);
     expect(res.out).not.toContain("now connected");
   }, 120_000);
@@ -363,9 +363,9 @@ describe("atn login / atn broker (PBI-0046)", () => {
         name: hostname(),
         paired_at: new Date().toISOString(),
       },
-      { PAA_HOME: home },
+      { OPENROLY_HOME: home },
     );
-    const res = await paa(["broker"], { ...env, PAA_BROKER_BIN: "/nonexistent/atn-broker-xyz" });
+    const res = await openroly(["broker"], { ...env, OPENROLY_BROKER_BIN: "/nonexistent/openroly-broker-xyz" });
     expect(res.code).toBe(1);
     expect(res.err).toContain("cargo build --release --manifest-path broker/Cargo.toml");
     // credential は broker 起動失敗と無関係に保持され続ける
@@ -378,33 +378,33 @@ describe("atn login / atn broker (PBI-0046)", () => {
     // 「二重起動しなかった」ではなく「起動してよかった」を測ってしまう(PBI-0218)
     const { env, brokerLog } = await freshEnv({ liveSeconds: 300 });
     try {
-      const first = await paa(["login", "--no-open"], env);
+      const first = await openroly(["login", "--no-open"], env);
       expect(first.code).toBe(0);
 
-      const second = await paa(["login", "--no-open"], env);
+      const second = await openroly(["login", "--no-open"], env);
       expect(second.code).toBe(0);
       expect(second.out).toContain("already running");
 
       expect(await spawnPidsWhenSettled(brokerLog, 1)).toHaveLength(1);
     } finally {
-      await killFakeBrokers(env.PAA_BROKER_BIN!);
+      await killFakeBrokers(env.OPENROLY_BROKER_BIN!);
     }
   }, 120_000);
 
   test("非対話実行(このテスト harness)では自動 open が発火しない(--no-open 有無どちらでも)", async () => {
     const { env, openLog } = await freshEnv();
-    await paa(["login", "--no-open"], env);
+    await openroly(["login", "--no-open"], env);
     await expect(readFile(openLog, "utf8")).rejects.toThrow();
 
     const { env: env2, openLog: openLog2 } = await freshEnv();
-    await paa(["login"], env2);
+    await openroly(["login"], env2);
     await expect(readFile(openLog2, "utf8")).rejects.toThrow();
   }, 120_000);
 
   test("AC-X2: server が一時的に不能なら transient retry 後に failed で exit 1(credential は書かれない)", async () => {
     const { env, home } = await freshEnv();
     claimMode = "transient503";
-    const res = await paa(["login", "--no-open"], env);
+    const res = await openroly(["login", "--no-open"], env);
     expect(res.code).toBe(1);
     expect(res.err).toContain("NG pairing failed");
     const file = await readJson(join(home, "credentials.json")).catch(() => ({ runtimes: {} }));
@@ -414,8 +414,8 @@ describe("atn login / atn broker (PBI-0046)", () => {
   test("AC-X3: 2 本の login を同時実行しても credentials.json は壊れず broker は 1 本だけ生き残る", async () => {
     const { env, home, brokerLog } = await freshEnv({ liveSeconds: 300 });
     const [a, b] = await Promise.all([
-      paa(["login", "--no-open"], env),
-      paa(["login", "--no-open"], env),
+      openroly(["login", "--no-open"], env),
+      openroly(["login", "--no-open"], env),
     ]);
     expect(a.code).toBe(0);
     expect(b.code).toBe(0);
@@ -432,26 +432,26 @@ describe("atn login / atn broker (PBI-0046)", () => {
     const yielded = [a, b].filter((r) => r.out.includes("The broker is already running")).length;
     expect(`started=${started} yielded=${yielded}`).toBe("started=1 yielded=1");
     expect(await spawnPidsWhenSettled(brokerLog, 1)).toHaveLength(1);
-    await killFakeBrokers(env.PAA_BROKER_BIN!);
+    await killFakeBrokers(env.OPENROLY_BROKER_BIN!);
   }, 120_000);
 
   test("broker: 未接続なら login を案内して失敗する", async () => {
     const { env } = await freshEnv();
-    const res = await paa(["broker"], env);
+    const res = await openroly(["broker"], env);
     expect(res.code).toBe(1);
-    expect(res.err).toContain("atn login");
+    expect(res.err).toContain("openroly login");
   }, 120_000);
 });
 
 // レビュー(有界)の攻撃 test(PBI-0046 review 2026-08-27)。レビュー時は `test.failing` で「今は破れている」を
-// 固定し、実装ステージの修正(pairing.ts の startPairing / paa.ts の withStaleTakeoverLock)で `test` に戻した。
+// 固定し、実装ステージの修正(pairing.ts の startPairing / openroly.ts の withStaleTakeoverLock)で `test` に戻した。
 describe("PBI-0046 review: AC-X2 / AC-X3 攻撃", () => {
   test(
     "AC-X2 攻撃: pair/start 自体が不達(fetch reject)でも NG 表示で exit 1(生の stack trace を出さない)",
     async () => {
       const { env } = await freshEnv();
-      env.PAA_URL = "http://127.0.0.1:9"; // 閉じている port → fetch が reject
-      const res = await paa(["login", "--no-open"], env);
+      env.OPENROLY_URL = "http://127.0.0.1:9"; // 閉じている port → fetch が reject
+      const res = await openroly(["login", "--no-open"], env);
       expect(res.code).toBe(1);
       expect(res.err).toContain("NG pairing failed");
       expect(res.err).toContain("cannot connect to");
@@ -470,13 +470,13 @@ describe("PBI-0046 review: AC-X2 / AC-X3 攻撃", () => {
       const ROUNDS = 6;
       try {
         // 先に credential を作っておく(pairing の競合ではなく pid file の競合だけを見る)
-        const first = await paa(["login", "--no-open"], env);
+        const first = await openroly(["login", "--no-open"], env);
         expect(first.code).toBe(0);
         const winners = [Number((await readFile(brokerPid, "utf8")).trim().split(/\s+/)[0])];
         for (let round = 0; round < ROUNDS; round++) {
           const raw = (await readFile(brokerPid, "utf8")).trim();
           await writeFile(brokerPid, raw.replace(/^\d+/, String(await reapedPid())));
-          const [a, b] = await Promise.all([paa(["login", "--no-open"], env), paa(["login", "--no-open"], env)]);
+          const [a, b] = await Promise.all([openroly(["login", "--no-open"], env), openroly(["login", "--no-open"], env)]);
           expect(a.code).toBe(0);
           expect(b.code).toBe(0);
           const started = [a, b].filter((r) => r.out.includes("broker log:")).length;
@@ -492,7 +492,7 @@ describe("PBI-0046 review: AC-X2 / AC-X3 攻撃", () => {
           [...winners].sort(),
         );
       } finally {
-        await killFakeBrokers(env.PAA_BROKER_BIN!);
+        await killFakeBrokers(env.OPENROLY_BROKER_BIN!);
       }
     },
     300_000,
@@ -510,7 +510,7 @@ describe("PBI-0046 再レビュー / PBI-0218: AC-X3 攻撃", () => {
       const { env, brokerLog, brokerPid } = await freshEnv({ liveSeconds: 120 });
       const ROUNDS = 10;
       try {
-        const first = await paa(["login", "--no-open"], env);
+        const first = await openroly(["login", "--no-open"], env);
         expect(first.code).toBe(0);
         const winners = [Number((await readFile(brokerPid, "utf8")).trim().split(/\s+/)[0])];
         for (let round = 0; round < ROUNDS; round++) {
@@ -519,9 +519,9 @@ describe("PBI-0046 再レビュー / PBI-0218: AC-X3 攻撃", () => {
           const raw = (await readFile(brokerPid, "utf8")).trim();
           await writeFile(brokerPid, raw.replace(/^\d+/, String(await reapedPid())));
           const three = await Promise.all([
-            paa(["login", "--no-open"], env),
-            paa(["login", "--no-open"], env),
-            paa(["login", "--no-open"], env),
+            openroly(["login", "--no-open"], env),
+            openroly(["login", "--no-open"], env),
+            openroly(["login", "--no-open"], env),
           ]);
           for (const r of three) expect(r.code).toBe(0);
           // CLI 自身の申告(log の到着に依存しない)。ちょうど 1 本が起こし、残りは正常に譲る
@@ -540,7 +540,7 @@ describe("PBI-0046 再レビュー / PBI-0218: AC-X3 攻撃", () => {
           [...winners].sort(),
         );
       } finally {
-        await killFakeBrokers(env.PAA_BROKER_BIN!);
+        await killFakeBrokers(env.OPENROLY_BROKER_BIN!);
       }
     },
     420_000,
@@ -551,12 +551,12 @@ describe("PBI-0046 再レビュー / PBI-0218: AC-X3 攻撃", () => {
     async () => {
       const { env, brokerLog, brokerPid } = await freshEnv({ liveSeconds: 300 });
       try {
-        const first = await paa(["login", "--no-open"], env);
+        const first = await openroly(["login", "--no-open"], env);
         expect(first.code).toBe(0);
         const pidBefore = (await readFile(brokerPid, "utf8")).trim();
         expect(await spawnPidsWhenSettled(brokerLog, 1)).toEqual([Number(pidBefore.split(/\s+/)[0])]);
 
-        // 別 account(別 PAA_HOME / 別 token)。pid file は機ごとに 1 つなので、
+        // 別 account(別 OPENROLY_HOME / 別 token)。pid file は機ごとに 1 つなので、
         // 期待されるのは**奪取ではなく譲る**こと(PBI-0218 AC-X1)
         const otherHome = join(await mkdtemp(join(root, "other-")), "home");
         await mkdir(otherHome, { recursive: true });
@@ -571,11 +571,11 @@ describe("PBI-0046 再レビュー / PBI-0218: AC-X3 攻撃", () => {
             name: hostname(),
             paired_at: new Date().toISOString(),
           },
-          { PAA_HOME: otherHome },
+          { OPENROLY_HOME: otherHome },
         );
         const [a, b] = await Promise.all([
-          paa(["login", "--no-open"], { ...env, PAA_HOME: otherHome }),
-          paa(["login", "--no-open"], { ...env, PAA_HOME: otherHome }),
+          openroly(["login", "--no-open"], { ...env, OPENROLY_HOME: otherHome }),
+          openroly(["login", "--no-open"], { ...env, OPENROLY_HOME: otherHome }),
         ]);
         expect(a.code).toBe(0);
         expect(b.code).toBe(0);
@@ -585,9 +585,9 @@ describe("PBI-0046 再レビュー / PBI-0218: AC-X3 攻撃", () => {
         expect((await readFile(brokerPid, "utf8")).trim()).toBe(pidBefore);
         expect(spawnLines(await readFile(brokerLog, "utf8")).length).toBe(1);
         // 元の broker は生きたまま(奪われていない = 止められていない)
-        expect(await killFakeBrokers(env.PAA_BROKER_BIN!)).toEqual([Number(pidBefore.split(/\s+/)[0])]);
+        expect(await killFakeBrokers(env.OPENROLY_BROKER_BIN!)).toEqual([Number(pidBefore.split(/\s+/)[0])]);
       } finally {
-        await killFakeBrokers(env.PAA_BROKER_BIN!);
+        await killFakeBrokers(env.OPENROLY_BROKER_BIN!);
       }
     },
     120_000,
@@ -597,9 +597,9 @@ describe("PBI-0046 再レビュー / PBI-0218: AC-X3 攻撃", () => {
     "AC-X2: 壊れた pid file(空 / 空白だけ / 数字でない / 途中で切れた)でも broker は起動する",
     async () => {
       // 「判定できない」を「誰かが生きている」に倒すと 0 本になる。空の broker.pid 1 つで
-      // `atn login` が**恒久的に** already running と言い続けた(PBI-0218 の実測)
+      // `openroly login` が**恒久的に** already running と言い続けた(PBI-0218 の実測)
       const { env, brokerLog, brokerPid } = await freshEnv();
-      const first = await paa(["login", "--no-open"], env);
+      const first = await openroly(["login", "--no-open"], env);
       expect(first.code).toBe(0);
       const winners = [Number((await readFile(brokerPid, "utf8")).trim().split(/\s+/)[0])];
       for (const [label, content] of [
@@ -609,7 +609,7 @@ describe("PBI-0046 再レビュー / PBI-0218: AC-X3 攻撃", () => {
         ["途中で切れた", "40"],
       ] as const) {
         await writeFile(brokerPid, content);
-        const res = await paa(["login", "--no-open"], env);
+        const res = await openroly(["login", "--no-open"], env);
         expect(res.code).toBe(0);
         expect(`${label}: ${res.out.trim().split("\n").slice(-1)[0]}`).toContain("broker log:");
         const pidNow = Number((await readFile(brokerPid, "utf8")).trim().split(/\s+/)[0]);

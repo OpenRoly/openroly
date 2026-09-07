@@ -3,9 +3,9 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { saveCredential } from "@paa/adapter";
+import { binaryTarget, saveCredential } from "@openroly/adapter";
 
-// PBI-0132 AC-6〜9 / X1 / X2: plugin が起動する launcher(`adapters/official/*/atn-mcp`)の分岐。
+// PBI-0132 AC-6〜9 / X1 / X2: plugin が起動する launcher(`adapters/official/*/openroly-mcp`)の分岐。
 //
 // 静的な `.mcp.json` は「binary が在れば binary、無ければ bun」を分岐できないので sh を 1 枚挟む。
 // ここで見るのは **実際に起動して何が exec されたか** —— 「binary を優先する」を文字列 grep で
@@ -13,7 +13,7 @@ import { saveCredential } from "@paa/adapter";
 // 観測は fake の binary / bun が marker file に自分の argv と env を書く形(adopt.test.ts と同じ手)。
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
-const LAUNCHER = join(repoRoot, "adapters/official/claude/atn-mcp");
+const LAUNCHER = join(repoRoot, "adapters/official/claude/openroly-mcp");
 const BUNDLE = join(repoRoot, "adapters/official/claude/mcp-server.bundle.js");
 const BUILD = join(repoRoot, "scripts/build-binaries.sh");
 
@@ -27,7 +27,7 @@ async function putFake(path: string, label: string): Promise<void> {
   await mkdir(join(path, ".."), { recursive: true }).catch(() => {});
   await writeFile(
     path,
-    `#!/bin/sh\necho "${label} $*" >> ${marker}\necho "${label}.env PAA_RUNTIME_TOKEN=\${PAA_RUNTIME_TOKEN:-} PAA_RUNTIME_KIND=\${PAA_RUNTIME_KIND:-}" >> ${marker}\nexit 0\n`,
+    `#!/bin/sh\necho "${label} $*" >> ${marker}\necho "${label}.env OPENROLY_RUNTIME_TOKEN=\${OPENROLY_RUNTIME_TOKEN:-} OPENROLY_RUNTIME_KIND=\${OPENROLY_RUNTIME_KIND:-}" >> ${marker}\nexit 0\n`,
   );
   await chmod(path, 0o755);
 }
@@ -45,7 +45,7 @@ async function runLauncher(
       // launcher の最後の枝は公開 Release から binary を取りに行く(PBI-0137)。
       // 誰も listen していない port に向けて **network に出さない** —— 向けないと
       // test が実物の 66MB を落として実 binary を exec してしまい、検査対象が変わる
-      PAA_BINARY_BASE_URL: "http://127.0.0.1:1",
+      OPENROLY_BINARY_BASE_URL: "http://127.0.0.1:1",
       ...env,
     },
     stdout: "pipe",
@@ -63,7 +63,7 @@ async function runLauncher(
 /**
  * 公開 Release の stub(PBI-0162)。launcher の 4 段目(自動 download)を **network に出さずに**
  * 実測するために立てる —— 実物に向けると 1 run ごとに 66MB を引き、Release の中身で結果が変わる。
- * 形は本物と同じ: `v<ver>/SHA256SUMS` と `v<ver>/atn-mcp-<target>` の 2 つ。
+ * 形は本物と同じ: `v<ver>/SHA256SUMS` と `v<ver>/openroly-mcp-<target>` の 2 つ。
  */
 const RELEASE_VERSION = "9.9.9";
 /** launcher の target 判定(`uname -s`/`uname -m`)と同じ並び。合わない名前で配ると 404 になる */
@@ -78,7 +78,7 @@ let releaseServer: ReturnType<typeof Bun.serve> | undefined;
 const releaseBase = () => `http://127.0.0.1:${releaseServer!.port}`;
 
 beforeAll(async () => {
-  sandbox = await mkdtemp(join(tmpdir(), "paa-launcher-"));
+  sandbox = await mkdtemp(join(tmpdir(), "openroly-launcher-"));
   fakeBin = join(sandbox, "bin");
   marker = join(sandbox, "exec.log");
   await mkdir(fakeBin, { recursive: true });
@@ -98,10 +98,10 @@ beforeAll(async () => {
         const sum = releaseMode === "bad-checksum" ? "0".repeat(64) : digest;
         // 似た名前の行を先に置く: 部分一致で拾う実装なら別 asset の hash を使ってしまう
         return new Response(
-          `${"1".repeat(64)}  atn-mcp-${RELEASE_TARGET}-old\n${sum}  atn-mcp-${RELEASE_TARGET}\n`,
+          `${"1".repeat(64)}  openroly-mcp-${RELEASE_TARGET}-old\n${sum}  openroly-mcp-${RELEASE_TARGET}\n`,
         );
       }
-      if (path === `/v${RELEASE_VERSION}/atn-mcp-${RELEASE_TARGET}`) return new Response(body);
+      if (path === `/v${RELEASE_VERSION}/openroly-mcp-${RELEASE_TARGET}`) return new Response(body);
       return new Response("not found", { status: 404 });
     },
   });
@@ -114,57 +114,57 @@ afterAll(async () => {
 
 describe("plugin launcher の分岐 (PBI-0132)", () => {
   test("AC-6: binary が在れば binary を exec する(bun を呼ばない)", async () => {
-    const home = await mkdtemp(join(tmpdir(), "paa-launcher-home-"));
+    const home = await mkdtemp(join(tmpdir(), "openroly-launcher-home-"));
     await mkdir(join(home, "bin"), { recursive: true });
-    await putFake(join(home, "bin", "atn-mcp"), "binary");
+    await putFake(join(home, "bin", "openroly-mcp"), "binary");
 
-    const res = await runLauncher({ PAA_HOME: home });
+    const res = await runLauncher({ OPENROLY_HOME: home });
     expect(res.exitCode).toBe(0);
     expect(res.log).toContain("binary ");
     expect(res.log).not.toContain("bun ");
     await rm(home, { recursive: true, force: true });
   }, 30_000);
 
-  test("AC-6: PAA_MCP_BINARY が PAA_HOME/bin より優先される", async () => {
-    const home = await mkdtemp(join(tmpdir(), "paa-launcher-home-"));
+  test("AC-6: OPENROLY_MCP_BINARY が OPENROLY_HOME/bin より優先される", async () => {
+    const home = await mkdtemp(join(tmpdir(), "openroly-launcher-home-"));
     await mkdir(join(home, "bin"), { recursive: true });
-    await putFake(join(home, "bin", "atn-mcp"), "binary");
+    await putFake(join(home, "bin", "openroly-mcp"), "binary");
     const explicit = join(sandbox, "explicit-mcp");
     await putFake(explicit, "explicit");
 
-    const res = await runLauncher({ PAA_HOME: home, PAA_MCP_BINARY: explicit });
+    const res = await runLauncher({ OPENROLY_HOME: home, OPENROLY_MCP_BINARY: explicit });
     expect(res.log).toContain("explicit ");
     expect(res.log).not.toContain("binary ");
     await rm(home, { recursive: true, force: true });
   }, 30_000);
 
   test("AC-7: binary が無ければ bun <bundle> を exec する", async () => {
-    const home = await mkdtemp(join(tmpdir(), "paa-launcher-home-"));
-    const res = await runLauncher({ PAA_HOME: home });
+    const home = await mkdtemp(join(tmpdir(), "openroly-launcher-home-"));
+    const res = await runLauncher({ OPENROLY_HOME: home });
     expect(res.exitCode).toBe(0);
     expect(res.log).toContain(`bun ${BUNDLE}`);
     await rm(home, { recursive: true, force: true });
   }, 30_000);
 
   test("AC-7 攻撃: 実行権の無い binary は「在る」と数えず bun に落ちる", async () => {
-    const home = await mkdtemp(join(tmpdir(), "paa-launcher-home-"));
+    const home = await mkdtemp(join(tmpdir(), "openroly-launcher-home-"));
     await mkdir(join(home, "bin"), { recursive: true });
-    await writeFile(join(home, "bin", "atn-mcp"), "#!/bin/sh\nexit 0\n");
-    await chmod(join(home, "bin", "atn-mcp"), 0o644);
+    await writeFile(join(home, "bin", "openroly-mcp"), "#!/bin/sh\nexit 0\n");
+    await chmod(join(home, "bin", "openroly-mcp"), 0o644);
 
-    const res = await runLauncher({ PAA_HOME: home });
+    const res = await runLauncher({ OPENROLY_HOME: home });
     expect(res.exitCode).toBe(0);
     expect(res.log).toContain(`bun ${BUNDLE}`);
     await rm(home, { recursive: true, force: true });
   }, 30_000);
 
   test("AC-8: binary も bun も無ければ exit 1・stdout は汚さず stderr に対処を出す", async () => {
-    const home = await mkdtemp(join(tmpdir(), "paa-launcher-home-"));
-    const res = await runLauncher({ PAA_HOME: home }, { withBun: false });
+    const home = await mkdtemp(join(tmpdir(), "openroly-launcher-home-"));
+    const res = await runLauncher({ OPENROLY_HOME: home }, { withBun: false });
     expect(res.exitCode).toBe(1);
     // MCP は stdio で JSON-RPC を流す面。1 byte でも混ぜたら handshake が壊れる
     expect(res.stdout).toBe("");
-    expect(res.stderr).toContain("~/.atn/bin/atn-mcp");
+    expect(res.stderr).toContain("~/.openroly/bin/openroly-mcp");
     expect(res.stderr).toContain("bun.sh/install");
     await rm(home, { recursive: true, force: true });
   }, 30_000);
@@ -172,17 +172,17 @@ describe("plugin launcher の分岐 (PBI-0132)", () => {
   // PBI-0162: AC-8 の**取れる側**。v0.1.0 の公開で 4 段目(自動 download)が現実に成功するように
   // なったので、「取れない = exit 1」だけを固定していると、取れた時に何が起きるかを誰も見ていない
   // ことになる。**stub の Release server**に向けて実測する(network には出ない・66MB も引かない)。
-  test("AC-8: Release から取れる時は取って `~/.atn/bin` に置き、それを exec する", async () => {
-    const home = await mkdtemp(join(tmpdir(), "paa-launcher-home-"));
+  test("AC-8: Release から取れる時は取って `~/.openroly/bin` に置き、それを exec する", async () => {
+    const home = await mkdtemp(join(tmpdir(), "openroly-launcher-home-"));
     const res = await runLauncher(
-      { PAA_HOME: home, PAA_BINARY_BASE_URL: releaseBase(), PAA_BINARY_VERSION: RELEASE_VERSION },
+      { OPENROLY_HOME: home, OPENROLY_BINARY_BASE_URL: releaseBase(), OPENROLY_BINARY_VERSION: RELEASE_VERSION },
       { withBun: false },
     );
     expect({ code: res.exitCode, stderr: res.stderr }).toMatchObject({ code: 0 });
     // 取ってきた物を exec した(fake binary が marker に書く)
     expect(res.log).toContain("release ");
     // 置いた物: 実行権つき + version stamp(2 回目は 2 段目で当たり、download しない)
-    const placed = join(home, "bin", "atn-mcp");
+    const placed = join(home, "bin", "openroly-mcp");
     expect((await stat(placed)).mode & 0o111).toBeGreaterThan(0);
     expect((await readFile(`${placed}.version`, "utf8")).trim()).toBe(RELEASE_VERSION);
     // stdout は 1 byte も汚さない(JSON-RPC の面)
@@ -191,10 +191,10 @@ describe("plugin launcher の分岐 (PBI-0132)", () => {
   }, 60_000);
 
   test("AC-8 攻撃: SHA256 が合わない配布物は置かず exec もしない(案内を出して exit 1)", async () => {
-    const home = await mkdtemp(join(tmpdir(), "paa-launcher-home-"));
+    const home = await mkdtemp(join(tmpdir(), "openroly-launcher-home-"));
     releaseMode = "bad-checksum";
     const res = await runLauncher(
-      { PAA_HOME: home, PAA_BINARY_BASE_URL: releaseBase(), PAA_BINARY_VERSION: RELEASE_VERSION },
+      { OPENROLY_HOME: home, OPENROLY_BINARY_BASE_URL: releaseBase(), OPENROLY_BINARY_VERSION: RELEASE_VERSION },
       { withBun: false },
     );
     releaseMode = "ok";
@@ -207,18 +207,18 @@ describe("plugin launcher の分岐 (PBI-0132)", () => {
   }, 60_000);
 
   test("AC-X1: env はそのまま透過し、launcher 自身は何も log しない", async () => {
-    const home = await mkdtemp(join(tmpdir(), "paa-launcher-home-"));
+    const home = await mkdtemp(join(tmpdir(), "openroly-launcher-home-"));
     await mkdir(join(home, "bin"), { recursive: true });
-    await putFake(join(home, "bin", "atn-mcp"), "binary");
+    await putFake(join(home, "bin", "openroly-mcp"), "binary");
 
     const res = await runLauncher({
-      PAA_HOME: home,
-      PAA_RUNTIME_KIND: "claude",
-      PAA_RUNTIME_TOKEN: "par_secret_should_not_leak",
+      OPENROLY_HOME: home,
+      OPENROLY_RUNTIME_KIND: "claude",
+      OPENROLY_RUNTIME_TOKEN: "par_secret_should_not_leak",
     });
     // 子 process には届く(exec なので env は継承される)
-    expect(res.log).toContain("PAA_RUNTIME_TOKEN=par_secret_should_not_leak");
-    expect(res.log).toContain("PAA_RUNTIME_KIND=claude");
+    expect(res.log).toContain("OPENROLY_RUNTIME_TOKEN=par_secret_should_not_leak");
+    expect(res.log).toContain("OPENROLY_RUNTIME_KIND=claude");
     // launcher 自身は stdout / stderr に 1 byte も出さない(token を含む env を echo しない)
     expect(res.stdout).toBe("");
     expect(res.stderr).toBe("");
@@ -226,9 +226,9 @@ describe("plugin launcher の分岐 (PBI-0132)", () => {
   }, 30_000);
 
   test("AC-X1: 起動できない時の案内にも env の値を混ぜない", async () => {
-    const home = await mkdtemp(join(tmpdir(), "paa-launcher-home-"));
+    const home = await mkdtemp(join(tmpdir(), "openroly-launcher-home-"));
     const res = await runLauncher(
-      { PAA_HOME: home, PAA_RUNTIME_TOKEN: "par_secret_should_not_leak" },
+      { OPENROLY_HOME: home, OPENROLY_RUNTIME_TOKEN: "par_secret_should_not_leak" },
       { withBun: false },
     );
     expect(res.stderr).not.toContain("par_secret");
@@ -236,13 +236,13 @@ describe("plugin launcher の分岐 (PBI-0132)", () => {
   }, 30_000);
 
   test("AC-X2: binary が壊れていれば exec の失敗をそのまま伝える(bun に落ちない)", async () => {
-    const home = await mkdtemp(join(tmpdir(), "paa-launcher-home-"));
+    const home = await mkdtemp(join(tmpdir(), "openroly-launcher-home-"));
     await mkdir(join(home, "bin"), { recursive: true });
     // 実行権はあるが exec できない(interpreter が無い)= download が壊れた時の形
-    await writeFile(join(home, "bin", "atn-mcp"), "#!/nonexistent/interpreter\n");
-    await chmod(join(home, "bin", "atn-mcp"), 0o755);
+    await writeFile(join(home, "bin", "openroly-mcp"), "#!/nonexistent/interpreter\n");
+    await chmod(join(home, "bin", "openroly-mcp"), 0o755);
 
-    const res = await runLauncher({ PAA_HOME: home });
+    const res = await runLauncher({ OPENROLY_HOME: home });
     expect(res.exitCode).not.toBe(0);
     // 握り潰して bun に落ちると「壊れた binary を使い続けているのに動いて見える」
     expect(res.log).not.toContain("bun ");
@@ -251,8 +251,8 @@ describe("plugin launcher の分岐 (PBI-0132)", () => {
 });
 
 describe("scripts/build-binaries.sh (PBI-0132 AC-9)", () => {
-  test("--host-only で dist/atn-mcp と dist/atn ができ、どちらも実行可能", async () => {
-    const out = await mkdtemp(join(tmpdir(), "paa-dist-"));
+  test("--host-only で dist/openroly-mcp と dist/openroly ができ、どちらも実行可能", async () => {
+    const out = await mkdtemp(join(tmpdir(), "openroly-dist-"));
     const proc = Bun.spawn([BUILD, "--host-only", "--out", out], {
       cwd: repoRoot,
       stdout: "pipe",
@@ -261,7 +261,7 @@ describe("scripts/build-binaries.sh (PBI-0132 AC-9)", () => {
     const stderr = await new Response(proc.stderr).text();
     expect({ code: await proc.exited, stderr }).toMatchObject({ code: 0 });
 
-    for (const name of ["atn-mcp", "atn"]) {
+    for (const name of ["openroly-mcp", "openroly"]) {
       const info = await stat(join(out, name));
       expect(info.isFile()).toBe(true);
       expect(info.mode & 0o111).toBeGreaterThan(0);
@@ -272,8 +272,8 @@ describe("scripts/build-binaries.sh (PBI-0132 AC-9)", () => {
   test("攻撃: 作った binary が launcher 経由で実際に MCP を往復する(stdio が壊れていない)", async () => {
     // 「binary ができた」だけでは、compile 済み実行ファイルが stdio の JSON-RPC を
     // 壊していないことの証拠にならない —— 壊れていても AC-9 は緑のままになる。
-    const out = await mkdtemp(join(tmpdir(), "paa-dist-live-"));
-    const build = Bun.spawn([BUILD, "--host-only", "--out", out, "atn-mcp"], {
+    const out = await mkdtemp(join(tmpdir(), "openroly-dist-live-"));
+    const build = Bun.spawn([BUILD, "--host-only", "--out", out, "openroly-mcp"], {
       cwd: repoRoot,
       stdout: "pipe",
       stderr: "pipe",
@@ -290,7 +290,7 @@ describe("scripts/build-binaries.sh (PBI-0132 AC-9)", () => {
             ? Response.json({ agent_id: "agt_bin", handle: "aya", unread: 1 })
             : new Response("not found", { status: 404 }),
     });
-    const home = await mkdtemp(join(tmpdir(), "paa-launcher-live-"));
+    const home = await mkdtemp(join(tmpdir(), "openroly-launcher-live-"));
     await saveCredential(
       "claude",
       {
@@ -300,7 +300,7 @@ describe("scripts/build-binaries.sh (PBI-0132 AC-9)", () => {
         name: "MacBook / Claude Code",
         paired_at: new Date().toISOString(),
       },
-      { PAA_HOME: home },
+      { OPENROLY_HOME: home },
     );
 
     try {
@@ -309,9 +309,9 @@ describe("scripts/build-binaries.sh (PBI-0132 AC-9)", () => {
           // bun は PATH に置かない = 起きたのは必ず binary の方
           PATH: `${join(sandbox, "empty")}:/usr/bin:/bin`,
           HOME: join(sandbox, "home"),
-          PAA_HOME: home,
-          PAA_MCP_BINARY: join(out, "atn-mcp"),
-          PAA_RUNTIME_KIND: "claude",
+          OPENROLY_HOME: home,
+          OPENROLY_MCP_BINARY: join(out, "openroly-mcp"),
+          OPENROLY_RUNTIME_KIND: "claude",
         },
         stdin: "pipe",
         stdout: "pipe",
@@ -325,7 +325,7 @@ describe("scripts/build-binaries.sh (PBI-0132 AC-9)", () => {
         params: {
           protocolVersion: "2024-11-05",
           capabilities: {},
-          clientInfo: { name: "paa-launcher-test", version: "0.0.0" },
+          clientInfo: { name: "openroly-launcher-test", version: "0.0.0" },
         },
       });
       send({ jsonrpc: "2.0", method: "notifications/initialized" });
@@ -341,7 +341,7 @@ describe("scripts/build-binaries.sh (PBI-0132 AC-9)", () => {
         .filter(Boolean)
         .map((line) => JSON.parse(line) as { id?: number; result?: any });
       expect({ stderr, replies: replies.length }).toMatchObject({ replies: 2 });
-      expect(replies.find((r) => r.id === 1)?.result?.serverInfo?.name).toBe("atn-account");
+      expect(replies.find((r) => r.id === 1)?.result?.serverInfo?.name).toBe("openroly-account");
       expect(replies.find((r) => r.id === 2)?.result?.tools?.map((t: any) => t.name)).toContain(
         "whoami",
       );
@@ -351,4 +351,143 @@ describe("scripts/build-binaries.sh (PBI-0132 AC-9)", () => {
       await rm(out, { recursive: true, force: true });
     }
   }, 180_000);
+});
+
+// ---- PBI-0172 AC-6: 版の照合(plugin だけ上がって古い binary が残る形を潰す) ----
+//
+// `ensureBinary`(TS)は前から `<binary>.version` を見て「同じ版なら引かない / 違えば引く」を
+// している(packages/adapter/src/binary.ts)。**launcher(sh)だけが見ていなかった** ——
+// plugin を上げた端末が古い binary を exec し続け、runtime からは「その tool は無い」と
+// しか見えない形で壊れる。ここで見るのは **実際に何が exec されたか**(文字列 grep では
+// 「古いまま起動する実装」が緑のまま通る)。
+describe("launcher の版照合 (PBI-0172 AC-6)", () => {
+  /** 取り直し先の偽 Release。SHA256SUMS は `<hash>  openroly-mcp-<target>` の 1 行 */
+  function serveRelease(version: string, script: string) {
+    const target = binaryTarget()!;
+    const sum = new Bun.CryptoHasher("sha256").update(script).digest("hex");
+    let sumsHits = 0;
+    let assetHits = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const p = new URL(req.url).pathname;
+        if (p === `/v${version}/SHA256SUMS`) {
+          sumsHits++;
+          return new Response(`${sum}  openroly-mcp-${target}\n`);
+        }
+        if (p === `/v${version}/openroly-mcp-${target}`) {
+          assetHits++;
+          return new Response(script);
+        }
+        return new Response("nope", { status: 404 });
+      },
+    });
+    return {
+      server,
+      url: `http://127.0.0.1:${server.port}`,
+      hits: () => ({ sums: sumsHits, asset: assetHits }),
+    };
+  }
+
+  test("AC-6: `.version` が 0.1.0・plugin が 0.1.1 → 取り直してから起動する", async () => {
+    const home = await mkdtemp(join(tmpdir(), "openroly-launcher-home-"));
+    await mkdir(join(home, "bin"), { recursive: true });
+    await putFake(join(home, "bin", "openroly-mcp"), "old-binary");
+    await writeFile(join(home, "bin", "openroly-mcp.version"), "0.1.0\n");
+
+    const fresh = `#!/bin/sh\necho "new-binary $*" >> ${marker}\nexit 0\n`;
+    const rel = serveRelease("0.1.1", fresh);
+    try {
+      const res = await runLauncher({
+        OPENROLY_HOME: home,
+        OPENROLY_BINARY_VERSION: "0.1.1",
+        OPENROLY_BINARY_BASE_URL: rel.url,
+      });
+      expect(res.exitCode).toBe(0);
+      // 起動したのは**取り直した方**(古い方は 1 度も呼ばれない)
+      expect(res.log).toContain("new-binary ");
+      expect(res.log).not.toContain("old-binary ");
+      // bun にも落ちていない(取り直せたのだから binary で起動する)
+      expect(res.log).not.toContain("bun ");
+      expect(rel.hits()).toEqual({ sums: 1, asset: 1 });
+      // 印も新しい版に置き換わる(次の起動で 2 度目を引かない)
+      expect(await readFile(join(home, "bin", "openroly-mcp.version"), "utf8")).toBe("0.1.1\n");
+    } finally {
+      rel.server.stop(true);
+      await rm(home, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test("AC-6 過剰側: 版が合っていれば 1 byte も引かずにそのまま起動する", async () => {
+    const home = await mkdtemp(join(tmpdir(), "openroly-launcher-home-"));
+    await mkdir(join(home, "bin"), { recursive: true });
+    await putFake(join(home, "bin", "openroly-mcp"), "current-binary");
+    await writeFile(join(home, "bin", "openroly-mcp.version"), "0.1.1\n");
+
+    const rel = serveRelease("0.1.1", "#!/bin/sh\nexit 0\n");
+    try {
+      const res = await runLauncher({
+        OPENROLY_HOME: home,
+        OPENROLY_BINARY_VERSION: "0.1.1",
+        OPENROLY_BINARY_BASE_URL: rel.url,
+      });
+      expect(res.exitCode).toBe(0);
+      expect(res.log).toContain("current-binary ");
+      // **毎起動で 66MB を引かない** —— 「常に取り直す」実装はここで落ちる
+      expect(rel.hits()).toEqual({ sums: 0, asset: 0 });
+    } finally {
+      rel.server.stop(true);
+      await rm(home, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test("AC-6 過剰側: 印が無い binary(手で置いた物)は取り直さずそのまま使う", async () => {
+    const home = await mkdtemp(join(tmpdir(), "openroly-launcher-home-"));
+    await mkdir(join(home, "bin"), { recursive: true });
+    await putFake(join(home, "bin", "openroly-mcp"), "hand-placed");
+
+    const rel = serveRelease("0.1.1", "#!/bin/sh\nexit 0\n");
+    try {
+      const res = await runLauncher({
+        OPENROLY_HOME: home,
+        OPENROLY_BINARY_VERSION: "0.1.1",
+        OPENROLY_BINARY_BASE_URL: rel.url,
+      });
+      expect(res.log).toContain("hand-placed ");
+      expect(rel.hits()).toEqual({ sums: 0, asset: 0 });
+    } finally {
+      rel.server.stop(true);
+      await rm(home, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test("AC-6: 取り直せない(network が無い)時は無反応にせず bun に落ちる", async () => {
+    const home = await mkdtemp(join(tmpdir(), "openroly-launcher-home-"));
+    await mkdir(join(home, "bin"), { recursive: true });
+    await putFake(join(home, "bin", "openroly-mcp"), "old-binary");
+    await writeFile(join(home, "bin", "openroly-mcp.version"), "0.1.0\n");
+
+    // 既定の OPENROLY_BINARY_BASE_URL(誰も listen していない port)のまま = 取り直しは必ず失敗する
+    const res = await runLauncher({ OPENROLY_HOME: home, OPENROLY_BINARY_VERSION: "0.1.1" });
+    expect(res.exitCode).toBe(0);
+    expect(res.log).toContain(`bun ${BUNDLE}`);
+    expect(res.stderr).toContain("could not be refreshed");
+    expect(res.stdout).toBe(""); // stdout は JSON-RPC の面。1 byte も汚さない
+    await rm(home, { recursive: true, force: true });
+  }, 60_000);
+
+  test("AC-6: 取り直せず bun も無い時は、古い binary で起動する(無反応にしない)", async () => {
+    const home = await mkdtemp(join(tmpdir(), "openroly-launcher-home-"));
+    await mkdir(join(home, "bin"), { recursive: true });
+    await putFake(join(home, "bin", "openroly-mcp"), "old-binary");
+    await writeFile(join(home, "bin", "openroly-mcp.version"), "0.1.0\n");
+
+    const res = await runLauncher(
+      { OPENROLY_HOME: home, OPENROLY_BINARY_VERSION: "0.1.1" },
+      { withBun: false },
+    );
+    expect(res.exitCode).toBe(0);
+    expect(res.log).toContain("old-binary ");
+    await rm(home, { recursive: true, force: true });
+  }, 60_000);
 });

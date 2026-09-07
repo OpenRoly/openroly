@@ -2,10 +2,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   createMcpConfigAdapter,
+  withInstructions,
   withSkills,
   type AdapterContext,
   type RuntimeAdapter,
-} from "@paa/adapter";
+} from "@openroly/adapter";
 
 // Codex 用 official adapter。登録先は $CODEX_HOME/config.toml の [mcp_servers.<name>]。
 // 書式は codex CLI に任せる(設定 file を直接書かない — 書式は CLI 側の都合で変わるため)。
@@ -28,25 +29,31 @@ const configPath = (ctx: AdapterContext): string => join(codexHome(ctx), "config
 
 const skillsDir = (ctx: AdapterContext): string => join(codexHome(ctx), "skills");
 
-export const codexAdapter: RuntimeAdapter = withSkills(
-  createMcpConfigAdapter({
-    id: "codex",
-    displayName: "Codex",
-    bin: "codex",
-    installHint: "codex CLI was not found (npm i -g @openai/codex)",
-    configPath,
-    format: "toml",
-    serversKey: "mcp_servers",
-    addArgs: ({ name, env, command, args }) => [
-      "mcp",
-      "add",
-      name,
-      ...env.flatMap(([k, v]) => ["--env", `${k}=${v}`]),
-      "--",
-      command,
-      ...args,
-    ],
-    removeArgs: (name) => ["mcp", "remove", name],
-  }),
-  skillsDir,
+// kind = "instructions" の書き先(PBI-0214)。codex の global 指示は $CODEX_HOME/AGENTS.md
+const instructionsFile = (ctx: AdapterContext): { file: string } => ({ file: join(codexHome(ctx), "AGENTS.md") });
+
+export const codexAdapter: RuntimeAdapter = withInstructions(
+  withSkills(
+    createMcpConfigAdapter({
+      id: "codex",
+      displayName: "Codex",
+      bin: "codex",
+      installHint: "codex CLI was not found (npm i -g @openai/codex)",
+      configPath,
+      format: "toml",
+      serversKey: "mcp_servers",
+      addArgs: ({ name, env, command, args }) => [
+        "mcp",
+        "add",
+        name,
+        ...env.flatMap(([k, v]) => ["--env", `${k}=${v}`]),
+        "--",
+        command,
+        ...args,
+      ],
+      removeArgs: (name) => ["mcp", "remove", name],
+    }),
+    skillsDir,
+  ),
+  instructionsFile,
 );

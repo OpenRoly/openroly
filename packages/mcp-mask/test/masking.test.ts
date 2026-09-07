@@ -16,7 +16,7 @@ import {
 // stateful な Masker(process 寿命の table)の mask/restore 往復と AC-X1/X3。
 
 describe("loadSecrets(旧形式互換)", () => {
-  const dir = mkdtempSync(join(tmpdir(), "atn-mask-"));
+  const dir = mkdtempSync(join(tmpdir(), "openroly-mask-"));
   const path = join(dir, "secrets.json");
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -34,7 +34,7 @@ describe("loadSecrets(旧形式互換)", () => {
 });
 
 describe("loadConfig (AC-1相当: SECRETS/PRIVATE/PATTERNS の 3 源)", () => {
-  const dir = mkdtempSync(join(tmpdir(), "atn-mask-config-"));
+  const dir = mkdtempSync(join(tmpdir(), "openroly-mask-config-"));
   const path = join(dir, "secrets.json");
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
 

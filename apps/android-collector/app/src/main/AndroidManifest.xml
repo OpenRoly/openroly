@@ -12,7 +12,7 @@
     </queries>
 
     <application
-        android:label="All Together Now Collector"
+        android:label="OpenRoly Collector"
         android:allowBackup="false"
         android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.Light.DarkActionBar">

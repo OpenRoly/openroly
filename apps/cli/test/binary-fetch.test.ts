@@ -13,9 +13,9 @@ import {
   type AdapterContext,
   type RegisterInput,
   type RuntimeAdapter,
-} from "@paa/adapter";
+} from "@openroly/adapter";
 
-// PBI-0137 AC-2〜7 / X1〜X3: 公開 Release から binary を取ってきて `~/.atn/bin` に置く。
+// PBI-0137 AC-2〜7 / X1〜X3: 公開 Release から binary を取ってきて `~/.openroly/bin` に置く。
 // stub の Release server から偽 binary を配り、**実際に置かれた file** を見る。
 //
 // 失敗は全部 bun 経路への fallback に倒す(network が無いだけで install を失敗させない)。
@@ -23,7 +23,7 @@ import {
 
 const VERSION = "9.9.9";
 const TARGET = binaryTarget()!; // host の target(darwin-arm64 等)
-const ASSET = `atn-mcp-${TARGET}`;
+const ASSET = `openroly-mcp-${TARGET}`;
 const BODY = "#!/bin/sh\necho fake-binary\n";
 const SHA = new Bun.CryptoHasher("sha256").update(new TextEncoder().encode(BODY)).digest("hex");
 
@@ -59,15 +59,15 @@ afterAll(() => release.stop(true));
 
 let home = "";
 const envFor = (extra: Record<string, string> = {}) => ({
-  PAA_HOME: home,
-  PAA_BINARY_BASE_URL: BASE,
-  PAA_BINARY_VERSION: VERSION,
+  OPENROLY_HOME: home,
+  OPENROLY_BINARY_BASE_URL: BASE,
+  OPENROLY_BINARY_VERSION: VERSION,
   ...extra,
 });
-const binPath = () => join(home, "bin", "atn-mcp");
+const binPath = () => join(home, "bin", "openroly-mcp");
 
 beforeEach(async () => {
-  home = await mkdtemp(join(tmpdir(), "paa-binfetch-"));
+  home = await mkdtemp(join(tmpdir(), "openroly-binfetch-"));
   requests = [];
   authHeaders = [];
   mode = "ok";
@@ -84,7 +84,7 @@ async function leftovers(): Promise<string[]> {
 
 describe("ensureBinary — 取得と検証 (PBI-0137)", () => {
   test("AC-2: bin が空・network 有りなら download して実行可能な状態で置く", async () => {
-    const outcome = await ensureBinary("atn-mcp", { env: envFor() });
+    const outcome = await ensureBinary("openroly-mcp", { env: envFor() });
     expect(outcome).toMatchObject({ status: "downloaded", path: binPath(), target: TARGET });
 
     expect(await readFile(binPath(), "utf8")).toBe(BODY);
@@ -94,7 +94,7 @@ describe("ensureBinary — 取得と検証 (PBI-0137)", () => {
   });
 
   test("AC-3: 置いた後は MCP 設定の command が binary になる(bun を含まない)", async () => {
-    await ensureBinary("atn-mcp", { env: envFor() });
+    await ensureBinary("openroly-mcp", { env: envFor() });
     const resolved = resolveMcpServerCommand("/repo/packages/mcp/src/server.ts", envFor());
     expect(resolved).toEqual({ command: binPath(), args: [] });
     expect(JSON.stringify(resolved)).not.toContain("bun");
@@ -102,7 +102,7 @@ describe("ensureBinary — 取得と検証 (PBI-0137)", () => {
 
   test("AC-4: checksum 不一致なら置かない(中途半端な file も残さない)", async () => {
     mode = "bad-checksum";
-    const outcome = await ensureBinary("atn-mcp", { env: envFor() });
+    const outcome = await ensureBinary("openroly-mcp", { env: envFor() });
     expect(outcome.status).toBe("checksum_mismatch");
     expect(await Bun.file(binPath()).exists()).toBe(false);
     expect(await leftovers()).toEqual([]);
@@ -111,15 +111,15 @@ describe("ensureBinary — 取得と検証 (PBI-0137)", () => {
   });
 
   test("AC-5: 取れない(server 断)なら unavailable に倒れ、置かない", async () => {
-    const outcome = await ensureBinary("atn-mcp", {
-      env: envFor({ PAA_BINARY_BASE_URL: "http://127.0.0.1:1" }),
+    const outcome = await ensureBinary("openroly-mcp", {
+      env: envFor({ OPENROLY_BINARY_BASE_URL: "http://127.0.0.1:1" }),
     });
     expect(outcome.status).toBe("unavailable");
     expect(await Bun.file(binPath()).exists()).toBe(false);
   });
 
   test("AC-6: 未対応 OS/arch なら取りに行かない(request 0)", async () => {
-    const outcome = await ensureBinary("atn-mcp", {
+    const outcome = await ensureBinary("openroly-mcp", {
       env: envFor(),
       platform: "win32",
       arch: "arm64",
@@ -130,15 +130,15 @@ describe("ensureBinary — 取得と検証 (PBI-0137)", () => {
   });
 
   test("AC-7: 同じ version が置いてあれば再 download しない", async () => {
-    await ensureBinary("atn-mcp", { env: envFor() });
+    await ensureBinary("openroly-mcp", { env: envFor() });
     const after = requests.length;
-    const outcome = await ensureBinary("atn-mcp", { env: envFor() });
+    const outcome = await ensureBinary("openroly-mcp", { env: envFor() });
     expect(outcome).toMatchObject({ status: "present", path: binPath() });
     expect(requests.length).toBe(after);
   });
 
   test("AC-X1: 公開 Release だけを叩く(Authorization を送らない)・permission は 0755", async () => {
-    await ensureBinary("atn-mcp", { env: envFor() });
+    await ensureBinary("openroly-mcp", { env: envFor() });
     expect(authHeaders).toEqual([]);
     expect((await stat(join(home, "bin"))).mode & 0o777).toBe(0o755);
     expect((await stat(binPath())).mode & 0o777).toBe(0o755);
@@ -146,21 +146,21 @@ describe("ensureBinary — 取得と検証 (PBI-0137)", () => {
 
   test("AC-X2: download が中断したら中途半端な file を残さない", async () => {
     // 中断は「全部は届かなかった bytes」として現れる。checksum がそれを掴み、
-    // tmp → rename なので `~/.atn/bin/atn-mcp` は最後まで存在しない
+    // tmp → rename なので `~/.openroly/bin/openroly-mcp` は最後まで存在しない
     mode = "truncate";
-    const outcome = await ensureBinary("atn-mcp", { env: envFor() });
+    const outcome = await ensureBinary("openroly-mcp", { env: envFor() });
     expect(outcome.status).toBe("checksum_mismatch");
     expect(await Bun.file(binPath()).exists()).toBe(false);
     expect(await leftovers()).toEqual([]);
 
     // 次の試行は普通に成功する(壊れた印が残って詰まらない)
     mode = "ok";
-    expect((await ensureBinary("atn-mcp", { env: envFor() })).status).toBe("downloaded");
+    expect((await ensureBinary("openroly-mcp", { env: envFor() })).status).toBe("downloaded");
   });
 
   test("AC-X3: SHA256SUMS が無ければ binary を引かない(照合を必ず通す)", async () => {
     mode = "no-sums";
-    const outcome = await ensureBinary("atn-mcp", { env: envFor() });
+    const outcome = await ensureBinary("openroly-mcp", { env: envFor() });
     expect(outcome.status).toBe("unavailable");
     expect(requests).toEqual([`/v${VERSION}/SHA256SUMS`]); // asset 本体は引いていない
     expect(await Bun.file(binPath()).exists()).toBe(false);
@@ -169,13 +169,13 @@ describe("ensureBinary — 取得と検証 (PBI-0137)", () => {
   // ---- 攻撃 ----
   test("攻撃: 似た名前の行(<asset>-old)の hash を掴まない", async () => {
     // SHA256SUMS の 1 行目は `<asset>-old`。部分一致で拾う実装ならここで checksum_mismatch になる
-    expect((await ensureBinary("atn-mcp", { env: envFor() })).status).toBe("downloaded");
+    expect((await ensureBinary("openroly-mcp", { env: envFor() })).status).toBe("downloaded");
   });
 
   test("攻撃: 版の印だけ在って binary が消えていれば取り直す", async () => {
     await mkdir(join(home, "bin"), { recursive: true });
     await writeFile(`${binPath()}.version`, `${VERSION}\n`);
-    const outcome = await ensureBinary("atn-mcp", { env: envFor() });
+    const outcome = await ensureBinary("openroly-mcp", { env: envFor() });
     expect(outcome.status).toBe("downloaded");
     expect(await Bun.file(binPath()).exists()).toBe(true);
   });
@@ -185,7 +185,7 @@ describe("ensureBinary — 取得と検証 (PBI-0137)", () => {
     await writeFile(binPath(), "old");
     await chmod(binPath(), 0o755);
     await writeFile(`${binPath()}.version`, "0.0.1\n");
-    expect((await ensureBinary("atn-mcp", { env: envFor() })).status).toBe("downloaded");
+    expect((await ensureBinary("openroly-mcp", { env: envFor() })).status).toBe("downloaded");
     expect(await readFile(binPath(), "utf8")).toBe(BODY);
     expect((await readFile(`${binPath()}.version`, "utf8")).trim()).toBe(VERSION);
   });
@@ -207,6 +207,8 @@ const fakeAdapter: RuntimeAdapter = {
   extensionKinds: ["mcp"],
   listExtensions: async () => [],
   applyExtension: async () => {},
+  exportExtensions: async () => [],
+  watchPaths: () => [],
 };
 const ctx: AdapterContext = { env: {} };
 
@@ -238,7 +240,7 @@ async function installWith(env: Record<string, string>) {
   });
 }
 
-describe("atn install からの取得 (PBI-0137)", () => {
+describe("openroly install からの取得 (PBI-0137)", () => {
   test("AC-2/3: install が binary を置き、finding にそれを出す", async () => {
     const outcome = await installWith(envFor());
     expect(outcome.status).toBe("installed");
@@ -252,10 +254,10 @@ describe("atn install からの取得 (PBI-0137)", () => {
   });
 
   test("AC-5: 取れなくても install は成功し、bun 経路である事を出す", async () => {
-    const outcome = await installWith(envFor({ PAA_BINARY_BASE_URL: "http://127.0.0.1:1" }));
+    const outcome = await installWith(envFor({ OPENROLY_BINARY_BASE_URL: "http://127.0.0.1:1" }));
     expect(outcome.status).toBe("installed");
     const finding = outcome.status === "installed" && outcome.findings[0];
-    // ここを ok:false にすると network が無いだけで `atn install` が exit 1 になる
+    // ここを ok:false にすると network が無いだけで `openroly install` が exit 1 になる
     expect(finding).toMatchObject({ ok: true, label: "MCP binary" });
     expect(finding && finding.detail).toContain("bun path");
   });
@@ -264,12 +266,12 @@ describe("atn install からの取得 (PBI-0137)", () => {
 // ---- launcher の最後の手段(sh 側の取得) ----
 
 const LAUNCHER = fileURLToPath(
-  new URL("../../../adapters/official/claude/atn-mcp", import.meta.url),
+  new URL("../../../adapters/official/claude/openroly-mcp", import.meta.url),
 );
 
 describe("launcher の最後の手段 (PBI-0137)", () => {
   test("binary も bun も無ければ Release から取ってきて exec する", async () => {
-    // これが「end user の bun 依存 0」の芯: plugin だけ入れた人は `atn install` を走らせない
+    // これが「end user の bun 依存 0」の芯: plugin だけ入れた人は `openroly install` を走らせない
     const empty = join(home, "empty-path");
     const marker = join(home, "exec.log");
     await mkdir(empty, { recursive: true });
@@ -277,10 +279,10 @@ describe("launcher の最後の手段 (PBI-0137)", () => {
       env: {
         PATH: `${empty}:/usr/bin:/bin`, // bun は PATH に居ない
         HOME: home,
-        PAA_HOME: home,
-        PAA_BINARY_BASE_URL: BASE,
-        PAA_BINARY_VERSION: VERSION,
-        PAA_EXEC_MARKER: marker,
+        OPENROLY_HOME: home,
+        OPENROLY_BINARY_BASE_URL: BASE,
+        OPENROLY_BINARY_VERSION: VERSION,
+        OPENROLY_EXEC_MARKER: marker,
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -302,9 +304,9 @@ describe("launcher の最後の手段 (PBI-0137)", () => {
       env: {
         PATH: `${empty}:/usr/bin:/bin`,
         HOME: home,
-        PAA_HOME: home,
-        PAA_BINARY_BASE_URL: BASE,
-        PAA_BINARY_VERSION: VERSION,
+        OPENROLY_HOME: home,
+        OPENROLY_BINARY_BASE_URL: BASE,
+        OPENROLY_BINARY_VERSION: VERSION,
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -338,7 +340,7 @@ describe("release workflow の形 (PBI-0137 AC-1)", () => {
 
     // asset 名は取得側(ensureBinary / launcher)が組み立てる名前と一致していなければ 404 になる
     for (const target of ["darwin-arm64", "darwin-x64", "linux-x64"]) {
-      for (const name of ["atn-mcp", "atn"]) {
+      for (const name of ["openroly-mcp", "openroly"]) {
         expect(yml).toContain(`dist/${name}-${target}`);
       }
     }

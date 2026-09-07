@@ -169,7 +169,7 @@ describe("account 鍵の包み — authValue と wrapKey の分離(PBI-0247 AC-X
         name: "HKDF",
         hash: "SHA-256",
         salt: saltBytes(salt) as BufferSource,
-        info: new TextEncoder().encode("atn/account-key/v1/wrap") as BufferSource,
+        info: new TextEncoder().encode("openroly/account-key/v1/wrap") as BufferSource,
       },
       hk,
       256,

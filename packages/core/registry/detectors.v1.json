@@ -1,0 +1,2293 @@
+{
+  "version": 1,
+  "issued_at": "2026-09-05T00:00:00Z",
+  "detectors": [
+    {
+      "id": "claude",
+      "display_name": "Claude Code",
+      "kind": "cli",
+      "detect": {
+        "binaries": [
+          "claude"
+        ],
+        "packages": {
+          "npm": [
+            "@anthropic-ai/claude-code"
+          ],
+          "brew": []
+        },
+        "apps": [],
+        "services": [],
+        "dirs": [
+          "~/.claude"
+        ]
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "launch": {
+        "new": [],
+        "existing": [
+          "--continue"
+        ]
+      },
+      "capabilities": [
+        "coding",
+        "shell",
+        "files"
+      ],
+      "adapter": "official/claude",
+      "sources": [
+        "https://code.claude.com/docs/en/skills",
+        "https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview",
+        "https://openrouter.ai/apps/category/coding/cli-agent",
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "cli:2.0"
+    },
+    {
+      "id": "codex",
+      "display_name": "Codex",
+      "kind": "cli",
+      "detect": {
+        "binaries": [
+          "codex"
+        ],
+        "packages": {
+          "npm": [
+            "@openai/codex"
+          ],
+          "brew": [
+            "codex"
+          ]
+        },
+        "apps": [],
+        "services": [],
+        "dirs": [
+          "~/.codex"
+        ]
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "launch": {
+        "new": [],
+        "existing": [
+          "resume",
+          "--last"
+        ]
+      },
+      "capabilities": [
+        "coding",
+        "shell",
+        "files"
+      ],
+      "adapter": "official/codex",
+      "sources": [
+        "https://developers.openai.com/codex/skills/",
+        "https://openrouter.ai/apps/category/coding/cli-agent",
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "cli:0.30"
+    },
+    {
+      "id": "gemini",
+      "display_name": "Gemini CLI",
+      "kind": "cli",
+      "detect": {
+        "binaries": [
+          "gemini"
+        ],
+        "packages": {
+          "npm": [
+            "@google/gemini-cli"
+          ],
+          "brew": []
+        },
+        "apps": [],
+        "services": [],
+        "dirs": [
+          "~/.gemini"
+        ]
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "launch": {
+        "new": [],
+        "existing": [
+          "--resume",
+          "latest"
+        ]
+      },
+      "capabilities": [
+        "coding",
+        "shell",
+        "files"
+      ],
+      "adapter": "official/gemini",
+      "sources": [
+        "https://github.com/google-gemini/gemini-cli",
+        "https://geminicli.com/docs/cli/skills/",
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "cli:0.4"
+    },
+    {
+      "id": "ollama",
+      "display_name": "Ollama",
+      "kind": "local_model_server",
+      "detect": {
+        "binaries": [
+          "ollama"
+        ],
+        "packages": {
+          "npm": [],
+          "brew": [
+            "ollama"
+          ]
+        },
+        "apps": [
+          "Ollama.app"
+        ],
+        "services": [
+          {
+            "port": 11434,
+            "path": "/api/tags"
+          }
+        ]
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "models": {
+        "source": "service",
+        "path": "/api/tags"
+      },
+      "capabilities": [
+        "local_model"
+      ],
+      "adapter": null,
+      "sources": [
+        "https://ollama.com/"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "lmstudio",
+      "display_name": "LM Studio",
+      "kind": "local_model_server",
+      "detect": {
+        "binaries": [
+          "lms"
+        ],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [
+          "LM Studio.app"
+        ],
+        "services": [
+          {
+            "port": 1234,
+            "path": "/v1/models"
+          }
+        ]
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "models": {
+        "source": "service",
+        "path": "/v1/models"
+      },
+      "capabilities": [
+        "local_model"
+      ],
+      "adapter": null,
+      "sources": [
+        "https://lmstudio.ai/docs/app/api/endpoints/openai"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "jan",
+      "display_name": "Jan",
+      "kind": "local_model_server",
+      "detect": {
+        "binaries": [],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [
+          "Jan.app"
+        ],
+        "services": [
+          {
+            "port": 1337,
+            "path": "/v1/models"
+          }
+        ]
+      },
+      "models": {
+        "source": "service",
+        "path": "/v1/models"
+      },
+      "capabilities": [
+        "local_model"
+      ],
+      "adapter": null,
+      "sources": [
+        "https://jan.ai/docs/local-api"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "aider",
+      "display_name": "Aider",
+      "kind": "cli",
+      "detect": {
+        "binaries": [
+          "aider"
+        ],
+        "packages": {
+          "npm": [],
+          "brew": [
+            "aider"
+          ]
+        },
+        "apps": [],
+        "services": []
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "launch": {
+        "new": [],
+        "existing": []
+      },
+      "capabilities": [
+        "coding",
+        "files"
+      ],
+      "adapter": null,
+      "sources": [
+        "https://aider.chat/docs/",
+        "https://openrouter.ai/apps/category/coding/cli-agent"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "openclaw",
+      "display_name": "OpenClaw",
+      "kind": "cli",
+      "detect": {
+        "binaries": [
+          "openclaw",
+          "moltbot",
+          "clawdbot"
+        ],
+        "apps": [],
+        "services": [],
+        "dirs": [
+          "~/.openclaw"
+        ]
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "capabilities": [
+        "coding",
+        "shell",
+        "files"
+      ],
+      "adapter": "generic/native",
+      "native": {
+        "home": {
+          "default": "~/.openclaw"
+        },
+        "bin": "openclaw",
+        "version_args": [
+          "--version"
+        ],
+        "install": "npm i -g openclaw",
+        "mcp": {
+          "strategy": "cli",
+          "bin": "openclaw",
+          "add": [
+            "mcp",
+            "add",
+            "${name}",
+            "--command",
+            "${command}",
+            "--arg...",
+            "${args}",
+            "--env...",
+            "${env}",
+            "--no-probe"
+          ],
+          "remove": [
+            "mcp",
+            "unset",
+            "${name}"
+          ],
+          "read": {
+            "path": "~/.openclaw/openclaw.json",
+            "format": "json5",
+            "key": "mcp.servers",
+            "shape": "map"
+          }
+        },
+        "skills": {
+          "dir": "~/.agents/skills"
+        },
+        "instructions": {
+          "file": "~/.openclaw/workspace/AGENTS.md"
+        }
+      },
+      "sources": [
+        "https://github.com/openclaw/openclaw",
+        "https://docs.openclaw.ai/tools/skills",
+        "https://openrouter.ai/apps/category/coding/cli-agent",
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "cli:2026.7.1-2"
+    },
+    {
+      "id": "hermes",
+      "display_name": "Hermes Agent",
+      "kind": "cli",
+      "detect": {
+        "binaries": [
+          "hermes"
+        ],
+        "apps": [],
+        "services": [],
+        "dirs": [
+          "~/.hermes"
+        ]
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "launch": {
+        "new": [],
+        "existing": [
+          "chat",
+          "--continue"
+        ]
+      },
+      "capabilities": [
+        "coding",
+        "shell",
+        "files"
+      ],
+      "adapter": "generic/native",
+      "native": {
+        "home": {
+          "env": "HERMES_HOME",
+          "default": "~/.hermes"
+        },
+        "bin": "hermes",
+        "version_args": [
+          "--version"
+        ],
+        "mcp": {
+          "strategy": "cli",
+          "bin": "hermes",
+          "add": [
+            "mcp",
+            "add",
+            "${name}",
+            "--command",
+            "${command}",
+            "--env",
+            "${env...}",
+            "--args",
+            "${args...}"
+          ],
+          "remove": [
+            "mcp",
+            "remove",
+            "${name}"
+          ],
+          "read": null
+        },
+        "skills": {
+          "dir": "~/.hermes/skills"
+        }
+      },
+      "sources": [
+        "https://github.com/NousResearch/hermes-agent",
+        "https://hermes-agent.nousresearch.com/docs/user-guide/features/skills",
+        "https://openrouter.ai/apps/category/coding/cli-agent",
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "cli:0.20.0"
+    },
+    {
+      "id": "opencode",
+      "display_name": "OpenCode",
+      "kind": "cli",
+      "detect": {
+        "binaries": [
+          "opencode"
+        ],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [],
+        "services": [],
+        "dirs": [
+          "~/.config/opencode"
+        ]
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "launch": {
+        "new": [],
+        "existing": [
+          "--continue"
+        ]
+      },
+      "capabilities": [
+        "coding",
+        "shell",
+        "files"
+      ],
+      "adapter": "generic/native",
+      "native": {
+        "home": {
+          "default": "~/.config/opencode"
+        },
+        "bin": "opencode",
+        "version_args": [
+          "--version"
+        ],
+        "install": "curl -fsSL https://opencode.ai/install | bash",
+        "mcp": {
+          "strategy": "file",
+          "path": "~/.config/opencode/opencode.json",
+          "format": "jsonc",
+          "key": "mcp",
+          "shape": "map",
+          "entry": {
+            "type": "local",
+            "command": [
+              "${command}",
+              "${args...}"
+            ],
+            "environment": "${env}",
+            "enabled": true
+          }
+        },
+        "instructions": {
+          "file": "~/.config/opencode/AGENTS.md"
+        },
+        "skills": {
+          "dir": "~/.config/opencode/skills"
+        }
+      },
+      "sources": [
+        "https://github.com/sst/opencode",
+        "https://opencode.ai/docs/skills/",
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "cli:1.18.10"
+    },
+    {
+      "id": "cursor-agent",
+      "display_name": "Cursor",
+      "kind": "cli",
+      "detect": {
+        "binaries": [
+          "cursor-agent"
+        ],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [
+          "Cursor.app"
+        ],
+        "services": [],
+        "dirs": [
+          "~/.cursor"
+        ]
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "capabilities": [
+        "coding",
+        "shell",
+        "files"
+      ],
+      "adapter": "generic/native",
+      "native": {
+        "home": {
+          "default": "~/.cursor"
+        },
+        "bin": "cursor-agent",
+        "version_args": [
+          "--version"
+        ],
+        "mcp": {
+          "strategy": "file",
+          "path": "~/.cursor/mcp.json",
+          "format": "json",
+          "key": "mcpServers",
+          "shape": "map",
+          "entry": {
+            "command": "${command}",
+            "args": "${args}",
+            "env": "${env}"
+          }
+        },
+        "skills": {
+          "dir": "~/.cursor/skills"
+        }
+      },
+      "sources": [
+        "https://cursor.com/docs/context/skills",
+        "https://cursor.com",
+        "https://openrouter.ai/apps/category/coding/cli-agent",
+        "https://github.com/getcursor/cursor",
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "cli:2026.08.11"
+    },
+    {
+      "id": "kiro",
+      "display_name": "Kiro",
+      "kind": "cli",
+      "detect": {
+        "binaries": [
+          "kiro-cli"
+        ],
+        "apps": [
+          "Kiro.app"
+        ],
+        "services": [],
+        "dirs": [
+          "~/.kiro"
+        ]
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "capabilities": [
+        "coding",
+        "shell",
+        "files"
+      ],
+      "adapter": "generic/native",
+      "native": {
+        "home": {
+          "env": "KIRO_HOME",
+          "default": "~/.kiro"
+        },
+        "bin": "kiro-cli",
+        "version_args": [
+          "--version"
+        ],
+        "mcp": {
+          "strategy": "cli",
+          "bin": "kiro-cli",
+          "add": [
+            "mcp",
+            "add",
+            "--name",
+            "${name}",
+            "--scope",
+            "global",
+            "--command",
+            "${command}",
+            "--args...",
+            "${args}",
+            "--env",
+            "${env...}",
+            "--force"
+          ],
+          "remove": [
+            "mcp",
+            "remove",
+            "--name",
+            "${name}",
+            "--scope",
+            "global"
+          ],
+          "read": {
+            "path": "~/.kiro/settings/mcp.json",
+            "format": "json",
+            "key": "mcpServers",
+            "shape": "map"
+          }
+        },
+        "instructions": {
+          "dir": "~/.kiro/steering",
+          "filename": "openroly-${name}.md"
+        },
+        "skills": {
+          "dir": "~/.kiro/skills"
+        }
+      },
+      "sources": [
+        "https://github.com/kirodotdev/Kiro",
+        "https://kiro.dev/docs/skills/",
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "cli:2.21.1"
+    },
+    {
+      "id": "claude-desktop",
+      "display_name": "Claude Desktop",
+      "kind": "app",
+      "detect": {
+        "binaries": [],
+        "apps": [
+          "Claude.app"
+        ],
+        "services": []
+      },
+      "capabilities": [
+        "chat"
+      ],
+      "adapter": null,
+      "sources": [
+        "https://claude.ai/download",
+        "https://modelcontextprotocol.io/quickstart/user",
+        "https://github.com/punkpeye/awesome-mcp-clients"
+      ],
+      "verified": "file:~/Library/Application Support/Claude/claude_desktop_config.json"
+    },
+    {
+      "id": "vscode",
+      "display_name": "VS Code",
+      "kind": "app",
+      "detect": {
+        "binaries": [
+          "code"
+        ],
+        "apps": [
+          "Visual Studio Code.app"
+        ],
+        "services": []
+      },
+      "capabilities": [
+        "coding",
+        "files"
+      ],
+      "adapter": null,
+      "sources": [
+        "https://code.visualstudio.com/docs/copilot/customization/agent-skills",
+        "https://github.com/microsoft/vscode",
+        "https://agents.md/"
+      ],
+      "verified": "file:~/Library/Application Support/Code/User/mcp.json"
+    },
+    {
+      "id": "antigravity",
+      "display_name": "Antigravity",
+      "kind": "app",
+      "detect": {
+        "binaries": [
+          "agy"
+        ],
+        "apps": [
+          "Antigravity.app"
+        ],
+        "services": [],
+        "dirs": [
+          "~/.gemini/antigravity"
+        ]
+      },
+      "capabilities": [
+        "coding",
+        "files"
+      ],
+      "adapter": null,
+      "sources": [
+        "https://antigravity.google/",
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "file:~/.gemini/config/mcp_config.json"
+    },
+    {
+      "id": "kimi",
+      "display_name": "Kimi Code CLI",
+      "kind": "cli",
+      "detect": {
+        "binaries": [
+          "kimi"
+        ],
+        "apps": [],
+        "services": [],
+        "dirs": [
+          "~/.kimi-code"
+        ]
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "capabilities": [
+        "coding",
+        "shell",
+        "files"
+      ],
+      "adapter": null,
+      "sources": [
+        "https://platform.kimi.ai/docs/models",
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "cli:0.36.1"
+    },
+    {
+      "id": "mimo",
+      "display_name": "MiMo Code",
+      "kind": "cli",
+      "detect": {
+        "binaries": [
+          "mimo"
+        ],
+        "dirs": [
+          "~/.mimocode"
+        ],
+        "apps": [],
+        "services": []
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "capabilities": [
+        "coding",
+        "shell",
+        "files"
+      ],
+      "adapter": null,
+      "sources": [
+        "https://openrouter.ai/apps/category/coding/cli-agent"
+      ],
+      "verified": "cli:0.1.13"
+    },
+    {
+      "id": "aider-desk",
+      "display_name": "AiderDesk",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.aider-desk"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "amp",
+      "display_name": "Amp",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.config/amp"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts",
+        "https://ampcode.com/manual#agent-skills"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "antigravity-cli",
+      "display_name": "Antigravity CLI",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.gemini/antigravity-cli"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "augment",
+      "display_name": "Augment",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.augment"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "bob",
+      "display_name": "IBM Bob",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.bob"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "cline",
+      "display_name": "Cline",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.cline"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts",
+        "https://openrouter.ai/apps/category/coding/cli-agent",
+        "https://github.com/cline/cline"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "codearts-agent",
+      "display_name": "CodeArts Agent",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.codeartsdoer"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "codemaker",
+      "display_name": "Codemaker",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.codemaker"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "codestudio",
+      "display_name": "Code Studio",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.codestudio"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "command-code",
+      "display_name": "Command Code",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.commandcode"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts",
+        "https://commandcode.ai/docs/skills",
+        "https://openrouter.ai/apps/category/coding/cli-agent"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "cortex",
+      "display_name": "Cortex Code",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.snowflake/cortex"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "crush",
+      "display_name": "Crush",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.config/crush"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts",
+        "https://openrouter.ai/apps/category/coding/cli-agent"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "deepagents",
+      "display_name": "Deep Agents",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.deepagents"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "devin",
+      "display_name": "Devin for Terminal",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.config/devin"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts",
+        "https://agents.md/"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "dexto",
+      "display_name": "Dexto",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.dexto"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts",
+        "https://github.com/truffle-ai/dexto"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "droid",
+      "display_name": "Droid",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.factory"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "firebender",
+      "display_name": "Firebender",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.firebender"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts",
+        "https://docs.firebender.com/multi-agent/skills"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "forgecode",
+      "display_name": "ForgeCode",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.forge"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "github-copilot",
+      "display_name": "GitHub Copilot",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.copilot"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts",
+        "https://docs.github.com/en/copilot/concepts/agents/about-agent-skills"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "goose",
+      "display_name": "Goose",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.config/goose"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts",
+        "https://block.github.io/goose/docs/guides/context-engineering/using-skills/",
+        "https://openrouter.ai/apps/category/coding/cli-agent",
+        "https://github.com/block/goose"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "grok",
+      "display_name": "Grok Build",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.grok"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "inference-sh",
+      "display_name": "inference.sh",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.inferencesh"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "jazz",
+      "display_name": "Jazz",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.jazz"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "junie",
+      "display_name": "Junie",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.junie"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts",
+        "https://junie.jetbrains.com/docs/agent-skills.html",
+        "https://openrouter.ai/apps/category/coding/cli-agent"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "iflow-cli",
+      "display_name": "iFlow CLI",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.iflow"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "kilo",
+      "display_name": "Kilo Code",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.kilocode"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts",
+        "https://openrouter.ai/apps/category/coding/cli-agent"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "kode",
+      "display_name": "Kode",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.kode"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "lingma",
+      "display_name": "Lingma",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.lingma"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "loaf",
+      "display_name": "Loaf",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.loaf"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "mcpjam",
+      "display_name": "MCPJam",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.mcpjam"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "mistral-vibe",
+      "display_name": "Mistral Vibe",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.vibe"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "moxby",
+      "display_name": "Moxby",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.moxby"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "mux",
+      "display_name": "Mux",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.mux"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts",
+        "https://mux.coder.com/agent-skills"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "openhands",
+      "display_name": "OpenHands",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.openhands"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts",
+        "https://docs.openhands.dev/overview/skills",
+        "https://openrouter.ai/apps/category/coding/cli-agent"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "ona",
+      "display_name": "Ona",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.ona"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts",
+        "https://ona.com/docs/ona/agents-md#skills-for-repository-specific-workflows",
+        "https://agents.md/"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "pi",
+      "display_name": "Pi",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.pi/agent"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts",
+        "https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/skills.md",
+        "https://openrouter.ai/apps/category/coding/cli-agent"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "qoder",
+      "display_name": "Qoder",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.qoder"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "qoder-cn",
+      "display_name": "Qoder CN",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.qoder-cn"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "qwen-code",
+      "display_name": "Qwen Code",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.qwen"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts",
+        "https://openrouter.ai/apps/category/coding/cli-agent"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "reasonix",
+      "display_name": "Reasonix",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.reasonix"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "rovodev",
+      "display_name": "Rovo Dev",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.rovodev"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "roo",
+      "display_name": "Roo Code",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.roo"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts",
+        "https://docs.roocode.com/features/skills"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "tabnine-cli",
+      "display_name": "Tabnine CLI",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.tabnine"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "terramind",
+      "display_name": "Terramind",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.terramind"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "tinycloud",
+      "display_name": "Tinycloud",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.tinycloud"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "trae",
+      "display_name": "Trae",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.trae"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts",
+        "https://www.trae.ai/blog/trae_tutorial_0115"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "trae-cn",
+      "display_name": "Trae CN",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.trae-cn"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "warp",
+      "display_name": "Warp",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.warp"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "windsurf",
+      "display_name": "Windsurf",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.codeium/windsurf"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts",
+        "https://agents.md/",
+        "https://github.com/punkpeye/awesome-mcp-clients"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "zed",
+      "display_name": "Zed",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.config/zed"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts",
+        "https://github.com/zed-industries/zed"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "zencoder",
+      "display_name": "Zencoder",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.zencoder"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "zenflow",
+      "display_name": "Zenflow",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.zencoder"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "neovate",
+      "display_name": "Neovate",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.neovate"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "pochi",
+      "display_name": "Pochi",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.pochi"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "adal",
+      "display_name": "AdaL",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "dirs": [
+          "~/.adal"
+        ],
+        "services": []
+      },
+      "capabilities": [],
+      "adapter": null,
+      "sources": [
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts",
+        "https://github.com/SylphAI-Inc/adal-cli"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "openai-api",
+      "display_name": "OpenAI (API)",
+      "kind": "api",
+      "detect": {
+        "always": true,
+        "binaries": [],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [],
+        "services": []
+      },
+      "capabilities": [
+        "chat"
+      ],
+      "adapter": "official/api",
+      "sources": [
+        "https://github.com/openroly/openroly/blob/main/packages/core/src/providers.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "gemini-api",
+      "display_name": "Gemini (API)",
+      "kind": "api",
+      "detect": {
+        "always": true,
+        "binaries": [],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [],
+        "services": []
+      },
+      "capabilities": [
+        "chat"
+      ],
+      "adapter": "official/api",
+      "sources": [
+        "https://github.com/openroly/openroly/blob/main/packages/core/src/providers.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "anthropic-api",
+      "display_name": "Anthropic (API)",
+      "kind": "api",
+      "detect": {
+        "always": true,
+        "binaries": [],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [],
+        "services": []
+      },
+      "capabilities": [
+        "chat"
+      ],
+      "adapter": "official/api",
+      "sources": [
+        "https://github.com/openroly/openroly/blob/main/packages/core/src/providers.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "openrouter-api",
+      "display_name": "OpenRouter (API)",
+      "kind": "api",
+      "detect": {
+        "always": true,
+        "binaries": [],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [],
+        "services": []
+      },
+      "capabilities": [
+        "chat"
+      ],
+      "adapter": "official/api",
+      "sources": [
+        "https://github.com/openroly/openroly/blob/main/packages/core/src/providers.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "groq-api",
+      "display_name": "Groq (API)",
+      "kind": "api",
+      "detect": {
+        "always": true,
+        "binaries": [],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [],
+        "services": []
+      },
+      "capabilities": [
+        "chat"
+      ],
+      "adapter": "official/api",
+      "sources": [
+        "https://github.com/openroly/openroly/blob/main/packages/core/src/providers.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "deepseek-api",
+      "display_name": "DeepSeek (API)",
+      "kind": "api",
+      "detect": {
+        "always": true,
+        "binaries": [],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [],
+        "services": []
+      },
+      "capabilities": [
+        "chat"
+      ],
+      "adapter": "official/api",
+      "sources": [
+        "https://github.com/openroly/openroly/blob/main/packages/core/src/providers.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "mistral-api",
+      "display_name": "Mistral (API)",
+      "kind": "api",
+      "detect": {
+        "always": true,
+        "binaries": [],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [],
+        "services": []
+      },
+      "capabilities": [
+        "chat"
+      ],
+      "adapter": "official/api",
+      "sources": [
+        "https://github.com/openroly/openroly/blob/main/packages/core/src/providers.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "xai-api",
+      "display_name": "xAI (API)",
+      "kind": "api",
+      "detect": {
+        "always": true,
+        "binaries": [],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [],
+        "services": []
+      },
+      "capabilities": [
+        "chat"
+      ],
+      "adapter": "official/api",
+      "sources": [
+        "https://github.com/openroly/openroly/blob/main/packages/core/src/providers.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "together-api",
+      "display_name": "Together (API)",
+      "kind": "api",
+      "detect": {
+        "always": true,
+        "binaries": [],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [],
+        "services": []
+      },
+      "capabilities": [
+        "chat"
+      ],
+      "adapter": "official/api",
+      "sources": [
+        "https://github.com/openroly/openroly/blob/main/packages/core/src/providers.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "fireworks-api",
+      "display_name": "Fireworks (API)",
+      "kind": "api",
+      "detect": {
+        "always": true,
+        "binaries": [],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [],
+        "services": []
+      },
+      "capabilities": [
+        "chat"
+      ],
+      "adapter": "official/api",
+      "sources": [
+        "https://github.com/openroly/openroly/blob/main/packages/core/src/providers.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "cerebras-api",
+      "display_name": "Cerebras (API)",
+      "kind": "api",
+      "detect": {
+        "always": true,
+        "binaries": [],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [],
+        "services": []
+      },
+      "capabilities": [
+        "chat"
+      ],
+      "adapter": "official/api",
+      "sources": [
+        "https://github.com/openroly/openroly/blob/main/packages/core/src/providers.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "moonshot-api",
+      "display_name": "Moonshot (Kimi) (API)",
+      "kind": "api",
+      "detect": {
+        "always": true,
+        "binaries": [],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [],
+        "services": []
+      },
+      "capabilities": [
+        "chat"
+      ],
+      "adapter": "official/api",
+      "sources": [
+        "https://github.com/openroly/openroly/blob/main/packages/core/src/providers.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "zhipu-api",
+      "display_name": "Z.AI (GLM) (API)",
+      "kind": "api",
+      "detect": {
+        "always": true,
+        "binaries": [],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [],
+        "services": []
+      },
+      "capabilities": [
+        "chat"
+      ],
+      "adapter": "official/api",
+      "sources": [
+        "https://github.com/openroly/openroly/blob/main/packages/core/src/providers.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "dashscope-api",
+      "display_name": "DashScope (Qwen) (API)",
+      "kind": "api",
+      "detect": {
+        "always": true,
+        "binaries": [],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [],
+        "services": []
+      },
+      "capabilities": [
+        "chat"
+      ],
+      "adapter": "official/api",
+      "sources": [
+        "https://github.com/openroly/openroly/blob/main/packages/core/src/providers.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "perplexity-api",
+      "display_name": "Perplexity (API)",
+      "kind": "api",
+      "detect": {
+        "always": true,
+        "binaries": [],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [],
+        "services": []
+      },
+      "capabilities": [
+        "chat"
+      ],
+      "adapter": "official/api",
+      "sources": [
+        "https://github.com/openroly/openroly/blob/main/packages/core/src/providers.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "ollama-local-api",
+      "display_name": "Ollama (local) (API)",
+      "kind": "api",
+      "detect": {
+        "always": true,
+        "binaries": [],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [],
+        "services": []
+      },
+      "capabilities": [
+        "chat"
+      ],
+      "adapter": "official/api",
+      "sources": [
+        "https://github.com/openroly/openroly/blob/main/packages/core/src/providers.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "lmstudio-local-api",
+      "display_name": "LM Studio (local) (API)",
+      "kind": "api",
+      "detect": {
+        "always": true,
+        "binaries": [],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [],
+        "services": []
+      },
+      "capabilities": [
+        "chat"
+      ],
+      "adapter": "official/api",
+      "sources": [
+        "https://github.com/openroly/openroly/blob/main/packages/core/src/providers.ts"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "jan-local-api",
+      "display_name": "Jan (local) (API)",
+      "kind": "api",
+      "detect": {
+        "always": true,
+        "binaries": [],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [],
+        "services": []
+      },
+      "capabilities": [
+        "chat"
+      ],
+      "adapter": "official/api",
+      "sources": [
+        "https://github.com/openroly/openroly/blob/main/packages/core/src/providers.ts"
+      ],
+      "verified": "docs"
+    }
+  ]
+}

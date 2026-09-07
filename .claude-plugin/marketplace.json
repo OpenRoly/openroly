@@ -1,16 +1,16 @@
 {
-  "name": "atn",
+  "name": "openroly",
   "owner": {
     "name": "shibu003"
   },
   "metadata": {
-    "description": "Official runtime adapters for All Together Now (a personal agent account)",
+    "description": "Official runtime adapters for OpenRoly (a personal agent account)",
     "version": "0.2.1"
   },
   "plugins": [
     {
-      "name": "atn",
-      "description": "Attach All Together Now to Claude Code (pairing via `atn pair claude`)",
+      "name": "openroly",
+      "description": "Attach OpenRoly to Claude Code (pairing via `openroly pair claude`)",
       "source": "./adapters/official/claude"
     }
   ]

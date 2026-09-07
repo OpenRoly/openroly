@@ -1,8 +1,8 @@
-// atn-mask の masking 本体(PBI-0177)。PAA の MCP server 内蔵 masking(旧 packages/mcp/src/masking.ts・
-// REQ-69)から移設し、単体 OSS として切り出した — PAA の account 無しで今日から入れられる、
+// openroly-mask の masking 本体(PBI-0177)。OpenRoly の MCP server 内蔵 masking(旧 packages/mcp/src/masking.ts・
+// REQ-69)から移設し、単体 OSS として切り出した — OpenRoly の account 無しで今日から入れられる、
 // 「Claude にも Codex にも同じに効く秘匿」を単体で体験できる導線にする(3 点の②)。
 //
-// 秘匿の源は 3 つ(~/.atn/secrets.json・0600 必須):
+// 秘匿の源は 3 つ(~/.openroly/secrets.json・0600 必須):
 //   SECRETS  — credential 文字列(現行のまま。配列 or object どちらでも受ける)
 //   PRIVATE  — user 辞書(人名・住所など任意文字列。SECRETS と同じ扱いで静的に mask する)
 //   PATTERNS — 既定 on の形パターン(email・電話・card 番号・鍵形)。値は事前に知らなくても
@@ -16,8 +16,24 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export const secretsPath = (): string =>
-  process.env.PAA_SECRETS_PATH ?? join(homedir(), ".atn", "secrets.json");
+// 旧 `~/.atn` だけが在る端末ではそれを引き継ぐ(PBI-0344 AC-3)。この package は単体 OSS
+// (依存 0)なので @openroly/core の legacyDir を使えず、同じ規則をここに置く。警告は 1 process 1 行
+const FRESH_SECRETS = join(homedir(), ".openroly", "secrets.json");
+const LEGACY_SECRETS = join(homedir(), ".atn", "secrets.json");
+let legacyDirWarned = false;
+
+export const secretsPath = (): string => {
+  const override = process.env.OPENROLY_SECRETS_PATH;
+  if (override) return override;
+  if (existsSync(FRESH_SECRETS) || !existsSync(LEGACY_SECRETS)) return FRESH_SECRETS;
+  if (!legacyDirWarned) {
+    legacyDirWarned = true;
+    console.error(
+      `[openroly-mask] legacy state directory ${join(homedir(), ".atn")} is in use — move it to ${join(homedir(), ".openroly")} (support ends in a future release)`,
+    );
+  }
+  return LEGACY_SECRETS;
+};
 
 function checkPermissions(path: string): void {
   const mode = statSync(path).mode & 0o777;

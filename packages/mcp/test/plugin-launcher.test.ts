@@ -5,7 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { saveCredential } from "@paa/adapter";
+import { saveCredential } from "@openroly/adapter";
 
 // PBI-0112: marketplace install(= node_modules を持たない clone、実 cache と同構造)から
 // bundle を起動し、runtime と同じ stdio transport で MCP を往復する。
@@ -51,10 +51,10 @@ const stub = Bun.serve({
 });
 
 let clone = "";
-let paaHome = "";
+let openrolyHome = "";
 
 beforeAll(async () => {
-  clone = await mkdtemp(join(tmpdir(), "paa-plugin-"));
+  clone = await mkdtemp(join(tmpdir(), "openroly-plugin-"));
   const rsync = Bun.spawn(
     ["rsync", "-a", "--exclude", "node_modules", "--exclude", ".git", "--exclude", ".gstack",
      "--exclude", "target", "--exclude", "dist", repoRoot, `${clone}/`],
@@ -62,7 +62,7 @@ beforeAll(async () => {
   );
   expect(await rsync.exited).toBe(0);
 
-  paaHome = await mkdtemp(join(tmpdir(), "paa-plugin-home-"));
+  openrolyHome = await mkdtemp(join(tmpdir(), "openroly-plugin-home-"));
   await saveCredential(
     "claude",
     {
@@ -72,13 +72,13 @@ beforeAll(async () => {
       name: "MacBook / Claude Code",
       paired_at: new Date().toISOString(),
     },
-    { PAA_HOME: paaHome },
+    { OPENROLY_HOME: openrolyHome },
   );
 }, 120_000);
 
 afterAll(async () => {
   stub.stop(true);
-  await Promise.all([clone, paaHome].filter(Boolean).map((d) => rm(d, { recursive: true, force: true })));
+  await Promise.all([clone, openrolyHome].filter(Boolean).map((d) => rm(d, { recursive: true, force: true })));
 }, 120_000);
 
 /** runtime と同じ形(stdio 越しの MCP client)で bundle を起動する */
@@ -91,14 +91,14 @@ async function connect(env: Record<string, string>) {
     stderr: "pipe",
   });
   transport.stderr?.on("data", (c: Buffer | string) => chunks.push(String(c)));
-  const client = new Client({ name: "paa-launcher-test", version: "0.0.0" });
+  const client = new Client({ name: "openroly-launcher-test", version: "0.0.0" });
   await client.connect(transport, { timeout: 60_000 });
   return { client, transport, stderr: () => chunks.join("") };
 }
 
 describe("plugin bundle の MCP 往復", () => {
   test("AC-1〜3: 依存の無い 1 file bundle が node_modules 無しの clone から起き、往復できる", async () => {
-    const session = await connect({ PAA_RUNTIME_KIND: "claude", PAA_HOME: paaHome });
+    const session = await connect({ OPENROLY_RUNTIME_KIND: "claude", OPENROLY_HOME: openrolyHome });
 
     // cache 内完結の証拠: bootstrap(bun install)も module 解決の失敗も出ない
     expect(session.stderr()).not.toContain("bun install");
@@ -106,7 +106,7 @@ describe("plugin bundle の MCP 往復", () => {
     expect(session.stderr()).not.toContain("package.json");
 
     // AC-1: handshake が成立する(stdout に JSON-RPC 以外が混ざっていたらここで落ちる)
-    expect(session.client.getServerVersion()?.name).toBe("atn-account");
+    expect(session.client.getServerVersion()?.name).toBe("openroly-account");
 
     // AC-2: 要件 §16 の 13 tools が過不足なく並ぶ(memory.* / task.* 等を生やさない)
     const tools = (await session.client.listTools()).tools.map((t) => t.name).sort();
@@ -120,13 +120,13 @@ describe("plugin bundle の MCP 往復", () => {
   }, 60_000);
 
   test("AC-X1: credential が無ければ exit 1 で、stdout を汚さず対処を出す", async () => {
-    const emptyHome = await mkdtemp(join(tmpdir(), "paa-plugin-empty-"));
+    const emptyHome = await mkdtemp(join(tmpdir(), "openroly-plugin-empty-"));
     const proc = Bun.spawn(["bun", join(clone, BUNDLE)], {
       env: {
         PATH: process.env.PATH ?? "",
         HOME: process.env.HOME ?? "",
-        PAA_RUNTIME_KIND: "claude",
-        PAA_HOME: emptyHome,
+        OPENROLY_RUNTIME_KIND: "claude",
+        OPENROLY_HOME: emptyHome,
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -137,8 +137,8 @@ describe("plugin bundle の MCP 往復", () => {
     ]);
 
     expect(await proc.exited).toBe(1);
-    expect(stderr).toContain("No All Together Now credential was found");
-    expect(stderr).toContain("atn install claude");
+    expect(stderr).toContain("No OpenRoly credential was found");
+    expect(stderr).toContain("openroly install claude");
     // stdout は MCP の stdio transport 用。1 byte でも混ぜたら JSON-RPC が壊れる
     expect(stdout).toBe("");
     await rm(emptyHome, { recursive: true, force: true });

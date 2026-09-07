@@ -2,10 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, readdir, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { API_PROVIDERS, apiProviderKind } from "@openroly/core";
 import { apiAdapters, apiProviderAdapter } from "../src/index.ts";
 
 // PBI-0070 / EP-0009 C: API provider の adapter は **native の設定を 1 つも書かない**。
-// register/unregister が何かを書き始めたら、この runtime の設計(実体は atn agent)が壊れている。
+// register/unregister が何かを書き始めたら、この runtime の設計(実体は openroly agent)が壊れている。
 
 async function countFiles(dir: string): Promise<number> {
   const entries = await readdir(dir, { recursive: true, withFileTypes: true }).catch(() => []);
@@ -13,13 +14,13 @@ async function countFiles(dir: string): Promise<number> {
 }
 
 describe("API provider adapter (PBI-0070 AC-5)", () => {
-  test("3 provider が factory 1 つから作られ、id は <provider>-api", () => {
-    expect(apiAdapters.map((a) => a.id)).toEqual(["openai-api", "gemini-api", "anthropic-api"]);
-    expect(apiAdapters.map((a) => a.displayName)).toEqual([
-      "OpenAI (API)",
-      "Gemini (API)",
-      "Anthropic (API)",
-    ]);
+  test("provider は factory 1 つから作られ、id は <provider>-api(PBI-0298: 表から導出する)", () => {
+    expect(apiAdapters.map((a) => a.id)).toEqual(API_PROVIDERS.map((p) => apiProviderKind(p.id)));
+    expect(apiAdapters.map((a) => a.displayName)).toEqual(API_PROVIDERS.map((p) => `${p.label} (API)`));
+    // 表が空になった / adapter を手書きで足したら気づけること(件数の下限だけは固定する)
+    expect(apiAdapters.length).toBe(API_PROVIDERS.length);
+    expect(apiAdapters.length).toBeGreaterThan(2);
+    for (const a of apiAdapters) expect(a.id).toMatch(/-api$/);
   });
 
   test("detect は常に installed(端末に binary を持たない)", async () => {
@@ -29,7 +30,7 @@ describe("API provider adapter (PBI-0070 AC-5)", () => {
   });
 
   test("register / unregister はファイルを 1 つも書かない", async () => {
-    const home = await mkdtemp(join(tmpdir(), "paa-api-adapter-"));
+    const home = await mkdtemp(join(tmpdir(), "openroly-api-adapter-"));
     const ctx = { env: { HOME: home } };
     const adapter = apiProviderAdapter("openai", "OpenAI (API)");
     const before = await countFiles(home);
@@ -37,23 +38,23 @@ describe("API provider adapter (PBI-0070 AC-5)", () => {
       serverEntry: "/x/mcp-server.ts",
       runtimeKind: "openai-api",
       baseUrl: "http://localhost:8787",
-      serverName: "atn",
+      serverName: "openroly",
     });
-    await adapter.unregister(ctx, "atn");
+    await adapter.unregister(ctx, "openroly");
     expect(await countFiles(home)).toBe(before);
     expect(await adapter.listExtensions(ctx)).toEqual([]);
     expect(adapter.extensionKinds).toEqual([]);
   });
 
   test("doctor は credential の有無を返す(未接続 → ok:false)", async () => {
-    const home = await mkdtemp(join(tmpdir(), "paa-api-doctor-"));
+    const home = await mkdtemp(join(tmpdir(), "openroly-api-doctor-"));
     const adapter = apiProviderAdapter("openai", "OpenAI (API)");
-    const missing = await adapter.doctor({ env: { HOME: home, PAA_HOME: join(home, ".atn") } }, "paa");
+    const missing = await adapter.doctor({ env: { HOME: home, OPENROLY_HOME: join(home, ".openroly") } }, "openroly");
     expect(missing[0]!.ok).toBe(false);
 
-    await mkdir(join(home, ".atn"), { recursive: true });
+    await mkdir(join(home, ".openroly"), { recursive: true });
     await writeFile(
-      join(home, ".atn", "credentials.json"),
+      join(home, ".openroly", "credentials.json"),
       JSON.stringify({
         version: 1,
         runtimes: {
@@ -61,7 +62,7 @@ describe("API provider adapter (PBI-0070 AC-5)", () => {
         },
       }),
     );
-    const found = await adapter.doctor({ env: { HOME: home, PAA_HOME: join(home, ".atn") } }, "paa");
+    const found = await adapter.doctor({ env: { HOME: home, OPENROLY_HOME: join(home, ".openroly") } }, "openroly");
     expect(found[0]!.ok).toBe(true);
   });
 });

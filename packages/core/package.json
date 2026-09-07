@@ -1,10 +1,11 @@
 {
-  "name": "@paa/core",
+  "name": "@openroly/core",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./registry/detectors.v1.json": "./registry/detectors.v1.json"
   },
   "dependencies": {
     "uuid": "^11.0.0"

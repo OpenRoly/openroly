@@ -37,7 +37,7 @@ describe("validateHandle", () => {
     expect(validateHandle("あやか")).toEqual({ ok: false, reason: "invalid_start" });
   });
   test("予約語(RFC 2142 系含む)", () => {
-    for (const h of ["postmaster", "admin", "abuse", "PAA"]) {
+    for (const h of ["postmaster", "admin", "abuse", "OpenRoly"]) {
       expect(validateHandle(h)).toEqual({ ok: false, reason: "reserved" });
     }
   });

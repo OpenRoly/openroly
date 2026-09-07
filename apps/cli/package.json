@@ -1,21 +1,24 @@
 {
-  "name": "@paa/cli",
+  "name": "@openroly/cli",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "bin": {
-    "atn": "./src/paa.ts"
+    "openroly": "./src/openroly.ts"
   },
   "exports": {
     ".": "./src/registry.ts"
   },
   "dependencies": {
-    "@paa/adapter": "workspace:*",
-    "@paa/adapter-claude": "workspace:*",
-    "@paa/adapter-codex": "workspace:*",
-    "@paa/adapter-gemini": "workspace:*",
-    "@paa/core": "workspace:*",
-    "@paa/crypto-envelope": "workspace:*",
-    "@paa/adapter-api": "workspace:*"
+    "@openroly/adapter": "workspace:*",
+    "@openroly/adapter-claude": "workspace:*",
+    "@openroly/adapter-codex": "workspace:*",
+    "@openroly/adapter-gemini": "workspace:*",
+    "@openroly/core": "workspace:*",
+    "@openroly/crypto-envelope": "workspace:*",
+    "@openroly/adapter-api": "workspace:*"
+  },
+  "devDependencies": {
+    "jsonc-parser": "^3.3.1"
   }
 }

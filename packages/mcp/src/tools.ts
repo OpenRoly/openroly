@@ -1,4 +1,4 @@
-// PAA Account tools contract(要件 §16)の実装。
+// OpenRoly Account tools contract(要件 §16)の実装。
 // runtime は paired credential で HTTP API を叩く。tool は §16 の 8 操作 + reply(PBI-0094)
 // + notification_label(EP-0013 W3 triage)。
 // memory.* / task.* / browser.* 等は提供しない(要件 §16 の非提供リスト)。
@@ -7,39 +7,39 @@
 // active device を持つ時、自動的に E2EE(HPKE envelope)を使う。片方でも device が
 // 無ければ平文のまま送受信する(server 側の強制拒否はしない設計。backlog/PBI-0006 参照)。
 
-import type { MessageContent } from "@paa/core";
-import { open, type EncryptedEnvelope } from "@paa/crypto-envelope";
+import type { MessageContent } from "@openroly/core";
+import { open, type EncryptedEnvelope } from "@openroly/crypto-envelope";
 import {
   credentialRejectedHint,
   readerKeys,
   openIfEnvelope as openEnvelope,
   sealForHandle,
-} from "@paa/adapter";
+} from "@openroly/adapter";
 
-export interface PaaClientConfig {
+export interface OpenRolyClientConfig {
   baseUrl: string;
   token: string;
   /** device key の永続化単位(credential store の kind と同じ)。省略時は "default" */
   deviceKind?: string;
   /** triage session の scope token(EP-0013 W3 / REQ-61 ②)。broker が dedicated session の
-   * env `PAA_SESSION_SCOPE` に載せた物を server.ts が受けて全 request の header に付ける。
+   * env `OPENROLY_SESSION_SCOPE` に載せた物を server.ts が受けて全 request の header に付ける。
    * 無ければ header 自体を送らない(Manual / AUTO / owner lane は従来どおり全権) */
   scopeToken?: string;
 }
 
-export class PaaApiError extends Error {
+export class OpenRolyApiError extends Error {
   constructor(
     public readonly status: number,
     public readonly body: unknown,
-    /** 401 の時だけ: 戻り道(`atn pair <kind>`)。無人で動く agent が生の 401 で止まらない(PBI-0264 有界レビュー) */
+    /** 401 の時だけ: 戻り道(`openroly pair <kind>`)。無人で動く agent が生の 401 で止まらない(PBI-0264 有界レビュー) */
     hint?: string,
   ) {
-    super(`PAA API error ${status}: ${JSON.stringify(body)}${hint ? ` — ${hint}` : ""}`);
+    super(`OpenRoly API error ${status}: ${JSON.stringify(body)}${hint ? ` — ${hint}` : ""}`);
   }
 }
 
 async function call(
-  config: PaaClientConfig,
+  config: OpenRolyClientConfig,
   path: string,
   init?: { method?: string; body?: unknown },
 ): Promise<unknown> {
@@ -50,25 +50,25 @@ async function call(
       "content-type": "application/json",
       // triage scope(REQ-61 ②)。無効 / 期限切れ token は server 側が 401 invalid_scope_token で
       // 拒む(fail-closed)。在る時だけ送る
-      ...(config.scopeToken ? { "x-paa-session-scope": config.scopeToken } : {}),
+      ...(config.scopeToken ? { "x-openroly-session-scope": config.scopeToken } : {}),
     },
     ...(init?.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
   });
   const body = await res.json().catch(() => null);
   if (!res.ok) {
-    throw new PaaApiError(res.status, body, res.status === 401 ? credentialRejectedHint(config.deviceKind) : undefined);
+    throw new OpenRolyApiError(res.status, body, res.status === 401 ? credentialRejectedHint(config.deviceKind) : undefined);
   }
   return body;
 }
 
 /**
- * E2EE の作法(device upsert → 宛先公開鍵 → seal / open)は `@paa/adapter` の e2ee.ts が正本。
- * `atn agent`(PBI-0057)も同じ関数を使う —— client 側に 2 つ目の実装を置かない。
+ * E2EE の作法(device upsert → 宛先公開鍵 → seal / open)は `@openroly/adapter` の e2ee.ts が正本。
+ * `openroly agent`(PBI-0057)も同じ関数を使う —— client 側に 2 つ目の実装を置かない。
  */
-const e2eeCall = (config: PaaClientConfig) =>
+const e2eeCall = (config: OpenRolyClientConfig) =>
   (path: string, init?: { method?: string; body?: unknown }) => call(config, path, init);
 
-const deviceKindOf = (config: PaaClientConfig) => config.deviceKind ?? "default";
+const deviceKindOf = (config: OpenRolyClientConfig) => config.deviceKind ?? "default";
 
 export interface SendInput {
   to: string;
@@ -89,7 +89,7 @@ export interface ReplyInput {
 }
 
 /** §16 contract の 8 操作 + reply(PBI-0094)。MCP server と検査の双方がこの実装を使う */
-export function createAccountTools(config: PaaClientConfig) {
+export function createAccountTools(config: OpenRolyClientConfig) {
   // notification_label の summary の seal 宛先 = 自分の handle(自分の item にだけ付く)。whoami は
   // 1 回だけ引いて cache する(tool 呼び出し毎の往復を避ける)。reply はこれを使わない(PBI-0261)
   let ownHandle: Promise<string> | null = null;
@@ -113,7 +113,7 @@ export function createAccountTools(config: PaaClientConfig) {
     // thread への返信(PBI-0094 → **PBI-0261 で seal 先が thread の相手に**)。E2EE は send と同じ作法 —
     // seal 先は `GET /v1/threads/:id` の `peer_handle`(相手の account 鍵 + 自分の写し・図9)。自分宛て
     // thread(owner instruction)は peer_handle = 自 handle なので今までどおり 1 本。前は常に自 handle へ
-    // 封をしていたので、peer thread への AUTO 返信は **相手が永久に開けない 1 通**だった(`atn agent` と
+    // 封をしていたので、peer thread への AUTO 返信は **相手が永久に開けない 1 通**だった(`openroly agent` と
     // 同じ材料で同じ事をする)。
     // thread が読めない(404 / 403 / 500 / 通信断)時は **送らない**(AC-X1) —— 自 handle へ封をする
     // fallback は同じ「相手が開けない 1 通」をまた作る。peer_handle が null(外部 mail peer / 相手が
@@ -161,7 +161,7 @@ export function createAccountTools(config: PaaClientConfig) {
           text: summary,
         });
         if (!("envelope" in sealed)) {
-          throw new PaaApiError(422, { error: "summary_requires_device_key" });
+          throw new OpenRolyApiError(422, { error: "summary_requires_device_key" });
         }
         body.summary = { envelope: sealed.envelope };
       }

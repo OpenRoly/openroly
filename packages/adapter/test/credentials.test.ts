@@ -26,7 +26,7 @@ const cred = (id: string): RuntimeCredential => ({
 });
 
 async function tempEnv() {
-  return { PAA_HOME: await mkdtemp(join(tmpdir(), "paa-cred-")) };
+  return { OPENROLY_HOME: await mkdtemp(join(tmpdir(), "openroly-cred-")) };
 }
 
 describe("credential store", () => {
@@ -102,7 +102,7 @@ describe("credential store", () => {
              runtime_id: "rt_${kind}", token: "par_${kind}",
              base_url: "http://localhost:8787", name: ${JSON.stringify(kind)},
              paired_at: new Date().toISOString(),
-           }, { PAA_HOME: ${JSON.stringify(env.PAA_HOME)} });`,
+           }, { OPENROLY_HOME: ${JSON.stringify(env.OPENROLY_HOME)} });`,
         ],
         { stdout: "pipe", stderr: "pipe" },
       ),
@@ -117,7 +117,7 @@ describe("credential store", () => {
     expect(Object.keys(file.runtimes).sort()).toEqual([...kinds].sort());
     // lock file を残さない(次の install が 5 秒待たされる)
     const { readdir } = await import("node:fs/promises");
-    expect((await readdir(env.PAA_HOME)).filter((f) => f.endsWith(".lock"))).toEqual([]);
+    expect((await readdir(env.OPENROLY_HOME)).filter((f) => f.endsWith(".lock"))).toEqual([]);
   }, 60_000);
 });
 
@@ -173,7 +173,7 @@ describe("account_url", () => {
           "bun",
           "-e",
           `const { saveAccountUrl } = await import(${JSON.stringify(module)});
-           await saveAccountUrl(${JSON.stringify(url)}, { PAA_HOME: ${JSON.stringify(env.PAA_HOME)} });`,
+           await saveAccountUrl(${JSON.stringify(url)}, { OPENROLY_HOME: ${JSON.stringify(env.OPENROLY_HOME)} });`,
         ],
         { stdout: "pipe", stderr: "pipe" },
       ),
@@ -191,7 +191,7 @@ describe("account_url", () => {
     expect(file.version).toBe(1);
     expect(Object.keys(file.runtimes)).toEqual(["claude"]);
     const { readdir } = await import("node:fs/promises");
-    const left = await readdir(env.PAA_HOME);
+    const left = await readdir(env.OPENROLY_HOME);
     expect(left.filter((f) => f.endsWith(".lock") || f.endsWith(".tmp"))).toEqual([]);
   }, 60_000);
 });

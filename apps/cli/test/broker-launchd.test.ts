@@ -2,19 +2,19 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { saveCredential } from "@paa/adapter";
+import { saveCredential } from "@openroly/adapter";
 
-// PBI-0048 AC-1〜7 / X2: `atn login` の launchd 優先分岐と `atn broker install/uninstall/status`。
-// 実マシンの ~/Library/LaunchAgents と実 launchctl には一度も触れない —— PAA_LAUNCH_AGENTS_DIR /
-// PAA_LAUNCHCTL で常に隔離する(apps/cli/test/login.test.ts と同じ設計)。
+// PBI-0048 AC-1〜7 / X2: `openroly login` の launchd 優先分岐と `openroly broker install/uninstall/status`。
+// 実マシンの ~/Library/LaunchAgents と実 launchctl には一度も触れない —— OPENROLY_LAUNCH_AGENTS_DIR /
+// OPENROLY_LAUNCHCTL で常に隔離する(apps/cli/test/login.test.ts と同じ設計)。
 //
 // AC-X1(別 actor)は既存契約の再確認であり新規テストは追加しない(G1 テスト設計に明記)。
 // AC-X3(二重起動判定の一本化)は login.test.ts の AC-5/AC-X3 が pid file 排他生成を経由して
 // 既に検証している(PBI-0048 で foreground も同じ claimBrokerPidFile を通すよう変更済み)。
 
-const CLI = join(import.meta.dir, "../src/paa.ts");
+const CLI = join(import.meta.dir, "../src/openroly.ts");
 
-// launchd は macOS だけの機構で、`atn login` / `atn broker install` は paa.ts で
+// launchd は macOS だけの機構で、`openroly login` / `openroly broker install` は openroly.ts で
 // `process.platform === "darwin"` に閉じている。CI は ubuntu で回す(private repo の macOS runner は
 // 分数が 10 倍で数えられる)ので、**launchd 経路を通る test だけ**を darwin に限る —— 限るのは
 // 6 本で、残り 9 本(uninstall / status / pid file / detached fallback)は全 platform で回る。
@@ -69,7 +69,7 @@ beforeEach(() => {
 
 let root = "";
 beforeAll(async () => {
-  root = await mkdtemp(join(tmpdir(), "paa-launchd-"));
+  root = await mkdtemp(join(tmpdir(), "openroly-launchd-"));
 });
 afterAll(async () => {
   await rm(root, { recursive: true, force: true });
@@ -96,7 +96,7 @@ async function freshEnv(opts: { launchctl?: { list: number; load: number; unload
   await mkdir(home, { recursive: true });
   await mkdir(brokerHome, { recursive: true });
   await mkdir(launchAgentsDir, { recursive: true });
-  const fakeBrokerBin = join(dir, "atn-broker-fake");
+  const fakeBrokerBin = join(dir, "openroly-broker-fake");
   await writeFile(fakeBrokerBin, `#!/bin/sh\necho "spawn $$"\nexit 0\n`);
   await chmod(fakeBrokerBin, 0o755);
   const fakeOpenDir = join(dir, "fakebin");
@@ -114,24 +114,24 @@ async function freshEnv(opts: { launchctl?: { list: number; load: number; unload
     home,
     brokerHome,
     launchAgentsDir,
-    plistPath: join(launchAgentsDir, "com.atn.broker.plist"),
+    plistPath: join(launchAgentsDir, "com.openroly.broker.plist"),
     launchctlLog,
     brokerPid: join(brokerHome, "broker.pid"),
     brokerLog: join(brokerHome, "broker.log"),
     env: {
       PATH: `${fakeOpenDir}:${process.env.PATH ?? ""}`,
       HOME: process.env.HOME ?? "",
-      PAA_HOME: home,
-      PAA_BROKER_HOME: brokerHome,
-      PAA_BROKER_BIN: fakeBrokerBin,
-      PAA_URL: BASE_URL,
-      PAA_LAUNCH_AGENTS_DIR: launchAgentsDir,
-      PAA_LAUNCHCTL: launchctlBin,
+      OPENROLY_HOME: home,
+      OPENROLY_BROKER_HOME: brokerHome,
+      OPENROLY_BROKER_BIN: fakeBrokerBin,
+      OPENROLY_URL: BASE_URL,
+      OPENROLY_LAUNCH_AGENTS_DIR: launchAgentsDir,
+      OPENROLY_LAUNCHCTL: launchctlBin,
     } as Record<string, string>,
   };
 }
 
-async function paa(
+async function openroly(
   args: string[],
   env: Record<string, string>,
 ): Promise<{ code: number; out: string; err: string }> {
@@ -154,11 +154,11 @@ async function saveBrokerCredential(home: string, token: string) {
       name: "test-host",
       paired_at: new Date().toISOString(),
     },
-    { PAA_HOME: home },
+    { OPENROLY_HOME: home },
   );
 }
 
-/** `ps -o lstart=` の起動時刻(paa.ts の processStartTime と同じ正規化) */
+/** `ps -o lstart=` の起動時刻(openroly.ts の processStartTime と同じ正規化) */
 async function lstartOf(pid: number): Promise<string> {
   const proc = Bun.spawn(["ps", "-o", "lstart=", "-p", String(pid)], { stdout: "pipe" });
   return (await new Response(proc.stdout).text()).trim().replace(/\s+/g, " ");
@@ -181,15 +181,15 @@ async function waitForContent(
   }
 }
 
-describe("atn login launchd 分岐 (PBI-0048)", () => {
+describe("openroly login launchd 分岐 (PBI-0048)", () => {
   darwinOnly("AC-1: 未 load なら plist を書いて load する(token は書かない)", async () => {
     const { env, plistPath, launchctlLog } = await freshEnv({ launchctl: { list: 1, load: 0, unload: 0 } });
-    const res = await paa(["login", "--no-open"], env);
+    const res = await openroly(["login", "--no-open"], env);
     expect(res.code).toBe(0);
     expect(res.out).toContain("Registered with launchd");
 
     const plist = await readFile(plistPath, "utf8");
-    expect(plist).toContain("com.atn.broker");
+    expect(plist).toContain("com.openroly.broker");
     expect(plist).not.toContain("par_launchd_"); // token 文字列が plist に無いこと
 
     const log = await waitForContent(launchctlLog, (s) => s.includes("load"));
@@ -198,7 +198,7 @@ describe("atn login launchd 分岐 (PBI-0048)", () => {
 
   darwinOnly("AC-2: 既に load 済みなら plist を書かず load も呼ばない", async () => {
     const { env, plistPath, launchctlLog } = await freshEnv({ launchctl: { list: 0, load: 1, unload: 1 } });
-    const res = await paa(["login", "--no-open"], env);
+    const res = await openroly(["login", "--no-open"], env);
     expect(res.code).toBe(0);
     expect(res.out).toContain("Registered with launchd");
 
@@ -209,7 +209,7 @@ describe("atn login launchd 分岐 (PBI-0048)", () => {
 
   test("AC-3: launchd 登録に失敗したら detached へ fallback する", async () => {
     const { env, brokerLog, brokerPid } = await freshEnv({ launchctl: { list: 1, load: 1, unload: 1 } });
-    const res = await paa(["login", "--no-open"], env);
+    const res = await openroly(["login", "--no-open"], env);
     expect(res.code).toBe(0);
     expect(res.out).not.toContain("Registered with launchd");
     expect(res.out).toContain("broker log:");
@@ -222,29 +222,29 @@ describe("atn login launchd 分岐 (PBI-0048)", () => {
   }, 30_000);
 });
 
-describe("atn broker install/uninstall/status (PBI-0048)", () => {
+describe("openroly broker install/uninstall/status (PBI-0048)", () => {
   darwinOnly("AC-4: install は credential が有れば plist を書き token を含まない", async () => {
     const { env, home, plistPath } = await freshEnv({ launchctl: { list: 1, load: 0, unload: 0 } });
     await saveBrokerCredential(home, "par_install_ac4");
-    const res = await paa(["broker", "install"], env);
+    const res = await openroly(["broker", "install"], env);
     expect(res.code).toBe(0);
     const plist = await readFile(plistPath, "utf8");
-    expect(plist).toContain("com.atn.broker");
+    expect(plist).toContain("com.openroly.broker");
     expect(plist).not.toContain("par_install_ac4");
   }, 30_000);
 
   darwinOnly("AC-5: credential が無ければ login を案内して plist を書かない", async () => {
     const { env, plistPath } = await freshEnv();
-    const res = await paa(["broker", "install"], env);
+    const res = await openroly(["broker", "install"], env);
     expect(res.code).toBe(1);
-    expect(res.err).toContain("atn login");
+    expect(res.err).toContain("openroly login");
     await expect(readFile(plistPath, "utf8")).rejects.toThrow();
   }, 30_000);
 
   test("AC-6: uninstall は unload してから plist を削除する", async () => {
     const { env, plistPath, launchctlLog } = await freshEnv({ launchctl: { list: 1, load: 1, unload: 0 } });
     await writeFile(plistPath, "<plist>dummy</plist>");
-    const res = await paa(["broker", "uninstall"], env);
+    const res = await openroly(["broker", "uninstall"], env);
     expect(res.code).toBe(0);
     await expect(readFile(plistPath, "utf8")).rejects.toThrow();
     const log = await readFile(launchctlLog, "utf8");
@@ -255,10 +255,10 @@ describe("atn broker install/uninstall/status (PBI-0048)", () => {
     const { env, plistPath, brokerPid } = await freshEnv({ launchctl: { list: 0, load: 1, unload: 1 } });
     await writeFile(plistPath, "<plist>dummy</plist>");
     // process 生存: このテストプロセス自身の pid と起動時刻を broker.pid に書いて「生存」を再現する
-    // (pid だけの旧形式は atn-broker 以外を生存とみなさない —— PBI-0048 レビュー AC-X3 の修正)
+    // (pid だけの旧形式は openroly-broker 以外を生存とみなさない —— PBI-0048 レビュー AC-X3 の修正)
     await writeFile(brokerPid, `${process.pid} ${await lstartOf(process.pid)}`);
 
-    const res = await paa(["broker", "status"], env);
+    const res = await openroly(["broker", "status"], env);
     expect(res.code).toBe(0);
     expect(res.out).toContain("launchd plist: installed");
     expect(res.out).toContain("launchd job: registered");
@@ -268,12 +268,12 @@ describe("atn broker install/uninstall/status (PBI-0048)", () => {
   darwinOnly("AC-X2: install 失敗時は plist を残したまま exit 1 で理由を出す", async () => {
     const { env, home, plistPath } = await freshEnv({ launchctl: { list: 1, load: 1, unload: 1 } });
     await saveBrokerCredential(home, "par_install_x2");
-    const res = await paa(["broker", "install"], env);
+    const res = await openroly(["broker", "install"], env);
     expect(res.code).toBe(1);
     expect(res.err).toContain("NG registering with launchd failed");
     // plist は書き込み済みのまま残る(次回 install で上書きされる想定)
     const plist = await readFile(plistPath, "utf8");
-    expect(plist).toContain("com.atn.broker");
+    expect(plist).toContain("com.openroly.broker");
   }, 30_000);
 });
 
@@ -285,8 +285,8 @@ describe("PBI-0048 review: AC-X2 / AC-X3 攻撃", () => {
     async () => {
       const { env, home, plistPath, launchctlLog } = await freshEnv({ launchctl: { list: 1, load: 0, unload: 0 } });
       await saveBrokerCredential(home, "par_review_x2");
-      env.PAA_BROKER_BIN = join(root, "does-not-exist-atn-broker");
-      const res = await paa(["login", "--no-open"], env);
+      env.OPENROLY_BROKER_BIN = join(root, "does-not-exist-openroly-broker");
+      const res = await openroly(["login", "--no-open"], env);
       // PBI-0046 AC-4 と同じ失敗様式を launchd 経路でも期待する: exit 1 + cargo build の案内
       expect(res.code).toBe(1);
       expect(res.err).toContain("cargo build");
@@ -294,8 +294,8 @@ describe("PBI-0048 review: AC-X2 / AC-X3 攻撃", () => {
       await expect(readFile(plistPath, "utf8")).rejects.toThrow();
       expect(await readFile(launchctlLog, "utf8").catch(() => "")).not.toContain("load ");
 
-      // `atn broker install` 単体も同じ(登録してから launchd 側で失敗し続ける経路を残さない)
-      const install = await paa(["broker", "install"], env);
+      // `openroly broker install` 単体も同じ(登録してから launchd 側で失敗し続ける経路を残さない)
+      const install = await openroly(["broker", "install"], env);
       expect(install.code).toBe(1);
       expect(install.err).toContain("cargo build");
       await expect(readFile(plistPath, "utf8")).rejects.toThrow();
@@ -309,22 +309,22 @@ describe("PBI-0048 review: AC-X2 / AC-X3 攻撃", () => {
       const { env, brokerPid, brokerLog } = await freshEnv({ launchctl: { list: 0, load: 1, unload: 1 } });
       // 再起動後の pid file: 前回 boot の pid が今回 boot では無関係なプロセス(ここでは launchd = pid 1)を指す
       await writeFile(brokerPid, "1");
-      const res = await paa(["broker", "status"], env);
+      const res = await openroly(["broker", "status"], env);
       expect(res.code).toBe(0);
       expect(res.out).toContain("broker process: stopped");
 
       // 起動時刻付きでも、時刻が合わなければ(= 別 boot の同じ番号)停止
       await writeFile(brokerPid, `${process.pid} Thu Jan 1 00:00:00 1970`);
-      expect((await paa(["broker", "status"], env)).out).toContain("broker process: stopped");
+      expect((await openroly(["broker", "status"], env)).out).toContain("broker process: stopped");
 
       // 生きている本物(このテストプロセス)を起動時刻付きで指せば生存(AC-7 と同じ)
       await writeFile(brokerPid, `${process.pid} ${await lstartOf(process.pid)}`);
-      expect((await paa(["broker", "status"], env)).out).toContain(`running (pid ${process.pid})`);
+      expect((await openroly(["broker", "status"], env)).out).toContain(`running (pid ${process.pid})`);
 
-      // stale(pid 1)を指したまま `atn broker`(前景・launchd が起こす入口)を実行すると起動できる
+      // stale(pid 1)を指したまま `openroly broker`(前景・launchd が起こす入口)を実行すると起動できる
       await writeFile(brokerPid, "1");
-      await saveBrokerCredential(join(env.PAA_HOME!), "par_review_x3");
-      const fg = await paa(["broker"], env);
+      await saveBrokerCredential(join(env.OPENROLY_HOME!), "par_review_x3");
+      const fg = await openroly(["broker"], env);
       expect(fg.code).toBe(0);
       expect(fg.out).toContain("spawn");
       expect(fg.err).not.toContain("already running");
@@ -337,24 +337,24 @@ describe("PBI-0048 review: AC-X2 / AC-X3 攻撃", () => {
 // ---- PBI-0048 再レビュー(有界)の攻撃 test(2026-08-28)。レビューセッションが追加 ----
 describe("PBI-0048 再レビュー: AC-X3 攻撃", () => {
   test(
-    "pid file が空 / garbage でも『停止』と判定し、atn broker が起動できる(起動不能のままにならない)",
+    "pid file が空 / garbage でも『停止』と判定し、openroly broker が起動できる(起動不能のままにならない)",
     async () => {
       // fix は `<pid> <lstart>` 形式を前提にする — 破損入力(空文字 / 英字 garbage / 0 や負のような
-      // 実在しない番号)が parse で例外にならず「停止」に倒れ、KeepAlive で起こされた atn broker が
+      // 実在しない番号)が parse で例外にならず「停止」に倒れ、KeepAlive で起こされた openroly broker が
       // 永久に起動不能に陥らないことを固定する
       const { env, brokerPid, brokerHome } = await freshEnv({ launchctl: { list: 0, load: 1, unload: 1 } });
-      await saveBrokerCredential(join(env.PAA_HOME!), "par_review_corrupt");
+      await saveBrokerCredential(join(env.OPENROLY_HOME!), "par_review_corrupt");
 
       for (const garbage of ["", "   \n", "not-a-pid", "-1", "99999999999999999999"]) {
         await writeFile(brokerPid, garbage);
-        const st = await paa(["broker", "status"], env);
+        const st = await openroly(["broker", "status"], env);
         expect(st.code).toBe(0);
         expect(st.out).toContain("broker process: stopped");
       }
 
       // 破損 pid file のまま foreground(launchd が実行する入口)で起動できる
       await writeFile(brokerPid, "not-a-pid");
-      const fg = await paa(["broker"], env);
+      const fg = await openroly(["broker"], env);
       expect(fg.code).toBe(0);
       expect(fg.out).toContain("spawn");
       expect(fg.err).not.toContain("already running");
@@ -373,10 +373,10 @@ describe("PBI-0048 再レビュー: AC-X3 攻撃", () => {
 // source 側は全 platform で、振る舞い側は darwin 以外で(darwin では上の 6 本が本物を測る)。
 describe("launchd 経路の platform 境界 (PBI-0162)", () => {
   test("source: launchd の起動と登録は darwin に閉じている", async () => {
-    const src = await readFile(join(import.meta.dir, "../src/paa.ts"), "utf8");
+    const src = await readFile(join(import.meta.dir, "../src/openroly.ts"), "utf8");
     // ① login の統一入口: darwin でだけ launchd を先に試す
     expect(src).toContain('process.platform === "darwin" && (await tryInstallLaunchdBroker())');
-    // ② `atn broker install`: darwin 以外は理由を出して止まる(登録だけして動かない状態を作らない)
+    // ② `openroly broker install`: darwin 以外は理由を出して止まる(登録だけして動かない状態を作らない)
     expect(src).toContain('if (process.platform !== "darwin") fail("broker install is macOS (launchd) only");');
   });
 
@@ -385,7 +385,7 @@ describe("launchd 経路の platform 境界 (PBI-0162)", () => {
     async () => {
       const { env, home, plistPath } = await freshEnv({ launchctl: { list: 1, load: 0, unload: 0 } });
       await saveBrokerCredential(home, "par_non_darwin");
-      const res = await paa(["broker", "install"], env);
+      const res = await openroly(["broker", "install"], env);
       expect(res.code).toBe(1);
       expect(res.err).toContain("macOS (launchd) only");
       await expect(readFile(plistPath, "utf8")).rejects.toThrow();

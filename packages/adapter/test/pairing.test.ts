@@ -52,7 +52,7 @@ async function pair(steps: ClaimStep[], options: { expiresIn?: number } = {}) {
   claims = 0;
   script = steps;
   START.expires_in = options.expiresIn ?? 6;
-  const env = { PAA_HOME: await mkdtemp(join(tmpdir(), "paa-pair-")) };
+  const env = { OPENROLY_HOME: await mkdtemp(join(tmpdir(), "openroly-pair-")) };
   let clock = 0;
   let sleeps = 0;
   const prompts: unknown[] = [];
@@ -73,7 +73,7 @@ async function pair(steps: ClaimStep[], options: { expiresIn?: number } = {}) {
 
 describe("pairing engine", () => {
   test("PBI-0046 AC-X2: pair/start 自体が不達(fetch reject)でも throw せず、撃ち直しの後 failed を返す", async () => {
-    const env = { PAA_HOME: await mkdtemp(join(tmpdir(), "paa-pair-")) };
+    const env = { OPENROLY_HOME: await mkdtemp(join(tmpdir(), "openroly-pair-")) };
     const sleeps: number[] = [];
     const outcome = await pairRuntime({
       baseUrl: "http://127.0.0.1:9", // 閉じている port
@@ -97,7 +97,7 @@ describe("pairing engine", () => {
   });
 
   test("PBI-0046 AC-X2: pair/start の 4xx は撃ち直さず即 failed(throw しない)", async () => {
-    const env = { PAA_HOME: await mkdtemp(join(tmpdir(), "paa-pair-")) };
+    const env = { OPENROLY_HOME: await mkdtemp(join(tmpdir(), "openroly-pair-")) };
     const bad = Bun.serve({ port: 0, fetch: () => Response.json({ error: "invalid_kind" }, { status: 400 }) });
     try {
       const outcome = await pairRuntime({
@@ -232,7 +232,7 @@ describe("PBI-0046 再レビュー: AC-X2 攻撃", () => {
         },
       });
       try {
-        const env = { PAA_HOME: await mkdtemp(join(tmpdir(), "paa-pair-")) };
+        const env = { OPENROLY_HOME: await mkdtemp(join(tmpdir(), "openroly-pair-")) };
         const sleeps: number[] = [];
         const outcome = await pairRuntime({
           baseUrl: `http://localhost:${flaky.port}`,

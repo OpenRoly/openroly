@@ -1,10 +1,10 @@
 {
-  "name": "@paa/mcp",
+  "name": "@openroly/mcp",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "bin": {
-    "atn-mcp": "./src/server.ts"
+    "openroly-mcp": "./src/server.ts"
   },
   "exports": {
     ".": "./src/tools.ts",
@@ -13,9 +13,9 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
     "zod": "^3.24.0",
-    "@paa/adapter": "workspace:*",
-    "@paa/crypto-envelope": "workspace:*",
-    "@paa/core": "workspace:*",
-    "atn-mask": "workspace:*"
+    "@openroly/adapter": "workspace:*",
+    "@openroly/crypto-envelope": "workspace:*",
+    "@openroly/core": "workspace:*",
+    "openroly-mask": "workspace:*"
   }
 }

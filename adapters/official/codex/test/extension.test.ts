@@ -1,4 +1,4 @@
-import type { AdapterContext } from "@paa/adapter";
+import type { AdapterContext } from "@openroly/adapter";
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,7 +14,7 @@ async function makeCtx(opts: {
   configServers: string; // mcp_servers テーブルの TOML 断片(空文字なら未登録)
   removeExitCode: number;
 }): Promise<AdapterContext> {
-  const home = await mkdtemp(join(tmpdir(), "paa-codex-adapter-"));
+  const home = await mkdtemp(join(tmpdir(), "openroly-codex-adapter-"));
   const codexDir = join(home, ".codex");
   const binDir = join(home, "bin");
   await mkdir(codexDir, { recursive: true });

@@ -1,4 +1,4 @@
-import type { AdapterContext } from "@paa/adapter";
+import type { AdapterContext } from "@openroly/adapter";
 import { chmod, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +11,7 @@ import { claudeAdapter } from "../src/index.ts";
 async function makeCtx(): Promise<{ ctx: AdapterContext; home: string }> {
   const { mkdtemp } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");
-  const home = await mkdtemp(join(tmpdir(), "paa-claude-skill-"));
+  const home = await mkdtemp(join(tmpdir(), "openroly-claude-skill-"));
   return { ctx: { env: { HOME: home } }, home };
 }
 
@@ -79,7 +79,7 @@ describe("claudeAdapter.applyExtension — kind=skill(PBI-0008)", () => {
     });
     const staleDir = join(home, ".claude", "skills", "foo");
     await writeFile(join(staleDir, "stale.txt"), "old");
-    expect(await listDir(staleDir)).toEqual([".paa-managed", "SKILL.md", "stale.txt"]);
+    expect(await listDir(staleDir)).toEqual([".openroly-managed", "SKILL.md", "stale.txt"]);
 
     await claudeAdapter.applyExtension(ctx, {
       action: "update",
@@ -88,7 +88,7 @@ describe("claudeAdapter.applyExtension — kind=skill(PBI-0008)", () => {
       spec: { description: "D2", instructions: "v2", files: { "notes.md": "v2" } },
       env: {},
     });
-    expect(await listDir(staleDir)).toEqual([".paa-managed", "SKILL.md", "notes.md"]);
+    expect(await listDir(staleDir)).toEqual([".openroly-managed", "SKILL.md", "notes.md"]);
     const skillMd = await readFile(join(staleDir, "SKILL.md"), "utf8");
     expect(skillMd).toContain("v2");
   });
@@ -179,8 +179,8 @@ describe("claudeAdapter.applyExtension — kind=skill(PBI-0008)", () => {
   test("AC-10: CLAUDE_CONFIG_DIR 設定時は分離される(HOME 側は触らない)", async () => {
     const { mkdtemp } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
-    const home = await mkdtemp(join(tmpdir(), "paa-claude-skill-home-"));
-    const configDir = await mkdtemp(join(tmpdir(), "paa-claude-skill-config-"));
+    const home = await mkdtemp(join(tmpdir(), "openroly-claude-skill-home-"));
+    const configDir = await mkdtemp(join(tmpdir(), "openroly-claude-skill-config-"));
     const ctx: AdapterContext = { env: { HOME: home, CLAUDE_CONFIG_DIR: configDir } };
     await claudeAdapter.applyExtension(ctx, {
       action: "install",
@@ -253,12 +253,12 @@ describe("claudeAdapter.applyExtension — kind=skill(PBI-0008)", () => {
   });
 
   // 実 claude CLI(2.1.243)実測: ~/.claude/skills/ には SKILL.md だけの人間の私物 skill が
-  // このマシンだけで 48 件実在し、名前に予約は無い。PAA が管理していないディレクトリと名前が
-  // 衝突した場合に絶対に触らないことを、PAA_MANAGED_MARKER(`.paa-managed`)で検査する。
+  // このマシンだけで 48 件実在し、名前に予約は無い。OpenRoly が管理していないディレクトリと名前が
+  // 衝突した場合に絶対に触らないことを、OPENROLY_MANAGED_MARKER(`.openroly-managed`)で検査する。
 
-  test("AC-14: disable/uninstall は PAA 未管理の同名 skill ディレクトリを消さない", async () => {
+  test("AC-14: disable/uninstall は OpenRoly 未管理の同名 skill ディレクトリを消さない", async () => {
     const { ctx, home } = await makeCtxWithFakeClaude();
-    // 人間が別途作った私物 skill(PAA が install したことは一度も無い = marker 無し)
+    // 人間が別途作った私物 skill(OpenRoly が install したことは一度も無い = marker 無し)
     const humanDir = join(home, ".claude", "skills", "github");
     await mkdir(humanDir, { recursive: true });
     await writeFile(join(humanDir, "SKILL.md"), "human's own skill");
@@ -277,7 +277,7 @@ describe("claudeAdapter.applyExtension — kind=skill(PBI-0008)", () => {
     expect(await readFile(join(humanDir, "SKILL.md"), "utf8")).toBe("human's own skill");
   });
 
-  test("AC-15: install/update は PAA 未管理の同名 skill ディレクトリを上書きしない", async () => {
+  test("AC-15: install/update は OpenRoly 未管理の同名 skill ディレクトリを上書きしない", async () => {
     const { ctx, home } = await makeCtx();
     const humanDir = join(home, ".claude", "skills", "review");
     await mkdir(humanDir, { recursive: true });
@@ -302,7 +302,7 @@ describe("claudeAdapter.applyExtension — kind=skill(PBI-0008)", () => {
     const { ctx, home } = await makeCtx();
     // 生キー文字列の比較では "./SKILL.md" / "references/../SKILL.md" が素通りするため、
     // safeJoin 後の resolved path で判定していることをこの 4 変種で検査する
-    for (const key of ["SKILL.md", "./SKILL.md", "references/../SKILL.md", ".paa-managed"]) {
+    for (const key of ["SKILL.md", "./SKILL.md", "references/../SKILL.md", ".openroly-managed"]) {
       await expect(
         claudeAdapter.applyExtension(ctx, {
           action: "install",
@@ -315,7 +315,7 @@ describe("claudeAdapter.applyExtension — kind=skill(PBI-0008)", () => {
           },
           env: {},
         }),
-      ).rejects.toThrow(/SKILL\.md|paa-managed/);
+      ).rejects.toThrow(/SKILL\.md|openroly-managed/);
       // 検証は書き込み前に閉じている(1 byte も書かない)
       expect(await stat(join(home, ".claude", "skills", "foo")).catch(() => null)).toBeNull();
     }

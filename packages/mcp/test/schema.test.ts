@@ -29,10 +29,10 @@ describe("MCP reply tool の zod schema(PBI-0094)", () => {
     const parsed = z.object(replyInputShape).parse({
       thread_id: "thr_abc",
       text: "完了",
-      files: [{ name: "a.txt", ref: "paa-file:x" }],
+      files: [{ name: "a.txt", ref: "openroly-file:x" }],
     });
     expect(parsed.thread_id).toBe("thr_abc");
-    expect(parsed.files).toEqual([{ name: "a.txt", ref: "paa-file:x" }]);
+    expect(parsed.files).toEqual([{ name: "a.txt", ref: "openroly-file:x" }]);
   });
   test("thread_id は必須", () => {
     expect(z.object(replyInputShape).safeParse({ text: "完了" }).success).toBe(false);

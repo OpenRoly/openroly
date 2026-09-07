@@ -72,7 +72,7 @@ function unreachableDetail(baseUrl: string, e: unknown): string {
 
 /**
  * pair/start。claim と同じ一過性判定で最大 MAX_CONSECUTIVE_TRANSIENT 回まで撃ち直す —— 1 回目の
- * fetch が reject しただけで例外を上げると、`atn login` は NG 表示ではなく生の stack trace で
+ * fetch が reject しただけで例外を上げると、`openroly login` は NG 表示ではなく生の stack trace で
  * 落ちる(PBI-0046 レビュー AC-X2)。server 指定の interval はまだ無いので固定の指数 backoff
  */
 async function startPairing(

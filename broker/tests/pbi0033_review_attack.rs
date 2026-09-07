@@ -9,17 +9,35 @@
 //! `#[cfg(test)] mod tests` もこのバイナリ内で一緒にコンパイル・実行されるが、
 //! 既存 unit test の重複実行が害になる副作用は無い。
 
+#[path = "../src/env_compat.rs"]
+mod env_compat;
 #[path = "../src/registry.rs"]
 mod registry;
 #[path = "../src/discovery.rs"]
 mod discovery;
-#[path = "../src/paa_cli.rs"]
-mod paa_cli;
+#[path = "../src/openroly_cli.rs"]
+mod openroly_cli;
 #[path = "../src/launch.rs"]
 mod launch;
+#[path = "../src/egress.rs"]
+mod egress;
+#[path = "../src/sandbox.rs"]
+mod sandbox;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+
+/// PBI-0238: dedicated session は sandbox backend を要る。この test は判定より手前で止まるので
+/// backend 無し(`NoSandbox`)で足りる —— 万一すり抜けても `sandbox_unavailable` で spawn しない。
+static NO_SANDBOX: sandbox::NoSandbox = sandbox::NoSandbox { reason: String::new() };
+fn attack_isolation() -> launch::Isolation<'static> {
+    launch::Isolation {
+        sandbox: &NO_SANDBOX,
+        egress: egress::EgressConfig { allow: vec![], events: None, upstream_override: None },
+        folder: None,
+        user_home: std::env::temp_dir(),
+    }
+}
 
 /// 閉じ込め(PBI-0167)の判定に使う path。この test は判定より手前で止まることを見るので、
 /// claude config も gemini の admin policy dir も**存在しない** path で足りる。
@@ -33,7 +51,7 @@ fn attack_containment_env() -> launch::ContainmentEnv {
 }
 
 fn tmp(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("atn-broker-attack-{name}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("openroly-broker-attack-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     dir
 }
@@ -64,6 +82,7 @@ async fn x1_unregistered_actor_never_reaches_spawn_or_cwd_fixation() {
         "req-x1",
         None,
         &attack_containment_env(),
+        &attack_isolation(),
     );
     assert_eq!(
         result.err(),
@@ -96,6 +115,7 @@ async fn x1b_actor_cannot_steer_cwd_via_request_id_path_traversal() {
             evil_id,
             None,
             &attack_containment_env(),
+            &attack_isolation(),
         );
         assert_eq!(
             result.err(),

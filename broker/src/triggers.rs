@@ -48,7 +48,7 @@ pub const MAX_HOOK_DIRS: usize = 8;
 const HOOK_LINE_MAX: usize = 4096;
 const HOOK_CMD_MAX: usize = 64;
 const HOOK_PATH_MAX: usize = 1024;
-/// socket file 名。置き場は `broker_home()`(`PAA_BROKER_HOME` を尊重する) —— `~/.atn/broker.sock` を
+/// socket file 名。置き場は `broker_home()`(`OPENROLY_BROKER_HOME` を尊重する) —— `~/.openroly/broker.sock` を
 /// hard-code すると test / E2E がユーザー本物の socket を掴む(PBI-0034 と同じ罠)。
 pub const HOOK_SOCKET_NAME: &str = "broker.sock";
 
@@ -176,6 +176,42 @@ pub fn reconnect_wait(
         return (initial, initial);
     }
     (current, std::cmp::min(current * 2, max))
+}
+
+/// 接続の時計 3 つ(PBI-0277)。**knob は 1 つだけ** —— heartbeat を決めれば残り 2 つは比で決まる。
+///
+/// 既定は 15s / 40s / 20s で、PBI-0277 以前の定数と**同じ値**(15*8/3 = 40、15*4/3 = 20)。
+/// 検査から縮められる口を開けるのは、AC-2 / AC-X1 が「**40 秒黙ったら張り直す**」という
+/// 時間そのものを測る性質だから —— 本番の 40 秒を検査の deadline に流用すると 1 本 2 分かかり、
+/// 誰も回さなくなる(= 一度も測っていないから緑、になる)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Timings {
+    /// ping を打つ間隔(discovery の再実行も相乗り)
+    pub heartbeat: Duration,
+    /// この間 **application frame を 1 つも受けなければ** half-open とみなして張り直す
+    pub idle: Duration,
+    /// connect + TLS handshake の上限。**これが無いと黒穴に張り付いて無音で止まる**
+    pub connect: Duration,
+}
+
+/// 既定の heartbeat(PBI-0277 以前の `HEARTBEAT_INTERVAL`)。
+pub const DEFAULT_HEARTBEAT: Duration = Duration::from_secs(15);
+
+/// `OPENROLY_BROKER_HEARTBEAT_MS` の生値 → Timings(純関数)。
+///
+/// 読めない / 0 / 桁が異常な値は **既定に落とす**。ここを素通しにすると、環境変数の打ち間違い
+/// 1 つで「1ms ごとに再接続」= 自分で自分を DoS する経路が開く。
+pub fn timings_from_env(raw: Option<&str>) -> Timings {
+    let heartbeat = raw
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|ms| (100..=600_000).contains(ms))
+        .map(Duration::from_millis)
+        .unwrap_or(DEFAULT_HEARTBEAT);
+    Timings {
+        heartbeat,
+        idle: heartbeat * 8 / 3,
+        connect: heartbeat * 4 / 3,
+    }
 }
 
 /// heartbeat tick の判定(純関数)。
@@ -371,7 +407,7 @@ fn set_mode(p: &Path, mode: u32) {
 #[cfg(not(unix))]
 fn set_mode(_p: &Path, _mode: u32) {}
 
-/// zsh 用の shell hook(要件 §45.3 層 4)。`atn-broker --print-shell-hook` が stdout に出す。
+/// zsh 用の shell hook(要件 §45.3 層 4)。`openroly-broker --print-shell-hook` が stdout に出す。
 ///
 /// **broker は shell rc を書き換えない** —— 入れるかどうかは人が決める(不可逆・外向きの操作)。
 /// 送るのは **command 名と実体 path だけ**(§45.8)。引数・cwd・env・履歴本文は一切送らない。
@@ -382,7 +418,7 @@ fn set_mode(_p: &Path, _mode: u32) {}
 /// 正しく見えるのに既定の zsh では 1 バイトも送らない、という壊れ方をする —— 実測 2 件:
 /// `[A-Za-z0-9._-]##` は `EXTENDED_GLOB` が要る(既定 off、`emulate -L zsh` が更に既定へ戻す)、
 /// `$history[$HISTCMD]` は precmd 時点で「次の番号」を指し、`HISTSIZE=0` なら常に空。
-pub const SHELL_HOOK_ZSH: &str = r#"# All Together Now shell hook — paste into ~/.zshrc.
+pub const SHELL_HOOK_ZSH: &str = r#"# OpenRoly shell hook — paste into ~/.zshrc.
 # It sends only the name of the command you just ran and the path of its binary.
 # Arguments, cwd, and environment variables are never sent.
 #
@@ -390,19 +426,19 @@ pub const SHELL_HOOK_ZSH: &str = r#"# All Together Now shell hook — paste into
 # (no dependency on history): the $history[$HISTCMD] approach dies silently with
 # HISTSIZE=0, and HISTCMD at precmd time is "the next number", so it is off by one.
 # preexec does a single variable assignment and no I/O.
-typeset -g _atn_last_cmd=""
+typeset -g _openroly_last_cmd=""
 
-_atn_preexec() {
+_openroly_preexec() {
   emulate -L zsh
-  _atn_last_cmd=${${(z)1}[1]}
+  _openroly_last_cmd=${${(z)1}[1]}
 }
 
-_atn_notify() {
+_openroly_notify() {
   emulate -L zsh
-  local c=$_atn_last_cmd p
-  _atn_last_cmd=""
+  local c=$_openroly_last_cmd p
+  _openroly_last_cmd=""
   [[ -n $c ]] || return 0
-  local sock=${PAA_BROKER_HOME:-$HOME/.atn/broker}/broker.sock
+  local sock=${OPENROLY_BROKER_HOME:-$HOME/.openroly/broker}/broker.sock
   [[ -S $sock ]] || return 0
   if [[ $c == */* ]]; then p=${c:A}; c=${c:t}; else p=${commands[$c]}; fi
   [[ -n $p && -x $p ]] || return 0
@@ -417,8 +453,8 @@ _atn_notify() {
 }
 
 typeset -ga preexec_functions precmd_functions
-preexec_functions+=(_atn_preexec)
-precmd_functions+=(_atn_notify)
+preexec_functions+=(_openroly_preexec)
+precmd_functions+=(_openroly_notify)
 "#;
 
 #[cfg(test)]
@@ -429,9 +465,33 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use tokio::sync::mpsc::unbounded_channel;
 
+    /// PBI-0277: knob 1 つで 3 つの時計が決まる。**既定は改修前と同じ 15s / 40s / 20s**。
+    #[test]
+    fn timings_の既定は改修前と同じ値() {
+        let t = timings_from_env(None);
+        assert_eq!(t.heartbeat, Duration::from_secs(15));
+        assert_eq!(t.idle, Duration::from_secs(40));
+        assert_eq!(t.connect, Duration::from_secs(20));
+    }
+
+    /// 打ち間違い(0 / 負 / 文字 / 桁外れ)は既定へ落とす —— 素通しにすると
+    /// 「1ms ごとに再接続」= 自分で自分を DoS する経路が開く。
+    #[test]
+    fn timings_の壊れた値は既定へ落ちる() {
+        for raw in ["", "0", "-1", "abc", "99", "600001", "1e3", " "] {
+            let t = timings_from_env(Some(raw));
+            assert_eq!(t.heartbeat, DEFAULT_HEARTBEAT, "raw={raw:?} は既定に落ちるべき");
+        }
+        // 端(100ms / 600s)は通す。比も保つ
+        assert_eq!(timings_from_env(Some("100")).heartbeat, Duration::from_millis(100));
+        let t100 = timings_from_env(Some("100"));
+        assert!(t100.idle > t100.heartbeat * 2 && t100.idle < t100.heartbeat * 3);
+        assert_eq!(timings_from_env(Some(" 600000 ")).heartbeat, Duration::from_secs(600));
+    }
+
     fn tmp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir()
-            .join(format!("atn-broker-trig-{name}-{}", std::process::id()));
+            .join(format!("openroly-broker-trig-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -458,6 +518,7 @@ mod tests {
             extra_dirs: vec![a.clone(), base.join("missing"), a.clone()],
             app_dirs: vec![c.clone()],
             path_dirs: path.iter().cloned().chain([c.clone()]).collect(),
+            home: None,
         };
         let got = watch_dirs(&env, MAX_WATCH_DIRS);
         let want: Vec<PathBuf> =
@@ -484,7 +545,7 @@ mod tests {
     fn fs_watch_is_optional() {
         let (tx, _rx) = unbounded_channel();
         assert!(spawn_fs_watch(&[], tx.clone()).is_none());
-        assert!(spawn_fs_watch(&[PathBuf::from("/nonexistent/paa-watch")], tx).is_none());
+        assert!(spawn_fs_watch(&[PathBuf::from("/nonexistent/openroly-watch")], tx).is_none());
     }
 
     // AC-3: 最小間隔 3s。落ちた分は heartbeat が拾う前提

@@ -3,9 +3,10 @@ import {
   type DesiredExtension,
   type MaterializationState,
   type PlanAction,
-} from "@paa/core";
+} from "@openroly/core";
 import { apiCall } from "./api.ts";
 import type { AdapterContext, RuntimeAdapter } from "./contract.ts";
+import { loadSecrets } from "./credentials.ts";
 
 // Reconcile engine(PBI-0005)。Common Installation Engine(install.ts)と同じ場所に置く:
 // desired を API から取得 → listExtensions で actual → planReconciliation → applyExtension
@@ -94,7 +95,9 @@ async function reportStatus(
 
 /**
  * credential_ref を解決する。scheme は 2 種:
- * - env:NAME → ローカル解決(process.env 相当を engine 側から受け取る)
+ * - env:NAME(`,` 区切りで複数可)→ ローカル解決。**process.env → `~/.openroly/secrets.json`** の順で
+ *   引く(PBI-0212)。吸い上げ(`openroly share`)が置いた値はこの file にしか無く、Account 側は
+ *   名前しか持たない —— 秘密は Account を一度も通らない(§40)
  * - connection:<provider> → Account 側(server)で解決(PBI-0009。§40「解決は Account 側で行う」)。
  *   POST /v1/connections/:provider/resolve を叩き、返る env をそのまま注入する。
  *   secret は runtime のローカル credential store(credentials.ts)へは一切書かない —
@@ -106,12 +109,27 @@ async function resolveCredentialRef(
   options: ReconcileOptions,
 ): Promise<{ ok: true; env: Record<string, string> } | { ok: false; detail: string }> {
   if (ref == null) return { ok: true, env: {} };
-  const envMatch = /^env:(.+)$/.exec(ref);
-  if (envMatch) {
-    const name = envMatch[1]!;
-    const value = env[name];
-    if (!value) return { ok: false, detail: `cannot resolve ${ref}` };
-    return { ok: true, env: { [name]: value } };
+  if (ref.startsWith("env:")) {
+    const names = ref.slice("env:".length).split(",").filter(Boolean);
+    if (names.length === 0) return { ok: false, detail: `cannot resolve ${ref}` };
+    let stored: Record<string, string>;
+    try {
+      stored = await loadSecrets(env);
+    } catch (e) {
+      // 壊れた secrets.json を空として扱わない —— 「解決できた」と誤認させず理由を名指しする
+      return { ok: false, detail: `cannot read the local secret store: ${(e as Error).message}` };
+    }
+    const out: Record<string, string> = {};
+    const missing: string[] = [];
+    for (const name of names) {
+      const value = env[name] || stored[name];
+      if (!value) missing.push(name);
+      else out[name] = value;
+    }
+    if (missing.length > 0) {
+      return { ok: false, detail: `cannot resolve env:${missing.join(",")} (not in the environment or ~/.openroly/secrets.json)` };
+    }
+    return { ok: true, env: out };
   }
   const connMatch = /^connection:(.+)$/.exec(ref);
   if (connMatch) {

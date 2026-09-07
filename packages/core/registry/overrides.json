@@ -1,0 +1,771 @@
+{
+  "note": "catalog-build の入力その 2(PBI-0210)。上流一覧(upstream/agent-catalog/*.csv)は名前と検知 dir しか持たないので、`native`(config をどこにどう書くか)は **人が実機か公式 doc で確かめた物だけ** をここに書く。推測で書かない —— 分からない項目は省く(= unsupported / fail-closed)。`verified` は cli:<ver>(実 CLI の argv を叩いた) / file:<path>(実在する config を読んで key と形を確かめた) / docs(公式 doc のみ。sources に URL)。`aliases` は上流 CSV 側の id(その行の検知 dir と skills dir をこの entry が吸い上げる)。 層 B(desktop app / IDE)は MCP file を実測済みでも `adapter: null` のまま = 検知だけ —— `adapter ≠ null` は broker の launch allowlist と Manual routing の選択肢も同時に広げるので、`openroly wake` で起こせない物を generic に昇格させると「選べるのに起きない」を作る(PBI-0288 で分ける)。",
+  "entries": [
+    {
+      "id": "claude",
+      "display_name": "Claude Code",
+      "kind": "cli",
+      "aliases": [
+        "claude-code"
+      ],
+      "detect": {
+        "binaries": [
+          "claude"
+        ],
+        "packages": {
+          "npm": [
+            "@anthropic-ai/claude-code"
+          ],
+          "brew": []
+        },
+        "apps": [],
+        "services": []
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "launch": {
+        "new": [],
+        "existing": [
+          "--continue"
+        ]
+      },
+      "capabilities": [
+        "coding",
+        "shell",
+        "files"
+      ],
+      "adapter": "official/claude",
+      "sources": [
+        "https://code.claude.com/docs/en/skills"
+      ],
+      "verified": "cli:2.0"
+    },
+    {
+      "id": "codex",
+      "display_name": "Codex",
+      "kind": "cli",
+      "aliases": [
+        "codex"
+      ],
+      "detect": {
+        "binaries": [
+          "codex"
+        ],
+        "packages": {
+          "npm": [
+            "@openai/codex"
+          ],
+          "brew": [
+            "codex"
+          ]
+        },
+        "apps": [],
+        "services": []
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "launch": {
+        "new": [],
+        "existing": [
+          "resume",
+          "--last"
+        ]
+      },
+      "capabilities": [
+        "coding",
+        "shell",
+        "files"
+      ],
+      "adapter": "official/codex",
+      "sources": [
+        "https://developers.openai.com/codex/skills/"
+      ],
+      "verified": "cli:0.30"
+    },
+    {
+      "id": "gemini",
+      "display_name": "Gemini CLI",
+      "kind": "cli",
+      "aliases": [
+        "gemini-cli"
+      ],
+      "detect": {
+        "binaries": [
+          "gemini"
+        ],
+        "packages": {
+          "npm": [
+            "@google/gemini-cli"
+          ],
+          "brew": []
+        },
+        "apps": [],
+        "services": []
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "launch": {
+        "new": [],
+        "existing": [
+          "--resume",
+          "latest"
+        ]
+      },
+      "capabilities": [
+        "coding",
+        "shell",
+        "files"
+      ],
+      "adapter": "official/gemini",
+      "sources": [
+        "https://github.com/google-gemini/gemini-cli"
+      ],
+      "verified": "cli:0.4"
+    },
+    {
+      "id": "ollama",
+      "display_name": "Ollama",
+      "kind": "local_model_server",
+      "detect": {
+        "binaries": [
+          "ollama"
+        ],
+        "packages": {
+          "npm": [],
+          "brew": [
+            "ollama"
+          ]
+        },
+        "apps": [
+          "Ollama.app"
+        ],
+        "services": [
+          {
+            "port": 11434,
+            "path": "/api/tags"
+          }
+        ]
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "models": {
+        "source": "service",
+        "path": "/api/tags"
+      },
+      "capabilities": [
+        "local_model"
+      ],
+      "adapter": null,
+      "sources": [
+        "https://ollama.com/"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "lmstudio",
+      "display_name": "LM Studio",
+      "kind": "local_model_server",
+      "detect": {
+        "binaries": [
+          "lms"
+        ],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [
+          "LM Studio.app"
+        ],
+        "services": [
+          {
+            "port": 1234,
+            "path": "/v1/models"
+          }
+        ]
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "models": {
+        "source": "service",
+        "path": "/v1/models"
+      },
+      "capabilities": [
+        "local_model"
+      ],
+      "adapter": null,
+      "sources": [
+        "https://lmstudio.ai/docs/app/api/endpoints/openai"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "jan",
+      "display_name": "Jan",
+      "kind": "local_model_server",
+      "detect": {
+        "binaries": [],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [
+          "Jan.app"
+        ],
+        "services": [
+          {
+            "port": 1337,
+            "path": "/v1/models"
+          }
+        ]
+      },
+      "models": {
+        "source": "service",
+        "path": "/v1/models"
+      },
+      "capabilities": [
+        "local_model"
+      ],
+      "adapter": null,
+      "sources": [
+        "https://jan.ai/docs/local-api"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "aider",
+      "display_name": "Aider",
+      "kind": "cli",
+      "detect": {
+        "binaries": [
+          "aider"
+        ],
+        "packages": {
+          "npm": [],
+          "brew": [
+            "aider"
+          ]
+        },
+        "apps": [],
+        "services": []
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "launch": {
+        "new": [],
+        "existing": []
+      },
+      "capabilities": [
+        "coding",
+        "files"
+      ],
+      "adapter": null,
+      "sources": [
+        "https://aider.chat/docs/"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "openclaw",
+      "display_name": "OpenClaw",
+      "kind": "cli",
+      "aliases": [
+        "openclaw"
+      ],
+      "detect": {
+        "binaries": [
+          "openclaw",
+          "moltbot",
+          "clawdbot"
+        ],
+        "apps": [],
+        "services": []
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "capabilities": [
+        "coding",
+        "shell",
+        "files"
+      ],
+      "adapter": "generic/native",
+      "native": {
+        "home": {
+          "default": "~/.openclaw"
+        },
+        "bin": "openclaw",
+        "version_args": [
+          "--version"
+        ],
+        "install": "npm i -g openclaw",
+        "mcp": {
+          "strategy": "cli",
+          "bin": "openclaw",
+          "add": [
+            "mcp",
+            "add",
+            "${name}",
+            "--command",
+            "${command}",
+            "--arg...",
+            "${args}",
+            "--env...",
+            "${env}",
+            "--no-probe"
+          ],
+          "remove": [
+            "mcp",
+            "unset",
+            "${name}"
+          ],
+          "read": {
+            "path": "~/.openclaw/openclaw.json",
+            "format": "json5",
+            "key": "mcp.servers",
+            "shape": "map"
+          }
+        },
+        "skills": {
+          "dir": "~/.agents/skills"
+        },
+        "instructions": {
+          "file": "~/.openclaw/workspace/AGENTS.md"
+        }
+      },
+      "sources": [
+        "https://github.com/openclaw/openclaw",
+        "https://docs.openclaw.ai/tools/skills"
+      ],
+      "verified": "cli:2026.7.1-2"
+    },
+    {
+      "id": "hermes",
+      "display_name": "Hermes Agent",
+      "kind": "cli",
+      "aliases": [
+        "hermes-agent"
+      ],
+      "detect": {
+        "binaries": [
+          "hermes"
+        ],
+        "apps": [],
+        "services": []
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "launch": {
+        "new": [],
+        "existing": [
+          "chat",
+          "--continue"
+        ]
+      },
+      "capabilities": [
+        "coding",
+        "shell",
+        "files"
+      ],
+      "adapter": "generic/native",
+      "native": {
+        "home": {
+          "env": "HERMES_HOME",
+          "default": "~/.hermes"
+        },
+        "bin": "hermes",
+        "version_args": [
+          "--version"
+        ],
+        "mcp": {
+          "strategy": "cli",
+          "bin": "hermes",
+          "add": [
+            "mcp",
+            "add",
+            "${name}",
+            "--command",
+            "${command}",
+            "--env",
+            "${env...}",
+            "--args",
+            "${args...}"
+          ],
+          "remove": [
+            "mcp",
+            "remove",
+            "${name}"
+          ],
+          "read": null
+        }
+      },
+      "sources": [
+        "https://github.com/NousResearch/hermes-agent",
+        "https://hermes-agent.nousresearch.com/docs/user-guide/features/skills"
+      ],
+      "verified": "cli:0.20.0"
+    },
+    {
+      "id": "opencode",
+      "display_name": "OpenCode",
+      "kind": "cli",
+      "aliases": [
+        "opencode"
+      ],
+      "detect": {
+        "binaries": [
+          "opencode"
+        ],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [],
+        "services": []
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "launch": {
+        "new": [],
+        "existing": [
+          "--continue"
+        ]
+      },
+      "capabilities": [
+        "coding",
+        "shell",
+        "files"
+      ],
+      "adapter": "generic/native",
+      "native": {
+        "home": {
+          "default": "~/.config/opencode"
+        },
+        "bin": "opencode",
+        "version_args": [
+          "--version"
+        ],
+        "install": "curl -fsSL https://opencode.ai/install | bash",
+        "mcp": {
+          "strategy": "file",
+          "path": "~/.config/opencode/opencode.json",
+          "format": "jsonc",
+          "key": "mcp",
+          "shape": "map",
+          "entry": {
+            "type": "local",
+            "command": [
+              "${command}",
+              "${args...}"
+            ],
+            "environment": "${env}",
+            "enabled": true
+          }
+        },
+        "instructions": {
+          "file": "~/.config/opencode/AGENTS.md"
+        }
+      },
+      "sources": [
+        "https://github.com/sst/opencode",
+        "https://opencode.ai/docs/skills/"
+      ],
+      "verified": "cli:1.18.10"
+    },
+    {
+      "id": "cursor-agent",
+      "display_name": "Cursor",
+      "kind": "cli",
+      "aliases": [
+        "cursor"
+      ],
+      "detect": {
+        "binaries": [
+          "cursor-agent"
+        ],
+        "packages": {
+          "npm": [],
+          "brew": []
+        },
+        "apps": [
+          "Cursor.app"
+        ],
+        "services": []
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "capabilities": [
+        "coding",
+        "shell",
+        "files"
+      ],
+      "adapter": "generic/native",
+      "native": {
+        "home": {
+          "default": "~/.cursor"
+        },
+        "bin": "cursor-agent",
+        "version_args": [
+          "--version"
+        ],
+        "mcp": {
+          "strategy": "file",
+          "path": "~/.cursor/mcp.json",
+          "format": "json",
+          "key": "mcpServers",
+          "shape": "map",
+          "entry": {
+            "command": "${command}",
+            "args": "${args}",
+            "env": "${env}"
+          }
+        }
+      },
+      "sources": [
+        "https://cursor.com/docs/context/skills",
+        "https://cursor.com"
+      ],
+      "verified": "cli:2026.08.11"
+    },
+    {
+      "id": "kiro",
+      "display_name": "Kiro",
+      "kind": "cli",
+      "aliases": [
+        "kiro-cli"
+      ],
+      "detect": {
+        "binaries": [
+          "kiro-cli"
+        ],
+        "apps": [
+          "Kiro.app"
+        ],
+        "services": []
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "capabilities": [
+        "coding",
+        "shell",
+        "files"
+      ],
+      "adapter": "generic/native",
+      "native": {
+        "home": {
+          "env": "KIRO_HOME",
+          "default": "~/.kiro"
+        },
+        "bin": "kiro-cli",
+        "version_args": [
+          "--version"
+        ],
+        "mcp": {
+          "strategy": "cli",
+          "bin": "kiro-cli",
+          "add": [
+            "mcp",
+            "add",
+            "--name",
+            "${name}",
+            "--scope",
+            "global",
+            "--command",
+            "${command}",
+            "--args...",
+            "${args}",
+            "--env",
+            "${env...}",
+            "--force"
+          ],
+          "remove": [
+            "mcp",
+            "remove",
+            "--name",
+            "${name}",
+            "--scope",
+            "global"
+          ],
+          "read": {
+            "path": "~/.kiro/settings/mcp.json",
+            "format": "json",
+            "key": "mcpServers",
+            "shape": "map"
+          }
+        },
+        "instructions": {
+          "dir": "~/.kiro/steering",
+          "filename": "openroly-${name}.md"
+        }
+      },
+      "sources": [
+        "https://github.com/kirodotdev/Kiro",
+        "https://kiro.dev/docs/skills/"
+      ],
+      "verified": "cli:2.21.1"
+    },
+    {
+      "id": "claude-desktop",
+      "display_name": "Claude Desktop",
+      "kind": "app",
+      "detect": {
+        "binaries": [],
+        "apps": [
+          "Claude.app"
+        ],
+        "services": []
+      },
+      "capabilities": [
+        "chat"
+      ],
+      "adapter": null,
+      "sources": [
+        "https://claude.ai/download",
+        "https://modelcontextprotocol.io/quickstart/user"
+      ],
+      "verified": "file:~/Library/Application Support/Claude/claude_desktop_config.json"
+    },
+    {
+      "id": "vscode",
+      "display_name": "VS Code",
+      "kind": "app",
+      "aliases": [],
+      "detect": {
+        "binaries": [
+          "code"
+        ],
+        "apps": [
+          "Visual Studio Code.app"
+        ],
+        "services": []
+      },
+      "capabilities": [
+        "coding",
+        "files"
+      ],
+      "adapter": null,
+      "sources": [
+        "https://code.visualstudio.com/docs/copilot/customization/agent-skills",
+        "https://github.com/microsoft/vscode"
+      ],
+      "verified": "file:~/Library/Application Support/Code/User/mcp.json"
+    },
+    {
+      "id": "antigravity",
+      "display_name": "Antigravity",
+      "kind": "app",
+      "aliases": [
+        "antigravity"
+      ],
+      "detect": {
+        "binaries": [
+          "agy"
+        ],
+        "apps": [
+          "Antigravity.app"
+        ],
+        "services": []
+      },
+      "capabilities": [
+        "coding",
+        "files"
+      ],
+      "adapter": null,
+      "sources": [
+        "https://antigravity.google/"
+      ],
+      "verified": "file:~/.gemini/config/mcp_config.json"
+    },
+    {
+      "id": "kimi",
+      "display_name": "Kimi Code CLI",
+      "kind": "cli",
+      "aliases": [
+        "kimi-code-cli"
+      ],
+      "detect": {
+        "binaries": [
+          "kimi"
+        ],
+        "apps": [],
+        "services": []
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "capabilities": [
+        "coding",
+        "shell",
+        "files"
+      ],
+      "adapter": null,
+      "sources": [
+        "https://platform.kimi.ai/docs/models"
+      ],
+      "verified": "cli:0.36.1"
+    },
+    {
+      "id": "mimo",
+      "display_name": "MiMo Code",
+      "kind": "cli",
+      "detect": {
+        "binaries": [
+          "mimo"
+        ],
+        "dirs": [
+          "~/.mimocode"
+        ],
+        "apps": [],
+        "services": []
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "capabilities": [
+        "coding",
+        "shell",
+        "files"
+      ],
+      "adapter": null,
+      "sources": [
+        "https://openrouter.ai/apps/category/coding/cli-agent"
+      ],
+      "verified": "cli:0.1.13"
+    }
+  ]
+}

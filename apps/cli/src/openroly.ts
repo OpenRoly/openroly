@@ -1,0 +1,1637 @@
+#!/usr/bin/env bun
+import {
+  accountBaseUrl,
+  apiCall,
+  binDir,
+  DEFAULT_BASE_URL,
+  doctorRuntime,
+  ensureBinary,
+  fetchBrief,
+  formatBrief,
+  formatStatusline,
+  getCredential,
+  installRuntime,
+  loadCredentials,
+  MCP_SERVER_ENTRY,
+  MCP_SERVER_NAME,
+  openrolyHome,
+  pairRuntime,
+  reconcile,
+  RUNTIME_CLI_NOT_FOUND,
+  shareExtensions,
+  saveAccountUrl,
+  removeCredential,
+  saveCredential,
+  uninstallRuntime,
+  type AdapterContext,
+  type Finding,
+  type PairPrompt,
+  type RuntimeAdapter,
+  type RuntimeCredential,
+} from "@openroly/adapter";
+import {
+  adoptLegacyEnv,
+  CREDENTIAL_CHECK_FAILED,
+  CREDENTIAL_OWNED_BY_HUMAN,
+  legacyDir,
+  LEGACY_STATE_DIR,
+  STATE_DIR,
+} from "@openroly/core";
+import { existsSync } from "node:fs";
+import { link, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { homedir, hostname } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { AGENT_PROVIDERS, isAgentProvider, runAgent } from "./agent.ts";
+import { followSession, listSessions, rawPeek, renderList, renderSession, SESSION_ID_RE } from "./peek.ts";
+import { ADAPTERS, findAdapter, SUPPORTED_IDS } from "./registry.ts";
+
+// openroly —— Personal Agent Account の入口(配布戦略 §7.2 Common Installation Engine の CLI 面)。
+// plugin-first UX でもここを通るので、pairing / install / 診断のロジックは 1 系統。
+
+const USAGE = `openroly —— OpenRoly
+
+Usage: openroly <command>
+       (from a repo checkout: bun run openroly <command>)
+
+  login                  Start here. Connects this machine to your account and starts the broker
+                         (on macOS it registers a launchd agent; falls back to a detached process)
+  broker                 Run the broker in the foreground (what login / launchd invoke)
+  broker install         Register the broker with launchd (auto-starts after reboot; macOS only)
+  broker uninstall       Remove the launchd registration
+  broker status          Show plist / launchd job / process state
+  install <runtime>     Pair a runtime and register the MCP server in it
+  adopt                 Materialize an issued credential (called by the broker; non-interactive)
+  uninstall <runtime>   Remove the MCP registration and the local credential
+  pair <runtime>        Pair only
+  status                Who is attached and what is unread (counts only, never bodies)
+  statusline [--refresh] One line for a status bar (--refresh re-fetches and writes the cache)
+  doctor [runtime]      Diagnose the connection
+  runtimes              Supported runtimes and their connection state
+  extensions            Desired extensions + per-runtime status
+  sync [runtime]        Run Extension Sync (all attached runtimes when omitted)
+  share [runtime]       Offer what you already installed in your AIs (MCP servers / skills) to the
+                        account as proposals. Approve them on the web and every AI gets them.
+                        Secrets stay on this machine: the account only sees the env var names
+  watch-dirs            Print the files and dirs whose changes mean "an AI here changed"
+                        (one path per line; the broker watches these and runs share for you)
+  admin recover <handle> [--keep-sessions]
+                        Operator only: issue one session for an account that lost its token
+                        (needs $OPENROLY_ADMIN_TOKEN — the same value as the server's env).
+                        Every other session of that account is signed out unless you pass
+                        --keep-sessions
+
+  agent <provider> --thread <id>
+                        Run an external API provider as this machine's runtime for one turn and
+                        hand the draft reply to the thread (${AGENT_PROVIDERS.join(" / ")})
+  peek [id] [--list] [--follow] [--json]
+                        Show what the model actually received in a dedicated session (instruction
+                        and tool calls, masked exactly as the model saw them; values never appear)
+
+  --url <base-url>      Account API (default: $OPENROLY_URL, then the URL 'openroly login' connected to,
+                        then ${DEFAULT_BASE_URL})
+  --repair              Recreate the credential on install
+  --dry-run             On sync / share, print the plan without writing anything
+  --auto                On share, offer only what changed since the last share
+  --no-open             Don't open the approval URL automatically (login / install / pair)
+  --foreground          Run the broker in the foreground on login instead of detached
+  --thread <id>         Thread the agent replies to
+  --model <name>        Model the agent uses (default per provider; $OPENROLY_AGENT_MODEL also works)
+  --wait <sec>          Max seconds the agent waits for connection approval (default 300; 0 = don't wait)
+
+Supported runtimes: ${SUPPORTED_IDS.join(", ")}`;
+
+const ctx: AdapterContext = { env: process.env };
+
+/**
+ * 明示された Account API の URL。指定が無ければ undefined を返す ——
+ * ここで既定値に潰すと install 側が「既存 credential と違う server を指された」と誤認し、
+ * リモートに pair 済みの人の credential を localhost へ張り替えてしまう
+ */
+function baseUrlOf(args: string[]): string | undefined {
+  const i = args.indexOf("--url");
+  if (i >= 0 && args[i + 1]) return args[i + 1]!;
+  return process.env.OPENROLY_URL;
+}
+
+/**
+ * 接続コードを **端末の画面に出す**(PBI-0237 AC-2)。
+ *
+ * 以前は `verification_uri_complete`(= `?user_code=` 付きの URL)を 1 本印刷し、browser も
+ * その URL で開いていた —— **その 1 本を人に送るだけで、受け取った側が 1 押しで承認できた**
+ * (device code flow の remote phishing。RFC 8628 §5.4)。今 URL が指すのは
+ * 打つ欄だけの `/connect` で、code は **この行にしか無い**。
+ */
+function showPrompt(prompt: PairPrompt): void {
+  console.log(`
+  1. Open in a browser: ${prompt.verification_uri}
+  2. Type this code:    ${prompt.user_code}
+  3. Press "Approve" on the account side (within ${Math.round(prompt.expires_in / 60)} minutes)
+
+  Waiting for approval...`);
+  maybeOpenBrowser(prompt.verification_uri);
+}
+
+/**
+ * 承認 URL を OS のブラウザで自動的に開く(login/install/pair 共通)。
+ * 抑止条件(いずれか true なら開かない): `--no-open` / `OPENROLY_NO_BROWSER=1` / 非 TTY / CI。
+ * open コマンド自体の起動失敗は握り潰す —— URL は既に表示済みで、pairing の polling は継続する。
+ */
+function maybeOpenBrowser(url: string): void {
+  if (args.includes("--no-open")) return;
+  if (process.env.OPENROLY_NO_BROWSER === "1") return;
+  if (process.env.CI) return;
+  if (!process.stdout.isTTY) return;
+  const cmd =
+    process.platform === "darwin"
+      ? ["open", url]
+      : process.platform === "win32"
+        ? ["cmd", "/c", "start", "", url]
+        : ["xdg-open", url];
+  try {
+    Bun.spawn(cmd, { stdin: "ignore", stdout: "ignore", stderr: "ignore" }).unref();
+  } catch {
+    // open できなくても URL は表示済み
+  }
+}
+
+/**
+ * broker の常駐先(pid file / log)。起動経路は launchd(darwin・PBI-0048)と detached spawn(fallback)の
+ * 2 つだが、二重起動判定はどちらも同じ pid file(`claimBrokerPidFile` / `runningBrokerPid`)で行う
+ */
+function brokerHome(): string {
+  // 旧 `~/.atn/broker` だけが在る端末ではそれを引き継ぐ(PBI-0344 AC-3)
+  return (
+    process.env.OPENROLY_BROKER_HOME ??
+    legacyDir(join(homedir(), STATE_DIR, "broker"), join(homedir(), LEGACY_STATE_DIR, "broker"))
+  );
+}
+const brokerPidPath = () => join(brokerHome(), "broker.pid");
+const brokerLogPath = () => join(brokerHome(), "broker.log");
+
+const psBin = () => Bun.which("ps") ?? "/bin/ps";
+/**
+ * 1 回の `ps` の上限。**返らない** ps(hang)も exit≠0 と同じ「分からない」に倒す —— これが無いと claim は最初の
+ * ps で永久に止まり、`CLAIM_DEADLINE_MS` の「永久に待たない」が ps が答える時にしか効かない(PBI-0270 レビュー
+ * 攻撃11)。既定 120s は、混雑下で ps の exec が 20s+ 遅れた実測(PBI-0218 レビュー・load 350)を「壊れた」に
+ * 数えない余裕 —— 短くすると全 suite の負荷で全員が undetermined に倒れる。test は `OPENROLY_PS_TIMEOUT_MS` で縮める
+ */
+const PS_TIMEOUT_MS = Number(process.env.OPENROLY_PS_TIMEOUT_MS) || 120_000;
+
+/**
+ * `ps -o <column>= -p <pid>` の 1 行。**3 値** —— 文字列 = その pid は生きている / null = 居ない(ps が exit 1 で空)/
+ * undefined = **分からない**(ps を spawn できない・signal で死んだ・usage error・上限まで返らない。混雑で EAGAIN /
+ * OOM の時)。「分からない」を「居ない」に潰すと、混雑の最中に生きた broker の pid file を消して 2 本目を起こす /
+ * 生きた持ち主の lock を回収して 2 本が takeOver に入る(PBI-0270)。**取る根拠は「死んだと確かめた」だけ**
+ * (譲る根拠が「生きたと確かめた」だけなのと対。PBI-0218)
+ */
+async function psColumn(pid: number, column: "lstart" | "comm"): Promise<string | null | undefined> {
+  try {
+    const proc = Bun.spawn([psBin(), "-o", `${column}=`, "-p", String(pid)], {
+      stdout: "pipe",
+      stderr: "ignore",
+      timeout: PS_TIMEOUT_MS,
+    });
+    const out = (await new Response(proc.stdout).text()).trim().replace(/\s+/g, " ");
+    const code = await proc.exited;
+    if (code === 0 && out) return out;
+    if (code === 1 && !out) return null; // ps は「該当 pid 無し」を exit 1 で言う
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * プロセスの起動時刻(`ps -o lstart=`。秒精度)。プロセスが無ければ null。
+ * pid だけでは「その番号のプロセスが生きているか」しか分からず、再起動後に前回 boot の pid が
+ * 無関係なプロセス(pid 1 の launchd 等)に当たると「broker 生存」と誤判定して二度と起動できなくなる
+ * (PBI-0048 レビュー AC-X3)。pid file には pid と起動時刻を対で書き、両方一致した時だけ生存とみなす
+ */
+const processStartTime = (pid: number) => psColumn(pid, "lstart");
+
+/**
+ * `<pid> <lstart>` の行が今も同じプロセスを指しているか。起動時刻まで見るのは pid 再利用対策
+ * (`runningBrokerPid` と同じ理由)。lstart が無い行は pid の生死だけで判定する。
+ * **undefined = 分からない**(`ps` が走らない)。呼び側は true の時だけ「生きている」、false の時だけ
+ * 「死んでいる」と扱い、undefined では回収も deadline の延長もしない(PBI-0270)
+ */
+async function pidRecordAlive(record: string): Promise<boolean | undefined> {
+  const m = /^(\d+)(?:\s+(.+))?$/.exec(record.trim());
+  if (!m) return false;
+  const start = await processStartTime(Number(m[1]));
+  if (start === undefined) return undefined;
+  if (start === null) return false;
+  return m[2] ? start === m[2].replace(/\s+/g, " ") : true;
+}
+
+/** pid file の 1 行。`<pid> <lstart>`。起動時刻が取れない(既に死んでいる)時は pid だけ */
+async function pidRecord(pid: number): Promise<string> {
+  const start = await processStartTime(pid);
+  return start ? `${pid} ${start}` : String(pid);
+}
+
+/**
+ * pid file が「今生きている broker」を指していればその pid。
+ * - `<pid> <lstart>`(現行形式): その pid の現在の起動時刻が一致する時だけ生存
+ * - `<pid>` のみ(旧形式 / 起動時刻が取れなかった行): 実行ファイル名が `openroly-broker` の時だけ生存
+ *   (更新前に起動した本物の broker を殺さず、再利用された無関係な pid は拾わない)
+ * - `"unknown"`: pid file は在るが `ps` が走らず生死を確かめられない(PBI-0270)。**取る側**(`takeOver`・
+ *   `broker status`)だけがこれを見る —— 譲る側は `runningBrokerPid`(生きた pid だけ)で足りる
+ */
+async function probeBroker(): Promise<number | "unknown" | undefined> {
+  let raw: string;
+  try {
+    raw = (await readFile(brokerPidPath(), "utf8")).trim();
+  } catch {
+    return undefined;
+  }
+  const m = /^(\d+)(?:\s+(.+))?$/.exec(raw);
+  if (!m) return undefined;
+  const pid = Number(m[1]);
+  const start = await processStartTime(pid);
+  if (start === undefined) return "unknown";
+  if (start === null) return undefined;
+  if (m[2]) return start === m[2].replace(/\s+/g, " ") ? pid : undefined;
+  const comm = await psColumn(pid, "comm");
+  if (comm === undefined) return "unknown";
+  return comm !== null && /(^|\/)openroly-broker$/.test(comm) ? pid : undefined;
+}
+/** 生きていると**確かめられた** broker の pid だけ(分からない時は undefined = 譲らない。PBI-0218 / PBI-0270) */
+async function runningBrokerPid(): Promise<number | undefined> {
+  const live = await probeBroker();
+  return typeof live === "number" ? live : undefined;
+}
+
+/** repo checkout の root(broker binary の既定探索先の基点。apps/cli/src/ から 3 階層上) */
+const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
+
+/**
+ * broker binary の解決。`OPENROLY_BROKER_BIN` は明示指定として fallback しない
+ * (`OPENROLY_CLI` と同じ設計)。未指定なら release → debug → 公開 Release からの取得先(PBI-0154) →
+ * PATH の `openroly-broker` の順。**見つからなければ null** —— 呼び出し側は spawn より前
+ * (launchd 登録より前)に build 案内で止まる。launchd に登録してから binary 不在に気付くと、
+ * 案内は launchd が起こす `openroly broker` の log にしか出ず、`KeepAlive` が 10 秒毎に再起動し続ける
+ * (PBI-0048 レビュー AC-X2)
+ */
+function resolveBrokerBin(): string | null {
+  if (process.env.OPENROLY_BROKER_BIN) {
+    return existsSync(process.env.OPENROLY_BROKER_BIN) ? process.env.OPENROLY_BROKER_BIN : null;
+  }
+  const release = join(REPO_ROOT, "broker", "target", "release", "openroly-broker");
+  if (existsSync(release)) return release;
+  const debug = join(REPO_ROOT, "broker", "target", "debug", "openroly-broker");
+  if (existsSync(debug)) return debug;
+  const downloaded = join(binDir(), "openroly-broker");
+  if (existsSync(downloaded)) return downloaded;
+  return Bun.which("openroly-broker");
+}
+
+const BROKER_BUILD_HINT =
+  "The broker binary was not found. Run 'cargo build --release --manifest-path broker/Cargo.toml'\n" +
+  "  (your credential is saved; after the build, 'openroly broker' starts it)";
+
+/**
+ * repo checkout も cargo も無い配布先(README の Quickstart)向け: broker binary がどこにも
+ * 無ければ公開 Release から取得を試みる(PBI-0154)。取れなくても黙って cargo 案内(呼び出し側の
+ * `BROKER_BUILD_HINT`)に倒す —— network が無いだけで `openroly login` を失敗させない。
+ * checksum 不一致だけは特別扱いする: 「build し直せ」という cargo 案内は誤りなので、
+ * ここで壊れている旨を出して止める
+ */
+async function ensureBrokerBinary(): Promise<void> {
+  const found = resolveBrokerBin();
+  // 手元 build / PATH / `OPENROLY_BROKER_BIN` が在るならそれを使う(取りに行かない)。**取得先に置いた物
+  // だけは毎回 ensureBinary に通す** —— ここで「在るから何もしない」にすると、openroly を新しくしても
+  // broker だけ初回に取った版のまま固定される(版が同じなら stamp を見て present で即返るので、
+  // 通しても download は起きない)
+  if (found && found !== join(binDir(), "openroly-broker")) return;
+  const outcome = await ensureBinary("openroly-broker");
+  if (outcome.status === "checksum_mismatch") {
+    fail(`NG the downloaded file is corrupt: ${outcome.detail}`);
+  }
+}
+
+/**
+ * broker(Rust)へ渡す env。`OPENROLY_CLI` は dev repo で `openroly` が PATH に無いため必須(broker/src/adopt.rs)。
+ * argv0 は `process.execPath`(bun 自体の絶対 path)にする —— launchd 環境は最小 PATH しか持たず
+ * bare な `"bun"` を解決できないため(PBI-0048。detached spawn は `process.env` を継承するので
+ * 従来の `"bun"` 決め打ちでも動いていたが、launchd 経由では broker(Rust)が起こす `openroly adopt` が
+ * 解決に失敗する)
+ */
+function brokerEnv(credential: RuntimeCredential): Record<string, string> {
+  return {
+    ...process.env,
+    OPENROLY_RUNTIME_TOKEN: credential.token,
+    OPENROLY_BROKER_WS_URL: `${credential.base_url.replace(/^http/, "ws")}/v1/broker/ws`,
+    OPENROLY_CLI: `${process.execPath}:${fileURLToPath(import.meta.url)}`,
+  } as Record<string, string>;
+}
+
+/**
+ * 前景で broker を起こし、終了コードをそのまま返す(`--foreground` / `broker` command / launchd)。
+ * launchd 経由・手動前景どちらで起きても同じ pid file 排他生成を通す(PBI-0048) —— これにより
+ * 「今 broker が生きているか」の判定(`runningBrokerPid`)が起動経路によらず一本化される
+ */
+async function runBrokerForeground(credential: RuntimeCredential): Promise<number> {
+  const bin = resolveBrokerBin();
+  if (!bin) fail(BROKER_BUILD_HINT);
+  await mkdir(brokerHome(), { recursive: true });
+  const claim = await claimBrokerPidFile();
+  if (claim === "running") fail("The broker is already running (the pid file points at a live process)");
+  if (claim === "undetermined") fail(await claimUndeterminedHint());
+  let child: ReturnType<typeof Bun.spawn>;
+  try {
+    child = Bun.spawn([bin], {
+      env: brokerEnv(credential),
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+  } catch {
+    await rm(brokerPidPath(), { force: true });
+    fail(BROKER_BUILD_HINT);
+  }
+  await writePidFileAtomic(child.pid);
+  return await child.exited;
+}
+
+type DetachedOutcome = "started" | "already_running" | "build_needed" | "claim_undetermined";
+
+/**
+ * pid file を torn-write の窓無く書き換える。`writeFile(path, …)` を直接呼ぶと
+ * open→truncate→write の間に他プロセスが「部分的に書かれた内容」を読み得る ——
+ * 実測: 5 桁の pid を書いている最中に別プロセスが読むと "401"(先頭 3 桁だけ)のような
+ * 半端な数値になり、それが偶然どのプロセスの pid でもないと「死んでいる」と誤判定して
+ * 二重起動を許してしまう。`credentials.ts` の `writeCredentials` と同じ temp file + `rename`
+ * にする —— rename は「置き換え先の内容が旧か新かのどちらか」しか見せない
+ */
+async function writePidFileAtomic(pid: number): Promise<void> {
+  const tmp = `${brokerPidPath()}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+  await writeFile(tmp, await pidRecord(pid));
+  await rename(tmp, brokerPidPath());
+}
+
+/**
+ * stale pid file の取り直しを直列化する lock。**中身が名札**(誰が握っているか)で、
+ * **回収してよいかは持ち主の生死で決める**(時限は下の最後の砦だけ)
+ */
+const brokerClaimLockPath = () => join(brokerHome(), "broker.pid.lock");
+/**
+ * 名札の読めない lock(旧版が残した dir 等)にだけ効く最後の砦。**生きている持ち主の lock は
+ * どれだけ古くても奪わない**(PBI-0218 レビュー) —— 時限だけで奪うと、遅い持ち主の lock を
+ * 後発が横取りして **2 本が同時に takeOver に入る**(= pid file の rm→link が競合して二重起動)。
+ * 逆に持ち主が死んでいれば時限を待たずに回収する —— 待つと 1 個の置き土産で全員が 10 秒止まり、
+ * `CLAIM_DEADLINE_MS` の予算をそこで食い潰す(実測 11s。`scripts/serial.sh` / PBI-0249 と同じ型)
+ */
+const STALE_LOCK_MS = 10_000;
+const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * `mkdir` の「無ければ作る / 有れば EEXIST」を mutex に使い、`fn` を 1 プロセスずつ実行する。
+ *
+ * 待ち切れなかった時に**「先客が起動したはず」という値を返さない**(PBI-0218)。以前はここで
+ * `fallback = false`(= 他が起動中)を返していたので、先客が起動前に終了していると全員が
+ * 「他が起動中」と判断して**誰も broker を起こさないまま終わる**。lock を取れたかどうかだけを
+ * 呼び出し側に返し、譲る / 取りにいくの判断は呼び出し側が pid file を**読み直して**決める。
+ *
+ * `heldByLive` は「生きた誰かが今この lock を握っている」= その誰かが起動の可否を決めに行っている、
+ * を意味する。呼び出し側はこの間、諦めの上限を進めない(進めると 0 本になる)
+ */
+type LockOutcome<T> = { acquired: true; value: T } | { acquired: false; heldByLive: boolean };
+
+/** lock の同一性。inode だけだと ext4 等は unlink 直後に同じ番号を配り直すので mtime も対にする */
+type LockIdentity = { ino: number; mtimeMs: number };
+
+/**
+ * `lock` に今在る物を **`rename` で atomic に掴んでから**消す。掴めたのが `expect`(判断した時に見た物)と
+ * 同じ時だけ消し、違えば(判断した後にその隙で張られた**新しい** lock)そのまま戻す。
+ *
+ * 「消す直前に `stat` で同一性を確かめてから `rm`」では足りなかった(PBI-0263) —— stat と rm の間は
+ * 閉じないので、2 本が同じ古い lock を同時に回収すると:
+ *   (a) 後発の `rm(recursive)` が、先発が回収して `link` し直した**新しい** lock を消し、2 本が takeOver に
+ *       入る(実測: 3 本同時で 6/120。PBI-0218 レビューが閉じたつもりだった窓が残っていた)
+ *   (b) 同じ dir を 2 本が同時に `rm(recursive)` すると Bun 1.3 が ENOENT でなく **EFAULT を投げ**、
+ *       CLI が stack trace で exit 1 する(実測 15/120)。全 suite で 8 回中 4 回赤に見えた
+ *       `started=1 yielded=0` の正体 = 負け側が「already running」を言う前に例外で落ちていた
+ * `rename` は同じ inode を **1 人しか掴めず**(2 人目は ENOENT)、消すのは自分だけの path なので、
+ * (a) の「他人の新しい lock を消す」も (b) の「同じ dir を 2 本で消す」も起きない
+ * (`scripts/serial.sh` の owner file の rename と同じ型。実測: 同条件 200 回で 0/200・0/200)。
+ *
+ * **掴むのも「判断した時と同じ物」だけ**(PBI-0263 レビュー)。`expect` は呼び側が `ps` を挟む前に見た物なので、
+ * 後発の判断は先発が回収して link し直した**生きた** lock を前にして古い。そこで rename すると、戻すまでの
+ * 数十 µs だけ lock の path が空く —— 3 本目がそこへ link すると戻す rename がその lock を潰す(3 本目は
+ * stillHeld で退くが取り直し)、持ち主がその隙に解放すると戻した lock が **持ち主の居ない名札**として残り、
+ * 持ち主の process が生きている間は誰も回収できない(機序 probe 3 本同時 200 回: 掴み違い 1〜3 / 200・
+ * 置き去り 1 回)。rename の直前に stat で照合し、違えば触らない(同 probe 0 / 200)。stat と rename の間の
+ * 窓は残るので、掴んだ後の照合と戻す枝はその為に残す
+ * 返り値は呼び側が待つ／取りに行くを決める為の 3 値
+ */
+async function reapLock(lock: string, expect: LockIdentity): Promise<"reaped" | "gone" | "someone_elses"> {
+  const now = await stat(lock).catch(() => null);
+  if (!now || now.ino !== expect.ino || now.mtimeMs !== expect.mtimeMs) return now ? "someone_elses" : "gone";
+  const grab = `${lock}.reap.${process.pid}.${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    await rename(lock, grab);
+  } catch {
+    return "gone"; // 他が先に掴んだ(回収した)。次の link で分かる
+  }
+  const got = await stat(grab).catch(() => null);
+  if (got && got.ino === expect.ino && got.mtimeMs === expect.mtimeMs) {
+    // 自分だけの path なので誰とも競合しない。それでも失敗したら残骸は放置する(lock ではないので害は無い)
+    await rm(grab, { recursive: true, force: true }).catch(() => {});
+    return "reaped";
+  }
+  await rename(grab, lock).catch(() => {});
+  return "someone_elses";
+}
+
+async function withStaleTakeoverLock<T>(
+  fn: (stillHeld: () => Promise<boolean>) => Promise<T>,
+): Promise<LockOutcome<T>> {
+  const lock = brokerClaimLockPath();
+  // 名札(誰が握っているか)は **lock が見えた最初の瞬間から読めなければならない** ——
+  // `mkdir` してから中に名札を書く 2 段階だと、その隙間に見た者が「持ち主不明 = 回収してよい」と
+  // 判断し、**生きた持ち主の lock を奪う**。奪われた側は自分が握っている前提のまま takeOver に
+  // 居るので、2 本が同時に `rm(pid file) → link` を撃って**両方が claim を勝つ**
+  // (実測: 空の lock dir を 1 つ置くだけで 8 回中 1 回 `started=2`。PBI-0218 レビュー)。
+  // pid file と同じ手 —— temp に書き切ってから `link` —— で、名札込みで atomic に出現させる
+  const me = `${Math.random().toString(36).slice(2)}${process.pid}\n${await pidRecord(process.pid)}`;
+  const tmp = `${lock}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+  await writeFile(tmp, me);
+  // `link` は inode を共有するので、lock が今も自分の物かは temp の同一性で分かる(内容を読み直すより確か)
+  const mine: LockIdentity = await stat(tmp);
+  const stillHeld = async () => {
+    const now = await stat(lock).catch(() => null);
+    return now !== null && now.ino === mine.ino && now.mtimeMs === mine.mtimeMs;
+  };
+  let heldByLive = false;
+  // **claim の判断を 1 行で残す**(PBI-0312)。`OPENROLY_CLAIM_TRACE=1` の時だけ stderr に出す ——
+  // この経路は **Linux でだけ相互排他が破れる**(CI で毎 round `started=2`・手元 macOS は毎回 1)。
+  // 手元で再現しないので、実物の CI から「どの枝を通って link に成功したか」を読む為の窓
+  const trace: string[] = [];
+  const t = (s: string) => {
+    if (process.env.OPENROLY_CLAIM_TRACE) trace.push(s);
+  };
+  try {
+    for (let attempt = 0; attempt < 60; attempt++) {
+      try {
+        await link(tmp, lock);
+        t(`a${attempt}:link-ok`);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+        // 生死の確認は `ps` を起こすので毎回はやらない(200ms 毎。死んだ持ち主はそれで十分速く回収される)
+        if (attempt % 4 !== 0) {
+          await sleepMs(50);
+          continue;
+        }
+        const st = await stat(lock).catch(() => null);
+        const held = st ? await readFile(lock, "utf8").catch(() => null) : null;
+        // true / false / undefined(= ps が走らず分からない。PBI-0270)
+        const owner = held === null ? null : await pidRecordAlive(held.split("\n")[1] ?? "");
+        heldByLive = owner === true;
+        // 回収してよいのは **持ち主が死んでいると確かめられた**時だけ(分からない時は待つ。deadline も
+        // 延ばさないので、ps が壊れたままなら上限で undetermined に降りる)。名札が読めない lock
+        // (旧版が残した dir 等)は時限だけが根拠なので、そちらは STALE_LOCK_MS を待つ。
+        // 消すのは **判断した時と同じ物**だけ —— reapLock が rename で掴んでから照合する
+        // (掴めなければ他が回収した / 別物なら戻す。どちらも次の link で分かるので結果は見ない)
+        if (st && (held === null ? Date.now() - st.mtimeMs > STALE_LOCK_MS : owner === false)) {
+          const r = await reapLock(lock, st);
+          t(`a${attempt}:reap=${r}/held=${held === null ? "null" : "named"}/own=${owner}/ino=${st.ino}/mt=${st.mtimeMs}`);
+          continue;
+        }
+        t(`a${attempt}:wait/held=${held === null ? "null" : "named"}/own=${owner}/age=${st ? Math.round(Date.now() - st.mtimeMs) : "-"}`);
+        await sleepMs(50);
+        continue;
+      }
+      try {
+        return { acquired: true, value: await fn(stillHeld) };
+      } finally {
+        // 自分の物(同じ inode)である時だけ消す(横から回収された後に後任の lock を巻き添えにしない)
+        await reapLock(lock, mine);
+      }
+    }
+    return { acquired: false, heldByLive };
+  } finally {
+    await rm(tmp, { force: true });
+    if (trace.length > 0) console.error(`TRACE ${process.pid} ${trace.join(" ")}`);
+  }
+}
+
+/**
+ * 譲るか取るかが決まらないまま粘る上限。**生きた誰かが lock を握っている間はこの上限を進めない**
+ * (PBI-0218 レビュー) —— 握っている側は今まさに起動の可否を決めに行っているので、そこで諦めるのは
+ * 「誰も起こさない」を自分から作ることになる。実測: `ps` の exec が 20 秒以上遅れる混雑下では、
+ * 正常に決めに行っている先客を待ち切れずに全員が降りた
+ */
+const CLAIM_DEADLINE_MS = 20_000;
+
+/**
+ * claim の結果。**`"undetermined"` を `"running"` に潰さない** —— 潰すと、broker が 1 本も
+ * 上がっていないのに `openroly login` が「The broker is already running」と言って正常終了し、
+ * 住所に届いても誰も起きない状態が成功に見える(hero ③ が黙って崩れる)
+ */
+type ClaimOutcome = "claimed" | "running" | "undetermined";
+
+/**
+ * pid file の排他生成を早い者勝ちの lock として使う。`link()` は「target が無ければ作る、
+ * 有れば EEXIST」を **1 回の atomic 操作**で行う —— `open(path,"wx")` の後に別の `write` を
+ * 呼ぶ 2 段階方式と違い、target が他プロセスから見える瞬間には(temp file へ先に書き終えた)
+ * 内容が既に完成している(torn write の窓が無い)。
+ *
+ * stale file(前回クラッシュ / 再起動で残った死んだ pid)の再利用は **`withStaleTakeoverLock` の
+ * 中で 1 プロセスずつ**行う。lock 無しの `readFile → rm → link` では、後発の `rm` が先発の
+ * `link` 済み file を消す窓が残り、2 本同時の `openroly login` が両方 spawn した
+ * (20 回に 1 回。PBI-0046 レビュー AC-X3)。
+ *
+ * **譲る根拠は「生きた broker を確認できた」だけ**(PBI-0218)。「先客がいたはず」「内容が読めない」
+ * のような**仮定で false を返さない** —— 仮定で譲ると、先客が起動前に終了していた時に全員が
+ * 譲って broker が 1 本も上がらず、`openroly login` だけが成功したように見える(hero ③ が黙って崩れる)。
+ * 判定が付かない間は「読み直して決め直す」を上限付きで繰り返す
+ */
+async function claimBrokerPidFile(): Promise<ClaimOutcome> {
+  await mkdir(brokerHome(), { recursive: true });
+  const tmp = `${brokerPidPath()}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+  await writeFile(tmp, await pidRecord(process.pid));
+  const tryLink = async (): Promise<boolean> => {
+    try {
+      await link(tmp, brokerPidPath());
+      return true;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "EEXIST") return false;
+      throw e;
+    }
+  };
+  /**
+   * pid file が「生きた broker(or それを起こす途中の CLI)」を指していない = 取り直してよい。
+   * 空 / 数字でない / 途中で切れた行も**ここでは「壊れている」に倒す** —— pid file は
+   * `link`(完成した temp からの atomic な出現)と `rename`(atomic な置換)でしか書かれないので、
+   * 「書きかけを覗いた」状態は存在せず、判定不能 = 誰の物でもない。
+   * ここを「不明だから譲る」に倒すと、空の broker.pid 1 つで `openroly login` が
+   * **恒久的に**「already running」と言い続けて 1 本も起動しない(PBI-0218 AC-X2)
+   */
+  const takeOver = async (stillHeld: () => Promise<boolean>): Promise<"claimed" | "yield" | "retry"> => {
+    // **消してよいのは「中身を見て死んでいると確かめた、まさにその file」だけ**(PBI-0218 レビュー)。
+    // `runningBrokerPid()` は 内容を読む → `ps` を叩く の 2 段階で、混雑下ではその間が 100ms 以上開く。
+    // その隙に勝者が `writePidFileAtomic`(rename)で**生きた broker の記録**へ差し替えていると、
+    // 古い判断(「死んでいる」)のまま新しい file を消して二重起動する ——
+    // 実測(load 350): 勝者の CLI pid を読んだ後に `ps` を叩き、その時には勝者が既に exit していたので
+    // 「死んでいる」と読み、勝者が置いた broker の記録を消して 2 本目を起こした。
+    // rename も link も**必ず inode を差し替える**ので、消す直前に inode を照合すれば分かる
+    const before = await stat(brokerPidPath()).catch(() => null);
+    if (before === null) return (await tryLink()) ? "claimed" : "retry";
+    const live = await probeBroker();
+    // `ps` が走らない = 死んだと**確かめていない** → 消さずに読み直す(PBI-0270)。譲りもしない(嘘の already running)
+    if (live === "unknown") return "retry";
+    if (live) return "yield";
+    const after = await stat(brokerPidPath()).catch(() => null);
+    if (after === null || after.ino !== before.ino || after.mtimeMs !== before.mtimeMs) return "retry";
+    // lock を横から回収されていたら(自分の名札がもう lock に無い)、ここで rm→link を撃つのは
+    // lock 無しの取り直しと同じ —— 後発の rm が先発の link 済み file を消す窓が戻る(PBI-0263)。
+    // 取り直さずに戻り、lock を取り直してから決め直す
+    if (!(await stillHeld())) return "retry";
+    await rm(brokerPidPath(), { force: true });
+    return (await tryLink()) ? "claimed" : "retry";
+  };
+  try {
+    let deadline = Date.now() + CLAIM_DEADLINE_MS;
+    for (;;) {
+      if (await tryLink()) return "claimed";
+      // pid file が在る。**生きたプロセスを指している時だけ**譲る
+      if (await runningBrokerPid()) return "running";
+      const outcome = await withStaleTakeoverLock(takeOver);
+      if (outcome.acquired && outcome.value !== "retry") {
+        return outcome.value === "claimed" ? "claimed" : "running";
+      }
+      // lock を取れなかった / 取ったが横から link された。**仮定で終わらせず読み直して決め直す**。
+      // ここで lock の外で `rm → link` に逃げてはいけない —— 後発の `rm` が先発の `link` 済み file を
+      // 消す窓が開き、PBI-0046 レビュー AC-X3 の「2 本同時が両方 spawn」がそのまま戻る
+      if (!outcome.acquired && outcome.heldByLive) deadline = Date.now() + CLAIM_DEADLINE_MS;
+      // 諦める時も「他が起動中」とは言わない —— 確かめられなかった、として上へ返す
+      if (Date.now() > deadline) return "undetermined";
+      await sleepMs(20 + Math.floor(Math.random() * 40));
+    }
+  } finally {
+    await rm(tmp, { force: true });
+  }
+}
+
+/**
+ * `claimBrokerPidFile` が決められなかった時に人へ出す文言(0 本を成功に見せない)。原因は **今の pid file を
+ * 読み直して**分ける —— ps が走らないのに「another openroly process is holding the lock」と言うと、人は run it again を
+ * 繰り返すだけで原因(ps)に辿り着けない(PBI-0270 レビュー 攻撃12。`broker status` の "ps did not run" と同じ名指し)
+ */
+const claimUndeterminedHint = async () =>
+  "NG could not tell whether a broker is running: " +
+  ((await probeBroker()) === "unknown"
+    ? `ps did not run on this machine, so ${brokerPidPath()} could not be checked. Nothing was started — ` +
+      "check that `ps -p $$` works, then run it again"
+    : `another openroly process is holding ${brokerClaimLockPath()}. Nothing was started — run it again`);
+
+/** `login` から呼ぶ detached 起動。pid file が生きているプロセスを指していれば二重起動しない */
+async function startBrokerDetached(credential: RuntimeCredential): Promise<DetachedOutcome> {
+  if (await runningBrokerPid()) return "already_running";
+  const bin = resolveBrokerBin();
+  if (!bin) return "build_needed";
+  await mkdir(brokerHome(), { recursive: true });
+  const claim = await claimBrokerPidFile();
+  if (claim === "running") return "already_running";
+  if (claim === "undetermined") return "claim_undetermined";
+  const log = await open(brokerLogPath(), "a");
+  let child: ReturnType<typeof Bun.spawn>;
+  try {
+    child = Bun.spawn([bin], {
+      env: brokerEnv(credential),
+      stdin: "ignore",
+      stdout: log.fd,
+      stderr: log.fd,
+    });
+  } catch {
+    await log.close();
+    await rm(brokerPidPath(), { force: true });
+    return "build_needed";
+  }
+  // claim 時に書いた自分(CLI)の pid を、起こした broker の pid に差し替える(temp + rename)
+  await writePidFileAtomic(child.pid);
+  child.unref();
+  await log.close();
+  return "started";
+}
+
+// ---------- launchd 常駐(darwin。PBI-0048) ----------
+// 実マシンの ~/Library/LaunchAgents と実 launchctl には test から絶対に触れない —— OPENROLY_BROKER_BIN /
+// OPENROLY_CLI と同じ設計で、常に env 経由の差し替え口を通す。
+
+/**
+ * plist が焼いた「login 時の PATH」の別名(PBI-0236)。**この env が在る = 今の PATH は写し**
+ * という 1 つの意味しか持たない —— 在る時だけ `openroly adopt` が login shell を起こす。
+ * 人が手で打つ `openroly install` / `openroly adopt`、test、detached 起動には無いので probe は走らない。
+ */
+const LOGIN_PATH_SNAPSHOT = "OPENROLY_LOGIN_PATH";
+
+/** login shell の出力から PATH だけを切り出す marker。rc file の挨拶が混ざっても拾える */
+const LOGIN_PATH_MARK = "__OPENROLY_PATH__";
+/** interactive な rc file(oh-my-zsh 等)が重い端末でも、ここで諦めて snapshot に落ちる */
+const LOGIN_SHELL_TIMEOUT_MS = 5000;
+
+/**
+ * 締切付きで stream を読み切る(PBI-0236 レビュー 2026-09-04)。締切を過ぎたら **stream を cancel して**
+ * `null` を返す —— shell を kill するだけでは足りない: rc file が起こした背景 daemon
+ * (powerlevel10k の gitstatusd・zsh-async・mise 等)は shell の stdout を継承するので、
+ * shell が死んでも pipe は開いたままで、読みが終わらない。実測でこの経路が 37 秒待った
+ * (broker の `ADOPT_TIMEOUT` = 60 秒を食い潰し、PBI-0190 が直した「MCP が 1 つも登録されない」に戻る)。
+ * cancel は fd も手放すので、`openroly adopt` 自身の終了も背景の子に人質に取られない。
+ */
+async function readWithDeadline(
+  stream: ReadableStream<Uint8Array>,
+  timeoutMs: number,
+): Promise<string | null> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let expired = false;
+  const timer = setTimeout(() => {
+    expired = true;
+    void reader.cancel().catch(() => {});
+  }, timeoutMs);
+  let out = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) out += decoder.decode(value, { stream: true });
+    }
+    out += decoder.decode();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+  return expired ? null : out;
+}
+
+/** `-l -i -c` と `"$PATH"` を POSIX どおりに解釈する shell だけを起こす(fish は list なので別物) */
+const LOGIN_SHELLS = new Set(["zsh", "bash", "sh", "dash", "ksh"]);
+
+/**
+ * **今の** login shell が持つ PATH を 1 回だけ読む(PBI-0236)。取れなければ `null`。
+ *
+ * `-i` が要るのは nvm / rbenv / mise の init が `.zshrc` に居るため —— zsh は `.zshrc` を
+ * interactive の時しか読まないので、`-l` だけでは「版を切り替えた」が反映されない。
+ * 代わりに interactive は遅い・喋る・入力を待つので、**stdin は /dev/null・stderr は捨てる・
+ * 5 秒で読みを打ち切って stream ごと捨てる**の 3 点で閉じ込め、出力は marker で挟んで切り出す。
+ *
+ * 返す前に「PATH の形か」を見る(2 つ以上の絶対 path)。fish のように `"$PATH"` が空白区切りに
+ * なる shell を allowlist の外に置いた上で、**出力側でももう一度**弾く —— 壊れた PATH を
+ * 先頭に載せるのは、PATH を取り直さないより悪い。
+ */
+async function freshLoginPath(): Promise<string | null> {
+  const override = process.env.OPENROLY_LOGIN_SHELL;
+  if (override === "") return null; // 明示的に無効化(probe を望まない端末・test の口)
+  const shell = override ?? process.env.SHELL ?? "/bin/zsh";
+  if (override === undefined && !LOGIN_SHELLS.has(shell.split("/").pop() ?? "")) return null;
+  const script = `printf '${LOGIN_PATH_MARK}%s${LOGIN_PATH_MARK}' "$PATH"`;
+  const proc = (() => {
+    try {
+      return Bun.spawn([shell, "-l", "-i", "-c", script], {
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "ignore",
+      });
+    } catch {
+      return null; // shell が実在しない / 実行権が無い
+    }
+  })();
+  if (!proc) return null;
+  // 締切は **読む側**に置く。`proc.kill(9)` だけでは背景の子が握った stdout が閉じない
+  const out = await readWithDeadline(proc.stdout, LOGIN_SHELL_TIMEOUT_MS);
+  proc.kill(9); // 黙り込んだ shell 本体もここで落とす(既に終わっていれば no-op)
+  if (out === null) return null;
+  const parts = out.split(LOGIN_PATH_MARK);
+  const dirs = (parts.length >= 3 ? parts[1]! : "").split(":").filter(Boolean);
+  if (dirs.length < 2 || !dirs.every((d) => d.startsWith("/"))) return null;
+  return dirs.join(":");
+}
+
+/**
+ * `openroly adopt` が runtime CLI(`codex mcp add` 等)を起こす時の env(PBI-0236)。
+ *
+ * `OPENROLY_LOGIN_PATH` が無い = 自分の PATH は今の環境そのもの → **何もしない**。
+ * 在る時だけ「今の login shell の PATH」→「焼いた snapshot」→「今の PATH」の順に繋いで重複を落とす。
+ * **fresh を先頭に置く**のが要点 —— 版を切り替えた人の古い dir がまだ実在する時、後ろに置くと
+ * 古い方が先に解決されて AC-1 が閉じない。snapshot を捨てずに後ろへ残すのは、login を打った
+ * shell にしか無かった dir(direnv 等)を落とさないため。probe が失敗すれば snapshot だけ = 今日と同じ。
+ */
+async function adoptEnv(): Promise<Record<string, string | undefined>> {
+  const snapshot = process.env[LOGIN_PATH_SNAPSHOT];
+  if (!snapshot) return process.env;
+  const fresh = await freshLoginPath();
+  const merged = [
+    ...(fresh ?? "").split(":"),
+    ...snapshot.split(":"),
+    ...(process.env.PATH ?? "").split(":"),
+  ].filter(Boolean);
+  const path = [...new Set(merged)].join(":");
+  // 診断は **stdout** へ(broker は stdout を捨てる)。stderr は失敗理由 1 行だけの場所で、
+  // ここに書くと broker が拾う `register_ack.detail` が診断行に化ける
+  console.log(`adopt: PATH ${fresh ? "refreshed from the login shell" : "kept from the plist snapshot"}`);
+  return { ...process.env, PATH: path };
+}
+
+function launchAgentsDir(): string {
+  return process.env.OPENROLY_LAUNCH_AGENTS_DIR ?? join(homedir(), "Library", "LaunchAgents");
+}
+const LAUNCHD_LABEL = "com.openroly.broker";
+const plistPath = () => join(launchAgentsDir(), `${LAUNCHD_LABEL}.plist`);
+const launchctlBin = () => process.env.OPENROLY_LAUNCHCTL ?? "launchctl";
+
+function escapeXml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * plist は world-readable な file なので **token を絶対に書かない**(§4 と同格の secret 漏洩)。
+ * `openroly broker` は起動時に credentials.json(0600)から自分で token を読む(PBI-0046)ので、
+ * plist が運ぶのは argv と(test の隔離環境を launchd 経由でも保つための)非 secret env だけ。
+ * argv0 に `process.execPath` を使うのは launchd の最小 PATH が bare な `"bun"` を解決できないため。
+ */
+function plistXml(): string {
+  const args = [process.execPath, fileURLToPath(import.meta.url), "broker"];
+  const argXml = args.map((a) => `      <string>${escapeXml(a)}</string>`).join("\n");
+  // **PATH も渡す**(PBI-0190) —— launchd の既定 PATH は `/usr/bin:/bin:/usr/sbin:/sbin` しか無く、
+  // adopt が呼ぶ **runtime 側の CLI** が解決できない(2026-09-04 実測:
+  // `codex mcp add failed: env: node: No such file or directory`)。argv0 に execPath を使って
+  // bun だけ解決していたが、その先で呼ばれる CLI の PATH は誰も面倒を見ていなかった。
+  // login を打った shell の PATH をそのまま焼く —— その shell で runtime CLI が動いていたのだから、
+  // 同じ PATH なら adopt も動く
+  //
+  // **焼いた PATH は snapshot**(PBI-0236) —— nvm / rbenv / mise を使う人が後で版を切り替えると
+  // ここは古い版の dir を指したままになり、`codex` の shebang が呼ぶ `node` が消える。
+  // そこで **同じ値を `OPENROLY_LOGIN_PATH` にも焼く**: これは `openroly adopt` に対する
+  // 「お前が今持っている PATH は login の瞬間の写しだ」という印で、adopt はこれが在る時だけ
+  // login shell を起こして今の PATH を取り直す。`SHELL` はその時に起こす shell
+  // (launchd の env には無い)。`PATH` を止めないのは broker(Rust) の discovery が
+  // `env::var_os("PATH")` を見るため —— 外すと PBI-0190 の半分が戻る。
+  const passthroughKeys = ["OPENROLY_HOME", "OPENROLY_BROKER_HOME", "OPENROLY_BROKER_BIN", "OPENROLY_URL", "PATH", "SHELL"] as const;
+  const plistEnv: [string, string][] = passthroughKeys
+    .filter((k) => process.env[k])
+    .map((k) => [k, process.env[k]!]);
+  if (process.env.PATH) plistEnv.push([LOGIN_PATH_SNAPSHOT, process.env.PATH]);
+  const envEntries = plistEnv
+    .map(([k, v]) => `    <key>${k}</key>\n    <string>${escapeXml(v)}</string>`)
+    .join("\n");
+  const logPath = escapeXml(brokerLogPath());
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${LAUNCHD_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+${argXml}
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${logPath}</string>
+  <key>StandardErrorPath</key>
+  <string>${logPath}</string>${
+    envEntries
+      ? `
+  <key>EnvironmentVariables</key>
+  <dict>
+${envEntries}
+  </dict>`
+      : ""
+  }
+</dict>
+</plist>
+`;
+}
+
+async function runLaunchctl(args: string[]): Promise<{ ok: boolean; detail: string }> {
+  try {
+    const proc = Bun.spawn([launchctlBin(), ...args], { stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    const code = await proc.exited;
+    return { ok: code === 0, detail: (stderr.trim() || stdout.trim()) as string };
+  } catch (e) {
+    return { ok: false, detail: (e as Error).message };
+  }
+}
+
+/**
+ * darwin 専用。既に load 済み(`launchctl list`)なら何もせず成功扱い —— 重複 load は環境によって
+ * エラーになるため、「re-load しない」で冪等性を担保する(PBI-0048 不確実性欄)。
+ */
+async function tryInstallLaunchdBroker(): Promise<boolean> {
+  const already = await runLaunchctl(["list", LAUNCHD_LABEL]);
+  if (already.ok) return true;
+  try {
+    await mkdir(brokerHome(), { recursive: true });
+    await mkdir(launchAgentsDir(), { recursive: true });
+    await writeFile(plistPath(), plistXml());
+  } catch {
+    return false;
+  }
+  return (await runLaunchctl(["load", "-w", plistPath()])).ok;
+}
+
+type StartOutcome = DetachedOutcome | "started_launchd";
+
+/**
+ * `login` が呼ぶ統一入口。darwin は launchd 常駐を優先し、失敗時のみ detached へ fallback する。
+ * binary の有無は **launchd 登録より前**に確かめる(登録してから気付いても launchd 側で失敗し続けるだけ)
+ */
+async function startBroker(credential: RuntimeCredential): Promise<StartOutcome> {
+  if (await runningBrokerPid()) return "already_running";
+  if (!resolveBrokerBin()) return "build_needed";
+  if (process.platform === "darwin" && (await tryInstallLaunchdBroker())) return "started_launchd";
+  return startBrokerDetached(credential);
+}
+
+function printFindings(findings: Finding[]): boolean {
+  for (const f of findings) console.log(`  ${f.ok ? "OK " : "NG "} ${f.label}: ${f.detail}`);
+  return findings.every((f) => f.ok);
+}
+
+/** `openroly doctor` の「sandbox: seatbelt ok / unavailable(<理由>)」「egress: ok」の 2 行(PBI-0238 AC-5)。
+ * 正本は broker が起動時に書く `<broker home>/sandbox-status.json`(broker/src/sandbox.rs)。
+ * ここで sandbox-exec を叩き直さないのは、判定を 2 箇所に持たないため(broker が断る理由と
+ * doctor が言う理由がずれると人が迷う)。 */
+async function brokerSandboxFindings(): Promise<Finding[]> {
+  const path = join(brokerHome(), "sandbox-status.json");
+  let status: { sandbox?: unknown; egress?: unknown };
+  try {
+    status = JSON.parse(await readFile(path, "utf8")) as { sandbox?: unknown; egress?: unknown };
+  } catch {
+    const detail = "unknown (the broker has not started yet; dedicated sessions need it — run 'openroly login')";
+    return [
+      { ok: false, label: "sandbox", detail },
+      { ok: false, label: "egress", detail },
+    ];
+  }
+  const line = (v: unknown): string => (typeof v === "string" ? v.slice(0, 200) : "unknown");
+  const sandbox = line(status.sandbox);
+  const egress = line(status.egress);
+  return [
+    { ok: /\bok$/.test(sandbox), label: "sandbox", detail: sandbox },
+    { ok: egress === "ok", label: "egress", detail: egress },
+  ];
+}
+
+/**
+ * 繋がった先の account。**確かめられなかったこと**を undefined に潰さず理由と一緒に持つ ——
+ * 「@? という account に繋がった」に読める表示を作らない為(PBI-0234 AC-X1)。
+ */
+type ConnectedAccount = { handle: string } | { handle: undefined; detail: string };
+
+/** whoami を待つ上限。接続そのものは済んでいるので、遅い server に完了報告ごと張り付かない */
+const ACCOUNT_CONFIRM_TIMEOUT_MS = 10_000;
+
+/**
+ * 名乗れる handle の形。**200 が返ったことは「account を確認できた」ではない**(有界レビュー) ——
+ * 空文字は `connected to @.` に、空白や改行を含む値は完了表示に**偽の行**を差し込める形になり、
+ * どちらも `@?` と同じ「確認できていないのに account に見える表示」に戻る。
+ * server 側の規則(`[a-z][a-z0-9_]*`)より緩く取る —— 規則が広がっても既存 account を
+ * 名乗れなくしない為で、ここで見たいのは「1 語の名前として画面に出せるか」だけ。
+ */
+const HANDLE_SHAPE = /^[a-z0-9_.-]{1,64}$/i;
+
+/**
+ * 繋がった先の account を 1 回だけ確かめる。**例外を投げない** —— ここで throw すると
+ * 「繋がったのに何も表示されない」になり、名乗ること自体が失敗経路で丸ごと消える。
+ */
+async function confirmAccount(credential: RuntimeCredential): Promise<ConnectedAccount> {
+  try {
+    const who = await apiCall(credential.base_url, "/v1/whoami", {
+      token: credential.token,
+      signal: AbortSignal.timeout(ACCOUNT_CONFIRM_TIMEOUT_MS),
+    });
+    const handle = typeof who.body?.handle === "string" ? who.body.handle : "";
+    if (who.status === 200 && HANDLE_SHAPE.test(handle)) return { handle };
+    return {
+      handle: undefined,
+      detail:
+        who.status === 401
+          ? "the credential was rejected (401)"
+          : who.status === 200
+            ? "whoami did not name an account"
+            : `whoami returned ${who.status}`,
+    };
+  } catch (e) {
+    return { handle: undefined, detail: `whoami could not be reached (${(e as Error).message})` };
+  }
+}
+
+/**
+ * 接続の完了表示。**繋がった先の @account を必ず名乗る**(PBI-0234)。
+ *
+ * `pending` の pairing 行は誰の物でもない(device code flow の性質・図6)ので、`user_code` を
+ * 握った human は**自分の** account でその要求を承認できる。接続した本人が「どの account に
+ * 入ったか」をその場で読めることが最後の砦なので、login / install / pair の 3 経路は必ず
+ * ここを通す —— 文言を各 case に散らすと、次に直す人がまた 1 経路だけ直す。
+ */
+async function reportConnected(
+  credential: RuntimeCredential,
+  subject: string,
+  tail = "",
+  account?: ConnectedAccount,
+): Promise<void> {
+  const who = account ?? (await confirmAccount(credential));
+  if (who.handle !== undefined) {
+    console.log(`\n${subject} is now connected to @${who.handle}.${tail}`);
+    return;
+  }
+  // 「繋がった」と「どの account かは確かめられなかった」を**両方**言う。片方だけにすると、
+  // 他人の account に入っていた時に気づく手掛かりが消える(@? は後者を前者に見せかける)
+  console.log(
+    `\n${subject} is now connected, but the account it landed in could not be confirmed ` +
+      `(${who.detail}). Open Settings → Connected runtimes on the web to see which account has it`,
+  );
+}
+
+function requireAdapter(id: string | undefined) {
+  if (!id) fail(`Specify a runtime (${SUPPORTED_IDS.join(", ")})`);
+  const adapter = findAdapter(id);
+  if (!adapter) {
+    fail(`Unsupported runtime: ${id}\nSupported: ${SUPPORTED_IDS.join(", ")}`);
+  }
+  return adapter;
+}
+
+function fail(message: string, code = 1): never {
+  console.error(message);
+  process.exit(code);
+}
+
+const [command, ...args] = process.argv.slice(2);
+adoptLegacyEnv(); // 旧 PAA_* env を採り込む(PBI-0344 AC-3。使った時だけ 1 行警告)
+const target = args.find((a) => !a.startsWith("--"));
+const baseUrl = baseUrlOf(args);
+
+/** `--flag value` を 1 つ読む(値が無ければ undefined) */
+/**
+ * `openroly login` が名乗る名前(PBI-0227 AC-4)。**この文字列が承認画面にそのまま出る** ——
+ * 承認する人はこれだけを頼りに「自分の Mac か」を決めるので、hostname を必ず載せる
+ * (server 既定の "unnamed runtime" に落ちると、送りつけられた code と自分の端末が見分けられない)。
+ * 逆に os の user 名・mail は載せない —— この面は **user_code を握った相手にも見える**ので、
+ * 端末の識別に要らない個人情報は増やさない。
+ */
+function loginRuntimeName(): string {
+  return hostname().trim() || "this machine (no hostname)";
+}
+
+function flagValue(name: string): string | undefined {
+  const i = args.indexOf(name);
+  return i >= 0 && args[i + 1] && !args[i + 1]!.startsWith("--") ? args[i + 1]! : undefined;
+}
+
+switch (command) {
+  case "login": {
+    // 冪等性: broker credential が有効ならこの Mac は既に接続済みとして扱い、pair し直さない。
+    // 複数 account は非対応 —— 別 account の credential が残っていても whoami 200 なら同一とみなす。
+    // ただし `--url` で別 server を明示された時は既存 credential を無条件には使い回さない
+    // (installRuntime の urlChanged と同じ理由 —— 旧 server の token を新 server 宛てに使い回すと
+    // 「接続しました」の表示だけが嘘になる)
+    const requestedUrl = baseUrl?.replace(/\/$/, "");
+    let credential = await getCredential("broker");
+    // 失効した credential の `base_url` = 前回 pairing した server。`account_url` を持たない端末
+    // (PBI-0246 より前に login した端末)が再 pair する時、行き先はここにしか残っていない ——
+    // 消してから resolver に渡すと DEFAULT_BASE_URL(localhost)へ落ちる
+    const previousUrl = credential?.base_url;
+    if (credential && requestedUrl != null && credential.base_url !== requestedUrl) {
+      credential = undefined;
+    }
+    let account: ConnectedAccount | undefined;
+    if (credential) {
+      account = await confirmAccount(credential);
+      // 確かめられない credential は使い回さない(既存挙動 —— whoami が 200 でなければ再 pairing)
+      if (account.handle === undefined) {
+        credential = undefined;
+        account = undefined;
+      }
+    }
+    if (!credential) {
+      const outcome = await pairRuntime({
+        // 2 度目の login(credential が失効した端末)も、前回 login した server へ戻る(図7.1)
+        baseUrl: await accountBaseUrl(requestedUrl, previousUrl),
+        kind: "broker",
+        name: loginRuntimeName(),
+        onPrompt: showPrompt,
+      });
+      if (outcome.status === "denied") fail("NG pairing was denied");
+      if (outcome.status === "expired") fail("NG pairing expired. Run it again");
+      if (outcome.status === "failed") fail(`NG pairing failed: ${outcome.detail}`);
+      credential = outcome.credential;
+      account = await confirmAccount(credential);
+    }
+    // **login が決めた URL を account の既定にする**(PBI-0246・図7.1)。以後 `--url` 無しの
+    // pair / install / doctor はここへ行く —— 書き戻すのは pairing が実際に成功した URL
+    // (`credential.base_url`)であって要求値ではない。名乗る先と繋ぐ先を割らない。
+    // 既に接続済みの端末で `openroly login` を打ち直した時も通るので、この機能より前に
+    // login した端末もここで直る
+    await saveAccountUrl(credential.base_url);
+    // **broker を触る前に名乗る**(PBI-0234 AC-3b): already_running の break・build_needed の
+    // fail・--foreground の 3 経路が、後ろに置いた handle 行を飛ばしていた
+    await reportConnected(
+      credential,
+      "This machine",
+      " The AIs on it are found automatically and appear under Your AI",
+      account,
+    );
+    await ensureBrokerBinary();
+    if (args.includes("--foreground")) {
+      process.exit(await runBrokerForeground(credential));
+    }
+    const outcome = await startBroker(credential);
+    if (outcome === "build_needed") fail(BROKER_BUILD_HINT);
+    // 「決められなかった」を「既に走っている」に潰さない —— 0 本のまま成功で終わらせない
+    if (outcome === "claim_undetermined") fail(await claimUndeterminedHint());
+    if (outcome === "already_running") {
+      console.log("The broker is already running");
+      break;
+    }
+    if (outcome === "started_launchd") {
+      console.log(`Registered with launchd (${plistPath()}). It starts automatically after a reboot`);
+    } else {
+      console.log(`broker log: ${brokerLogPath()}`);
+    }
+    break;
+  }
+
+  case "broker": {
+    const sub = target;
+    if (sub === "install") {
+      if (process.platform !== "darwin") fail("broker install is macOS (launchd) only");
+      const credential = await getCredential("broker");
+      if (!credential) fail("Not connected. Run 'openroly login' first");
+      if (!resolveBrokerBin()) fail(BROKER_BUILD_HINT);
+      const ok = await tryInstallLaunchdBroker();
+      if (!ok) fail(`NG registering with launchd failed (plist: ${plistPath()})`);
+      console.log(`Registered with launchd (${plistPath()}). The broker starts automatically after a reboot`);
+      break;
+    }
+    if (sub === "uninstall") {
+      const existed = existsSync(plistPath());
+      const unload = await runLaunchctl(["unload", plistPath()]);
+      await rm(plistPath(), { force: true });
+      console.log(
+        `Removed the launchd registration${existed ? "" : " (there was no plist to begin with)"}` +
+          (unload.ok || !existed ? "" : ` (warning on unload: ${unload.detail})`),
+      );
+      break;
+    }
+    if (sub === "status") {
+      const plistInstalled = existsSync(plistPath());
+      const list = await runLaunchctl(["list", LAUNCHD_LABEL]);
+      const pid = await probeBroker();
+      console.log(`launchd plist: ${plistInstalled ? `installed (${plistPath()})` : "not installed"}`);
+      console.log(`launchd job: ${list.ok ? "registered" : "not registered"}`);
+      console.log(
+        `broker process: ${pid === "unknown" ? "unknown (ps did not run)" : pid ? `running (pid ${pid})` : "stopped"}`,
+      );
+      break;
+    }
+    if (sub !== undefined) fail(`Unknown broker subcommand: ${sub}\nSupported: install / uninstall / status`);
+    const credential = await getCredential("broker");
+    if (!credential) fail("Not connected. Run 'openroly login' first");
+    process.exit(await runBrokerForeground(credential));
+    break;
+  }
+
+  case "install": {
+    const adapter = requireAdapter(target);
+    const outcome = await installRuntime({
+      adapter,
+      ctx,
+      baseUrl,
+      onPrompt: showPrompt,
+      repair: args.includes("--repair"),
+    });
+    if (outcome.status === "runtime_not_found") fail(`NG ${outcome.detail}`);
+    if (outcome.status === "denied") fail("NG pairing was denied");
+    if (outcome.status === "expired") fail("NG pairing expired. Run it again");
+    if (outcome.status === "failed") fail(`NG pairing failed: ${outcome.detail}`);
+    // credential.name は `<host> / <displayName>` なので、subject に displayName を足すと二重になる
+    await reportConnected(
+      outcome.credential,
+      outcome.credential.name,
+      outcome.paired ? "" : " The existing credential was reused.",
+    );
+    if (!printFindings(outcome.findings)) process.exit(1);
+    console.log(`\nRestart ${adapter.displayName} and the @account tools become available`);
+    break;
+  }
+
+  case "adopt": {
+    // 自動登録(PBI-0023)の materialize 面。broker が hello の応答(`registered`)を受けて
+    // 非対話で spawn する —— pairing は既に済んでいる(端末の承認が兼ねる。要件 §45.2)ので、
+    // ここでやるのは credential の保存と MCP config の登録だけ。credentials.json の書式・lock 手順・
+    // `claude mcp add` の呼び方の正本を TS 側 1 箇所に保つため、broker(Rust)には写さない。
+    //
+    // token は **stdin から**受ける。argv に載せると同一ホストの他プロセスから `ps` で見える。
+    //   --spec-stdin  = JSON 1 行 `{token, native?}`(PBI-0210。broker が署名検証済み registry の
+    //                   `native` を添える → generic adapter を組む。bundled catalog より新しい entry でも動く)
+    //   --token-stdin = 生の token 1 行(旧 broker 互換)
+    const kind = flagValue("--kind");
+    const runtimeId = flagValue("--runtime-id");
+    const url = flagValue("--base-url");
+    const name = flagValue("--name");
+    const specStdin = args.includes("--spec-stdin");
+    if (!specStdin && !args.includes("--token-stdin")) {
+      fail("adopt: --spec-stdin or --token-stdin is required (the token is not accepted on argv)", 2);
+    }
+    if (!kind || !runtimeId || !url || !name) {
+      fail("adopt: --kind / --runtime-id / --base-url / --name are required", 2);
+    }
+    const raw = (await Bun.stdin.text()).trim();
+    let token = raw;
+    let native: unknown = undefined;
+    if (specStdin) {
+      let spec: { token?: unknown; native?: unknown } | null = null;
+      try {
+        spec = JSON.parse(raw) as { token?: unknown; native?: unknown };
+      } catch {
+        fail("adopt: --spec-stdin expects one JSON line {token, native?} on stdin", 2);
+      }
+      token = typeof spec?.token === "string" ? spec.token : "";
+      native = spec?.native ?? undefined;
+    }
+    if (!token) fail("adopt: could not read the token from stdin", 2);
+    // registry に entry があっても adapter 実装が無い runtime はここで落ちる(exit 2)。
+    // Cloud 側も adapter:null は登録対象から外すので、ここに来るのは配布のずれ。
+    // `native` が壊れていても exit 2(1 行目が detail になる) —— 推測で書き換えない
+    let adapter: RuntimeAdapter | undefined;
+    try {
+      adapter = findAdapter(kind, native);
+    } catch (e) {
+      fail(`adopt: ${(e as Error).message}`, 2);
+    }
+    if (!adapter) fail(`adopt: unsupported runtime: ${kind}\nSupported: ${SUPPORTED_IDS.join(", ")}`, 2);
+    const cleanUrl = url.replace(/\/$/, "");
+    // 同じ端末に human が `openroly install` で入れた同 kind の credential があれば奪わない(AC-11)。
+    // credentials.json は kind 単位の 1 entry なので、上書きすると Cloud 側の既定 runtime
+    // (getDefaultRuntime)と実際に認証する runtime がずれ、per-actor read state(§19/§23.1)が割れる。
+    // 「どの credential がこの端末に居るか」は端末しか知らないので、判定は CLI 側に置く
+    // (Cloud で「pair 行があれば登録しない」にすると、別の端末で pair 済みという正当な構成を潰す)。
+    // 1 行目を bare token にするのは broker が stderr の 1 行目を reason にするため。
+    //
+    // fail-closed(PBI-0023 F2): 「生きているか確認できない」は「奪ってよい」ではない。
+    // 確認が取れるのは相手が明示的に 401(= credential が既に失効している)を返した時だけで、
+    // それ以外(200 = 生きている、5xx、network 到達不能で例外)は全部拒否する。到達不能を素通り
+    // させると、server が落ちている・DNS が引けないだけで human の credential を上書きできてしまう
+    // (実測: base_url を到達不能にすると旧実装は exit 0 で上書きしていた)。拒否しても損はない ——
+    // 機械的失敗(retry)として server 側が次の hello で同じ id を再発行する
+    const owned = await getCredential(adapter.id);
+    if (owned && owned.runtime_id !== runtimeId) {
+      const who = await apiCall(owned.base_url, "/v1/whoami", { token: owned.token }).catch(
+        () => null,
+      );
+      if (who?.status !== 401) {
+        console.error(who?.status === 200 ? CREDENTIAL_OWNED_BY_HUMAN : CREDENTIAL_CHECK_FAILED);
+        console.error(
+          `  ${adapter.displayName} is already connected as ${owned.name} (${owned.runtime_id}), or its state ` +
+            `cannot be verified. Auto-registration will not replace it`,
+        );
+        process.exit(2);
+      }
+    }
+    await saveCredential(adapter.id, {
+      runtime_id: runtimeId,
+      token,
+      base_url: cleanUrl,
+      name,
+      paired_at: new Date().toISOString(),
+    });
+    try {
+      // 起こす runtime CLI(とその shebang が呼ぶ node)は **今の** PATH で解決する(PBI-0236)。
+      // launchd 経路以外では process.env がそのまま返る
+      await adapter.register({ env: await adoptEnv() }, {
+        serverEntry: MCP_SERVER_ENTRY,
+        runtimeKind: adapter.id,
+        baseUrl: cleanUrl,
+        serverName: MCP_SERVER_NAME,
+      });
+    } catch (e) {
+      // exit != 0 で broker が `register_ack ok:false` を返し、Cloud が行を revoke する
+      // (credential だけ生きて MCP config が無い半端な状態を残さない)。**端末側も同じ状態にする** ——
+      // 保存した credential をここで消さないと、Cloud が revoke した死んだ token が
+      // credentials.json に残り、`openroly doctor` は「繋がっているのに 401」を出し、MCP server は
+      // 401 で起動する(次の hello まで自己修復しない)。この runtime は今 register に失敗したので、
+      // 端末に残す理由が無い
+      await removeCredential(adapter.id).catch(() => false);
+      // **1 行目が detail になる** ので、runtime CLI がどこにも無い時は named reason を行頭へ置く
+      // (PBI-0236 AC-X1: broker 側の `openroly_cli_not_found` = openroly 自身が無い、と区別できるように)
+      const message = (e as Error).message;
+      fail(
+        message.startsWith(RUNTIME_CLI_NOT_FOUND)
+          ? message
+          : `adopt: registering the MCP server failed: ${message}`,
+        2,
+      );
+    }
+    console.log(`adopt: connected ${adapter.displayName} as ${name} (${runtimeId})`);
+    break;
+  }
+
+  case "uninstall": {
+    const adapter = requireAdapter(target);
+    const outcome = await uninstallRuntime({ adapter, ctx, baseUrl });
+    console.log(
+      `${adapter.displayName}: MCP registration ${outcome.unregistered ? "removed" : "could not be removed"} / ` +
+        `credential ${outcome.credentialRemoved ? "removed" : "none"}`,
+    );
+    // 「未登録だった」と「CLI が壊れていて消せなかった」を混ぜない
+    if (outcome.detail) console.log(`  reason: ${outcome.detail}`);
+    console.log("To disconnect on the account side, use Settings → Connected runtimes on the web");
+    break;
+  }
+
+  case "pair": {
+    const adapter = requireAdapter(target);
+    const outcome = await pairRuntime({
+      // `?? DEFAULT_BASE_URL` に戻さないこと(PBI-0246・図7.1)—— login で URL を決めた人が
+      // `openroly pair claude` を打つと localhost に行って ConnectionRefused で死ぬ。
+      // まだ pair していない runtime には引き継ぐ credential が無いので account の URL が要る
+      baseUrl: await accountBaseUrl(baseUrl),
+      kind: adapter.id,
+      name: `${hostname()} / ${adapter.displayName}`,
+      onPrompt: showPrompt,
+    });
+    if (outcome.status === "denied") fail("NG pairing was denied");
+    if (outcome.status === "expired") fail("NG pairing expired");
+    if (outcome.status === "failed") fail(`NG pairing failed: ${outcome.detail}`);
+    await reportConnected(
+      outcome.credential,
+      `${outcome.credential.name} (${outcome.credential.runtime_id})`,
+    );
+    break;
+  }
+
+  case "status": {
+    const credentials = (await loadCredentials()).runtimes;
+    const entries = Object.entries(credentials);
+    if (entries.length === 0) {
+      fail("Not connected. Start with 'openroly login'");
+    }
+    for (const [kind, credential] of entries) {
+      const adapter = findAdapter(kind);
+      console.log(`\n[${adapter?.displayName ?? kind}] ${credential.name}`);
+      try {
+        // 要件 §19: session 開始時に見せるのは metadata のみ(本文は出さない)
+        console.log(formatBrief(await fetchBrief(credential.base_url, credential.token)));
+      } catch (e) {
+        console.log(`  NG ${(e as Error).message}`);
+      }
+    }
+    break;
+  }
+
+  // PBI-0130: Claude Code の statusline に未読を出す。render 側(statusline.sh)は cache を
+  // cat するだけなので、ここは「取り直して cache を更新する」背景側と、手で覗く読み出し側の 2 つ。
+  case "statusline": {
+    const cachePath = join(openrolyHome(), "statusline");
+    if (!args.includes("--refresh")) {
+      // 読み出しは network を触らない(statusline が HTTP を待たない事の担保)
+      console.log((await readFile(cachePath, "utf8").catch(() => "")).trimEnd());
+      break;
+    }
+    const credential = (await loadCredentials()).runtimes.claude;
+    if (!credential) break; // 未接続なら黙って何もしない(statusline に error を出さない)
+    try {
+      const segment = formatStatusline(await fetchBrief(credential.base_url, credential.token));
+      // atomic write —— 書きかけの空 file を statusline に読ませない。
+      // 末尾に改行を付けない(cat した物がそのまま 1 行に載る)
+      const tmp = `${cachePath}.tmp`;
+      await writeFile(tmp, segment, { mode: 0o600 });
+      await rename(tmp, cachePath);
+      console.log(segment);
+    } catch (e) {
+      // server 断・auth 失効は「前の値を残す」。cache を消しも上書きもしない ——
+      // 通信が切れた瞬間に statusline の表示が消えるのが一番わかりにくい。
+      // 理由は stderr にだけ出す: statusline.sh は stderr を捨てるので表示は汚れず、
+      // 手で `openroly statusline --refresh` を叩いた時だけ原因が見える(黙って空になるのを避ける)
+      console.error(`statusline refresh aborted: ${(e as Error).message}`);
+    }
+    break;
+  }
+
+  case "doctor": {
+    let ok = true;
+    for (const adapter of target ? [requireAdapter(target)] : ADAPTERS) {
+      console.log(`\n[${adapter.displayName}]`);
+      ok = printFindings(await doctorRuntime({ adapter, ctx, baseUrl })) && ok;
+    }
+    // 閉じ込めの土台(PBI-0238 / 図72)。broker が起動時の self_test の結果を status file に残す。
+    // 無い = broker がまだ一度も起動していない(dedicated session は起こせない)ので NG に数える。
+    console.log("\n[Broker]");
+    ok = printFindings(await brokerSandboxFindings()) && ok;
+    if (!ok) process.exit(1);
+    break;
+  }
+
+  case "runtimes": {
+    const credentials = (await loadCredentials()).runtimes;
+    for (const adapter of ADAPTERS) {
+      const detected = await adapter.detect(ctx);
+      const credential = credentials[adapter.id];
+      console.log(
+        `${adapter.id.padEnd(8)} ${adapter.displayName.padEnd(14)} ` +
+          `${detected.installed ? "detected" : "not detected"} / ` +
+          `${credential ? `connected (${credential.runtime_id})` : "not connected"}`,
+      );
+    }
+    break;
+  }
+
+  case "extensions": {
+    const credentials = (await loadCredentials()).runtimes;
+    const entry = Object.values(credentials)[0];
+    if (!entry) fail("Not connected. Start with 'openroly login'");
+    const res = await apiCall(entry.base_url, "/v1/extensions", { token: entry.token });
+    if (res.status !== 200) fail(`NG /v1/extensions returned ${res.status}`);
+    const list = res.body as any[];
+    if (list.length === 0) {
+      console.log("No desired extensions registered yet");
+      break;
+    }
+    for (const ext of list) {
+      const status =
+        (ext.materializations as any[])
+          .map((m) => `${m.runtime_id}:${m.status}`)
+          .join(", ") || "(not synced)";
+      const flags = [ext.enabled ? null : "disabled", ext.deleted_at ? "pending deletion" : null]
+        .filter(Boolean)
+        .join(",");
+      console.log(
+        `${ext.name.padEnd(16)} ${ext.kind.padEnd(8)} rev${ext.revision}` +
+          `${flags ? ` [${flags}]` : ""} — ${status}`,
+      );
+    }
+    break;
+  }
+
+  case "sync": {
+    const dryRun = args.includes("--dry-run");
+    const credentials = (await loadCredentials()).runtimes;
+    const targets: RuntimeAdapter[] = target
+      ? [requireAdapter(target)]
+      : ADAPTERS.filter((a) => credentials[a.id]);
+    if (targets.length === 0) {
+      fail("Not connected. Start with 'openroly login'");
+    }
+    let anyFailed = false;
+    for (const adapter of targets) {
+      const credential = credentials[adapter.id];
+      if (!credential) {
+        console.log(`\n[${adapter.displayName}] not connected — skipped`);
+        continue;
+      }
+      console.log(`\n[${adapter.displayName}]`);
+      const result = await reconcile({
+        adapter,
+        ctx,
+        baseUrl: credential.base_url,
+        token: credential.token,
+        runtimeId: credential.runtime_id,
+        dryRun,
+      });
+      const acted = result.plan.filter((item) => item.action !== "noop");
+      if (acted.length === 0) {
+        console.log("  no changes");
+      }
+      for (const item of acted) {
+        console.log(`  ${item.action.padEnd(12)} ${item.name}`);
+      }
+      if (dryRun) {
+        console.log("  (dry-run: nothing was written)");
+        continue;
+      }
+      for (const f of result.failed) {
+        console.log(`  NG ${f.name}: ${f.detail}`);
+      }
+      if (result.failed.length > 0) anyFailed = true;
+    }
+    if (anyFailed) process.exit(1);
+    break;
+  }
+
+  case "share": {
+    // 吸い上げ → 提案(PBI-0212 / 図67)。sync の逆向きだが desired は書かない ——
+    // 承認は web(または account 設定 auto_share)の仕事で、CLI は「見つけた」と言うだけ
+    const dryRun = args.includes("--dry-run");
+    const auto = args.includes("--auto");
+    const credentials = (await loadCredentials()).runtimes;
+    if (Object.keys(credentials).length === 0) fail("Not connected. Start with 'openroly login'");
+    const adapters = target ? [requireAdapter(target)] : ADAPTERS;
+    // secrets.json が書けない / server に届かない時は例外を投げる = 提案を 1 件も残さない(AC-X2)
+    const result = await shareExtensions({ adapters, ctx, credentials, dryRun, auto }).catch(
+      (e: Error) => fail(`NG share: ${e.message}`),
+    );
+    for (const skip of result.skipped) {
+      console.log(`  skipped ${skip.name} (${skip.runtimeKind}): ${skip.reason}`);
+    }
+    if (result.plan.length === 0) {
+      console.log("Nothing new to share");
+      break;
+    }
+    for (const item of result.plan) {
+      const renamed = item.name === item.originalName ? "" : ` (was "${item.originalName}")`;
+      const secret = item.credentialRef ? ` [${item.credentialRef} stays on this machine]` : "";
+      console.log(`  ${item.kind.padEnd(6)} ${item.name}${renamed} from ${item.runtimeKind}${secret}`);
+    }
+    if (dryRun) {
+      console.log("  (dry-run: nothing was sent and no secret was stored)");
+      break;
+    }
+    const approved = result.sent.filter((x) => x.status === "approved").length;
+    console.log(
+      `\nOffered ${result.sent.length} item(s)` +
+        (approved > 0 ? `, ${approved} approved automatically` : "") +
+        ".\nOpen Your AI > Extensions on the web to approve the rest.",
+    );
+    for (const f of result.failed) console.log(`  NG ${f.name}: ${f.detail}`);
+    if (result.failed.length > 0) process.exit(1);
+    break;
+  }
+
+  case "watch-dirs": {
+    // PBI-0213 / 図18: broker が「見張る場所」を訊く口。接続済み runtime の MCP config file と
+    // skills dir を 1 行 1 path で出す。**path の正本は adapter 側 1 箇所**(Rust に写さない)
+    // —— 76 agent 分の場所を broker に持たせると、片方だけ直る正本が 2 枚になる。
+    //
+    // `detect()` を通さないのは、あちらが `<bin> --version` を叩く(実測 3s)ため。見張る場所を
+    // 知るのに probe は要らないし、**存在しない path も出す**(まだ無い skills dir が後から
+    // 現れたのを見張り側が拾えるように)。
+    const credentials = (await loadCredentials()).runtimes;
+    const seen = new Set<string>();
+    for (const adapter of ADAPTERS) {
+      if (!credentials[adapter.id]) continue;
+      for (const path of adapter.watchPaths(ctx)) {
+        // 改行を含む path は 1 行 1 path の綴りを壊す(読み手が 2 つの path と読む)ので出さない
+        if (path.includes("\n") || seen.has(path)) continue;
+        seen.add(path);
+        console.log(path);
+      }
+    }
+    break;
+  }
+
+  case "agent": {
+    // 外部 API provider を端末側 runtime として 1 turn 動かす(EP-0009 B / PBI-0057)。
+    // server 側 agent は E2EE(アーキ §9)により作れないので、復号できるこの端末で動かす
+    const provider = target;
+    if (!provider || !isAgentProvider(provider)) {
+      // 持ち込みの endpoint(PBI-0276)は名前が account ごとなので一覧に出せない。形だけ添える
+      fail(`agent needs a provider: ${AGENT_PROVIDERS.join(" / ")} / custom-<name>`);
+    }
+    const threadId = flagValue("--thread");
+    if (!threadId) fail("agent needs --thread <id>");
+    const waitRaw = flagValue("--wait");
+    const result = await runAgent({
+      provider,
+      threadId,
+      model: flagValue("--model"),
+      waitSec: waitRaw != null ? Number(waitRaw) : undefined,
+    });
+    if (result.status === "sent") {
+      console.log("Sent");
+      break;
+    }
+    if (result.status === "ask_approval_required") {
+      console.log(`ask_approval_required — waiting for approval (approval_id=${result.approvalId})`);
+      break;
+    }
+    if (result.status === "already_handled") {
+      console.log("already_handled — this thread was already handled");
+      break;
+    }
+    fail(`NG ${result.detail ?? result.status}`);
+  }
+
+  case "admin": {
+    // 運営が助ける道(PBI-0135・図51 ③)。recovery code を控えていない人を 1 コマンドで戻す。
+    // server 側は OPENROLY_ADMIN_TOKEN が無ければ 503(既定で無効)で、成功も失敗も activity に残る。
+    // `--url` の値を positional と誤認しないよう、直前が --url の要素は除く
+    const positional = args.filter((a, i) => !a.startsWith("--") && args[i - 1] !== "--url");
+    const [sub, rawHandle] = positional;
+    if (sub !== "recover") {
+      fail(`Unknown admin subcommand: ${sub ?? "(none)"}\nSupported: admin recover <handle>`);
+    }
+    const handle = rawHandle?.replace(/^@+/, "");
+    if (!handle) fail("Specify a handle (e.g. openroly admin recover shibu)");
+    const adminToken = process.env.OPENROLY_ADMIN_TOKEN;
+    if (!adminToken) {
+      fail("OPENROLY_ADMIN_TOKEN is not set. Pass the same value as the server's env");
+    }
+    // PBI-0169: 既定は「今在る session を全部落としてから 1 本出す」。**残す側を既定にしない**
+    // —— 「token を無くした」で来る人の裏には「盗まれた」が混じっており、既定で残すと
+    // 助けた同じ操作で盗んだ側も生かす。本人の端末が生きていると分かっている時だけ明示する
+    const keepSessions = args.includes("--keep-sessions");
+    const url = await accountBaseUrl(baseUrl);
+    const res = await apiCall(url, "/v1/admin/sessions", {
+      method: "POST",
+      token: adminToken,
+      body: { handle, keep_sessions: keepSessions },
+    });
+    if (res.status === 503) fail("NG the server has no OPENROLY_ADMIN_TOKEN (the admin path is disabled by default)");
+    if (res.status === 401 || res.status === 403) fail("NG wrong admin token");
+    if (res.status === 404) fail(`NG @${handle} was not found`);
+    if (res.status !== 200) fail(`NG could not issue a session (HTTP ${res.status})`);
+    console.log(`Session token for @${res.body.handle}:\n\n  ${res.body.token}\n`);
+    console.log(
+      keepSessions
+        ? "Their other sessions were left open (--keep-sessions)."
+        : `Signed out ${res.body.revoked_sessions ?? 0} other session(s) of that account.`,
+    );
+    console.log(
+      `Hand it to the account holder over a safe channel. Pasting it into "Session token" on Sign in (${url}) gets them in.\n` +
+        "Then tell them to set up a passkey or recovery codes under Settings › Sign-in methods",
+    );
+    break;
+  }
+
+  case "peek": {
+    // PBI-0224: dedicated session の「model が見た面」を端末で見せる。読むのは broker の session_dir だけで、
+    // server にも web にも送らない(log は端末にしか無い)。値は一度も復元しない
+    const sessionsDir = join(brokerHome(), "sessions");
+    if (args.includes("--list")) {
+      console.log(renderList(sessionsDir));
+      break;
+    }
+    let dir: string;
+    if (target) {
+      if (!SESSION_ID_RE.test(target)) fail(`Invalid session id: ${target}`);
+      dir = join(sessionsDir, target);
+      if (!existsSync(dir)) fail(`No session ${target} in ${sessionsDir}\nRun 'openroly peek --list' to see what is there`);
+    } else {
+      const latest = listSessions(sessionsDir, 1).entries[0];
+      if (!latest) fail(`No sessions in ${sessionsDir}\nA dedicated session (AUTO / draft / triage / work) leaves one here`);
+      dir = latest.dir;
+    }
+    if (args.includes("--json")) {
+      process.stdout.write(rawPeek(dir));
+      break;
+    }
+    if (args.includes("--follow")) {
+      await followSession(dir);
+      break;
+    }
+    console.log(renderSession(dir));
+    break;
+  }
+
+  case "--help":
+  case "help":
+  case undefined:
+    console.log(USAGE);
+    break;
+
+  default:
+    fail(`Unknown command: ${command}\n\n${USAGE}`);
+}

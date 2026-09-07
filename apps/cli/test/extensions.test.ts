@@ -3,14 +3,14 @@ import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { saveCredential } from "@paa/adapter";
+import { saveCredential } from "@openroly/adapter";
 
 // AC-11/12(2 runtime の credential store 分離)/ AC-15,16(dry-run と冪等性)を
-// CLI(atn sync / atn extensions)経由で検査する。実 claude/codex CLI には依存しない ——
+// CLI(openroly sync / openroly extensions)経由で検査する。実 claude/codex CLI には依存しない ——
 // dry-run と「差分なし」の noop 経路は adapter.applyExtension を一度も呼ばないため、
 // native CLI を shell out する機会が無い(kind=plugin は常に unsupported になるので同様)。
 
-const CLI = fileURLToPath(new URL("../src/paa.ts", import.meta.url));
+const CLI = fileURLToPath(new URL("../src/openroly.ts", import.meta.url));
 
 let desiredResponse: unknown[] = [];
 const statusCalls: { authorization: string | null; extensionId: string; body: any }[] = [];
@@ -44,7 +44,7 @@ beforeEach(() => {
 });
 
 async function isolatedHome(): Promise<string> {
-  return mkdtemp(join(tmpdir(), "paa-ext-home-"));
+  return mkdtemp(join(tmpdir(), "openroly-ext-home-"));
 }
 
 async function seedCredential(
@@ -61,13 +61,13 @@ async function seedCredential(
       name: `${runtimeId} / Claude Code`,
       paired_at: new Date().toISOString(),
     },
-    { PAA_HOME: home },
+    { OPENROLY_HOME: home },
   );
 }
 
-async function paa(args: string[], home: string) {
+async function openroly(args: string[], home: string) {
   const proc = Bun.spawn(["bun", CLI, ...args], {
-    env: { PATH: process.env.PATH ?? "", HOME: home, PAA_HOME: home },
+    env: { PATH: process.env.PATH ?? "", HOME: home, OPENROLY_HOME: home },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -78,8 +78,8 @@ async function paa(args: string[], home: string) {
   return { exitCode: await proc.exited, stdout, stderr };
 }
 
-describe("atn sync / atn extensions", () => {
-  test("AC-11/12: 別 PAA_HOME の credential store は互いに独立し、それぞれ自分の token で status を書く", async () => {
+describe("openroly sync / openroly extensions", () => {
+  test("AC-11/12: 別 OPENROLY_HOME の credential store は互いに独立し、それぞれ自分の token で status を書く", async () => {
     // kind=plugin は claude adapter の extensionKinds(["mcp"])に無いので必ず unsupported になり、
     // native CLI を一切呼ばずに 1 回だけ status POST が発生する(credential 分離だけを見る検査)
     desiredResponse = [
@@ -100,9 +100,9 @@ describe("atn sync / atn extensions", () => {
     await seedCredential(homeA, "rt_A", "par_tokenA");
     await seedCredential(homeB, "rt_B", "par_tokenB");
 
-    const resultA = await paa(["sync", "claude"], homeA);
+    const resultA = await openroly(["sync", "claude"], homeA);
     expect(resultA.exitCode).toBe(0);
-    const resultB = await paa(["sync", "claude"], homeB);
+    const resultB = await openroly(["sync", "claude"], homeB);
     expect(resultB.exitCode).toBe(0);
 
     expect(statusCalls.length).toBe(2);
@@ -130,7 +130,7 @@ describe("atn sync / atn extensions", () => {
     const configPath = join(home, ".claude.json");
     const before = await stat(configPath).catch(() => null);
 
-    const result = await paa(["sync", "claude", "--dry-run"], home);
+    const result = await openroly(["sync", "claude", "--dry-run"], home);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("install");
     expect(result.stdout).toContain("dry-run");
@@ -165,13 +165,13 @@ describe("atn sync / atn extensions", () => {
       }),
     );
 
-    const result = await paa(["sync", "claude"], home);
+    const result = await openroly(["sync", "claude"], home);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("no changes");
     expect(statusCalls).toEqual([]);
   }, 30_000);
 
-  test("atn extensions: desired 一覧 + runtime 別 status を表示する", async () => {
+  test("openroly extensions: desired 一覧 + runtime 別 status を表示する", async () => {
     desiredResponse = [
       {
         id: "ext_gh",
@@ -190,7 +190,7 @@ describe("atn sync / atn extensions", () => {
     const home = await isolatedHome();
     await seedCredential(home, "rt_list", "par_list");
 
-    const result = await paa(["extensions"], home);
+    const result = await openroly(["extensions"], home);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("github");
     expect(result.stdout).toContain("rev3");
@@ -199,8 +199,8 @@ describe("atn sync / atn extensions", () => {
 
   test("未接続なら extensions / sync は次の一手を示して失敗する", async () => {
     const home = await isolatedHome();
-    expect((await paa(["extensions"], home)).stderr).toContain("atn login");
-    expect((await paa(["sync"], home)).stderr).toContain("atn login");
+    expect((await openroly(["extensions"], home)).stderr).toContain("openroly login");
+    expect((await openroly(["sync"], home)).stderr).toContain("openroly login");
   }, 30_000);
 
   test("AC-14: 1 件でも failed が有れば sync の exit code は 1 になる", async () => {
@@ -221,7 +221,7 @@ describe("atn sync / atn extensions", () => {
     const home = await isolatedHome();
     await seedCredential(home, "rt_fail", "par_fail");
 
-    const result = await paa(["sync", "claude"], home);
+    const result = await openroly(["sync", "claude"], home);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain("NG needs-secret");
     expect(statusCalls).toMatchObject([{ body: { status: "failed" } }]);

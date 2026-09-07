@@ -19,9 +19,9 @@ async function installFakeCli(name: string, code = 0): Promise<void> {
   await chmod(join(bin, name), 0o755);
 }
 
-// PAA_HOME を隔離する: resolveMcpServerCommand(PBI-0132)が dev 機の ~/.atn/bin/atn-mcp を
+// OPENROLY_HOME を隔離する: resolveMcpServerCommand(PBI-0132)が dev 機の ~/.openroly/bin/openroly-mcp を
 // 拾うと、この test の期待(`-- bun /repo/mcp.ts`)が機械ごとに揺れる
-const ctx = (): AdapterContext => ({ env: { PATH: bin, HOME: root, PAA_HOME: join(root, ".atn") } });
+const ctx = (): AdapterContext => ({ env: { PATH: bin, HOME: root, OPENROLY_HOME: join(root, ".openroly") } });
 
 const jsonSpec = () => ({
   id: "fakejson",
@@ -49,7 +49,7 @@ const tomlSpec = () => ({
 });
 
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), "atn-mcpcfg-"));
+  root = await mkdtemp(join(tmpdir(), "openroly-mcpcfg-"));
   bin = join(root, "bin");
   marker = join(root, "argv.log");
   configFile = join(root, "config");
@@ -72,12 +72,12 @@ describe("createMcpConfigAdapter — argv の組み立て (PBI-0060 AC-1)", () =
       serverEntry: "/repo/mcp.ts",
       runtimeKind: "fakejson",
       baseUrl: "http://localhost:8787",
-      serverName: "atn",
+      serverName: "openroly",
     });
     const lines = await argvLines();
-    expect(lines[0]).toBe("mcp remove -s user atn");
+    expect(lines[0]).toBe("mcp remove -s user openroly");
     expect(lines[1]).toBe(
-      "mcp add -s user atn -e PAA_RUNTIME_KIND=fakejson -e PAA_URL=http://localhost:8787 -- bun /repo/mcp.ts",
+      "mcp add -s user openroly -e OPENROLY_RUNTIME_KIND=fakejson -e OPENROLY_URL=http://localhost:8787 -- bun /repo/mcp.ts",
     );
   });
 
@@ -85,14 +85,14 @@ describe("createMcpConfigAdapter — argv の組み立て (PBI-0060 AC-1)", () =
     await installFakeCli("fakejson", 3);
     const a = createMcpConfigAdapter(jsonSpec());
     await expect(
-      a.register(ctx(), { serverEntry: "/x", runtimeKind: "k", baseUrl: "http://h", serverName: "atn" }),
+      a.register(ctx(), { serverEntry: "/x", runtimeKind: "k", baseUrl: "http://h", serverName: "openroly" }),
     ).rejects.toThrow(/fakejson mcp add failed/);
   });
 
   test("unregister は remove の失敗をそのまま Error にする", async () => {
     await installFakeCli("fakejson", 1);
     const a = createMcpConfigAdapter(jsonSpec());
-    await expect(a.unregister(ctx(), "atn")).rejects.toThrow(/fakejson mcp remove failed/);
+    await expect(a.unregister(ctx(), "openroly")).rejects.toThrow(/fakejson mcp remove failed/);
   });
 
   test("detect は CLI の有無を返す(見つからなければ installHint)", async () => {
@@ -110,29 +110,29 @@ describe("createMcpConfigAdapter — argv の組み立て (PBI-0060 AC-1)", () =
 
 describe("createMcpConfigAdapter — config の読み (PBI-0060 AC-2 / AC-3)", () => {
   test("AC-2: JSON config の serversKey から一覧と doctor を返す", async () => {
-    await writeFile(configFile, JSON.stringify({ mcpServers: { paa: {}, other: {} } }));
+    await writeFile(configFile, JSON.stringify({ mcpServers: { openroly: {}, other: {} } }));
     const a = createMcpConfigAdapter(jsonSpec());
-    expect((await a.listExtensions(ctx())).map((e) => e.name).sort()).toEqual(["other", "paa"]);
-    const [ok] = await a.doctor(ctx(), "paa");
+    expect((await a.listExtensions(ctx())).map((e) => e.name).sort()).toEqual(["openroly", "other"]);
+    const [ok] = await a.doctor(ctx(), "openroly");
     expect(ok).toMatchObject({ ok: true, label: "Fake JSON CLI MCP registration" });
     expect(ok!.detail).toContain(configFile);
     const [ng] = await a.doctor(ctx(), "missing");
     expect(ng!.ok).toBe(false);
-    expect(ng!.detail).toContain("atn install fakejson");
+    expect(ng!.detail).toContain("openroly install fakejson");
   });
 
   test("AC-3: TOML config でも同じ結果(形式の違いが呼び出し側に漏れない)", async () => {
-    await writeFile(configFile, '[mcp_servers.paa]\ncommand = "bun"\n[mcp_servers.other]\ncommand = "x"\n');
+    await writeFile(configFile, '[mcp_servers.openroly]\ncommand = "bun"\n[mcp_servers.other]\ncommand = "x"\n');
     const a = createMcpConfigAdapter(tomlSpec());
-    expect((await a.listExtensions(ctx())).map((e) => e.name).sort()).toEqual(["other", "paa"]);
-    expect((await a.doctor(ctx(), "paa"))[0]!.ok).toBe(true);
+    expect((await a.listExtensions(ctx())).map((e) => e.name).sort()).toEqual(["openroly", "other"]);
+    expect((await a.doctor(ctx(), "openroly"))[0]!.ok).toBe(true);
   });
 
   test("AC-X2: config が無い / 壊れていても throw せず 0 件・ok:false", async () => {
     const a = createMcpConfigAdapter(jsonSpec());
     // 存在しない
     expect(await a.listExtensions(ctx())).toEqual([]);
-    expect((await a.doctor(ctx(), "paa"))[0]!.ok).toBe(false);
+    expect((await a.doctor(ctx(), "openroly"))[0]!.ok).toBe(false);
     // 壊れた JSON
     await writeFile(configFile, "{{{");
     expect(await a.listExtensions(ctx())).toEqual([]);
@@ -150,16 +150,16 @@ describe("createMcpConfigAdapter — applyExtension (PBI-0060 AC-5)", () => {
     await installFakeCli("fakejson");
     await writeFile(configFile, JSON.stringify({ mcpServers: {} }));
     const a = createMcpConfigAdapter(jsonSpec());
-    await a.applyExtension(ctx(), { action: "uninstall", name: "paa" });
+    await a.applyExtension(ctx(), { action: "uninstall", name: "openroly" });
     expect(await argvLines()).toEqual([]);
   });
 
   test("config に有る name の uninstall は remove を呼ぶ", async () => {
     await installFakeCli("fakejson");
-    await writeFile(configFile, JSON.stringify({ mcpServers: { paa: {} } }));
+    await writeFile(configFile, JSON.stringify({ mcpServers: { openroly: {} } }));
     const a = createMcpConfigAdapter(jsonSpec());
-    await a.applyExtension(ctx(), { action: "uninstall", name: "paa" });
-    expect(await argvLines()).toEqual(["mcp remove -s user paa"]);
+    await a.applyExtension(ctx(), { action: "uninstall", name: "openroly" });
+    expect(await argvLines()).toEqual(["mcp remove -s user openroly"]);
   });
 
   test("install は env と spec.args を argv に載せ、消してから足す", async () => {

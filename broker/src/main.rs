@@ -1,8 +1,14 @@
 mod adopt;
 mod discovery;
+mod egress;
+mod env_compat;
 mod launch;
-mod paa_cli;
+#[macro_use]
+mod log;
+mod openroly_cli;
 mod registry;
+mod sandbox;
+mod sync;
 mod triggers;
 
 use std::env;
@@ -18,22 +24,20 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 use discovery::{Found, ScanEnv, VersionCache};
 use registry::{FetchOutcome, Registry};
+use sync::CliJob;
 use triggers::{RescanGate, SleepWatch, TickAction, Trigger};
 
 const DEFAULT_WS_URL: &str = "ws://127.0.0.1:8787/v1/broker/ws";
 const INITIAL_BACKOFF: Duration = Duration::from_millis(500);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
-// heartbeat: ping を打つ間隔。discovery の再実行(runtime の後発インストール検知)も相乗りさせる。
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
-// この間 何も受信しなければ(pong 含む)half-open とみなして接続を切って再接続させる。
-const IDLE_TIMEOUT: Duration = Duration::from_secs(40);
+// heartbeat / idle / connect の 3 つは `triggers::Timings`(knob は heartbeat 1 つ)。
 
 /// 接続ごとに畳む tokio task。**drop で abort する**(PBI-0248 AC-X2)。`run_once` はどの
 /// return 経路でもこの guard を通って抜けるので、古い接続の materialize が生き残って、
-/// 再接続後の分と **二重に `atn adopt` を起こす**ことがない(上限 ADOPT_CONCURRENCY は
+/// 再接続後の分と **二重に `openroly adopt` を起こす**ことがない(上限 ADOPT_CONCURRENCY は
 /// task ごとなので、task が 2 つ在れば 8 本立って上限を素通りする)。
 ///
-/// abort で future が drop されると、走っていた `atn adopt` は `kill_on_drop(true)` で殺される
+/// abort で future が drop されると、走っていた `openroly adopt` は `kill_on_drop(true)` で殺される
 /// —— credential を書きかけた子を置き去りにしない。
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
 
@@ -55,6 +59,13 @@ struct BrokerState {
     scan_env: ScanEnv,
     /// shell hook が教えてくれた「特殊な install 先」(PBI-0024 層 4)。FIFO で最大 8 件。
     hook_dirs: Vec<PathBuf>,
+    /// 閉じ込めの土台(PBI-0238 / 図72)。起動時の self_test に通った backend。通らなかった機は
+    /// `NoSandbox` に差し替えてあり、全 dedicated wake が `sandbox_unavailable` になる。
+    sandbox: Box<dyn sandbox::SandboxBackend>,
+    /// OpenRoly server の host(ws url から)。egress allowlist に足す(MCP が Cloud に繋ぐ先)。
+    server_host: String,
+    /// user の HOME。sandbox の deny_read / writable_extra の既定に使う(env は起動時に 1 回だけ読む)。
+    user_home: PathBuf,
 }
 
 #[tokio::main]
@@ -66,11 +77,12 @@ async fn main() {
         return;
     }
 
-    let ws_url = env::var("PAA_BROKER_WS_URL").unwrap_or_else(|_| DEFAULT_WS_URL.to_string());
-    let token = match env::var("PAA_RUNTIME_TOKEN") {
-        Ok(t) => t,
-        Err(_) => {
-            eprintln!("broker: PAA_RUNTIME_TOKEN is not set");
+    let ws_url =
+        env_compat::env_new_or_legacy("OPENROLY_BROKER_WS_URL").unwrap_or_else(|| DEFAULT_WS_URL.to_string());
+    let token = match env_compat::env_new_or_legacy("OPENROLY_RUNTIME_TOKEN") {
+        Some(t) => t,
+        None => {
+            blog!("OPENROLY_RUNTIME_TOKEN is not set");
             std::process::exit(1);
         }
     };
@@ -78,17 +90,43 @@ async fn main() {
     // Detector Registry(図18): cache を再検証して読む(無い / 改ざん → built-in)。
     let cache_dir = launch::broker_home();
     let registry = registry::load(&cache_dir);
-    eprintln!("broker: registry = {} detectors={:?}", registry.origin, registry.ids());
-    let registry_url =
-        env::var("PAA_REGISTRY_URL").unwrap_or_else(|_| registry::registry_url_from_ws(&ws_url));
-    let refresh = env::var("PAA_REGISTRY_REFRESH_SECS")
-        .ok()
+    blog!("registry = {} detectors={:?}", registry.origin, registry.ids());
+    let registry_url = env_compat::env_new_or_legacy("OPENROLY_REGISTRY_URL")
+        .unwrap_or_else(|| registry::registry_url_from_ws(&ws_url));
+    let refresh = env_compat::env_new_or_legacy("OPENROLY_REGISTRY_REFRESH_SECS")
         .and_then(|s| s.parse::<u64>().ok())
         .filter(|s| *s > 0)
         .map(Duration::from_secs)
         .unwrap_or(registry::DEFAULT_REFRESH);
     let scan_env = ScanEnv::from_env();
     let hook_socket = cache_dir.join(triggers::HOOK_SOCKET_NAME);
+    // 閉じ込めの土台(PBI-0238 / 図72): backend を決めて self_test(4 probe)。1 つでも落ちれば
+    // **全 dedicated wake を断る**(丸腰で起こさない)。結果は stderr と doctor(status file)に出す。
+    let sandbox = sandbox::backend();
+    let sandbox_status = sandbox.self_test().map(|()| sandbox.name());
+    let sandbox: Box<dyn sandbox::SandboxBackend> = match &sandbox_status {
+        Ok(name) => {
+            eprintln!("broker: sandbox: {name} ok");
+            sandbox
+        }
+        Err(reason) => {
+            eprintln!(
+                "broker: sandbox: unavailable({reason}) — every dedicated session will be refused \
+                 with sandbox_unavailable until this is fixed"
+            );
+            Box::new(sandbox::NoSandbox { reason: reason.clone() })
+        }
+    };
+    let egress_check = std::net::TcpListener::bind("127.0.0.1:0")
+        .map(|_| ())
+        .map_err(|e| format!("loopback bind failed: {e}"));
+    sandbox::write_status(&cache_dir, &sandbox_status, &egress_check);
+    let server_host = ws_url
+        .parse::<http::Uri>()
+        .ok()
+        .and_then(|u| u.host().map(|h| h.to_string()))
+        .unwrap_or_default();
+    let user_home = PathBuf::from(env::var("HOME").unwrap_or_else(|_| ".".to_string()));
     let mut state = BrokerState {
         registry,
         versions: Some(VersionCache::default()),
@@ -97,6 +135,9 @@ async fn main() {
         refresh,
         scan_env,
         hook_dirs: Vec::new(),
+        sandbox,
+        server_host,
+        user_home,
     };
 
     // 再スキャンのきっかけ(層 2 / 層 4)。`results_tx` と同じく **main 所有** にして接続を跨いで
@@ -115,12 +156,27 @@ async fn main() {
     // flush される(PBI-0019 図15)。
     let (results_tx, mut results_rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
 
+    let timings =
+        triggers::timings_from_env(env_compat::env_new_or_legacy("OPENROLY_BROKER_HEARTBEAT_MS").as_deref());
+    blog!(
+        "timings heartbeat={:?} idle={:?} connect={:?}",
+        timings.heartbeat,
+        timings.idle,
+        timings.connect
+    );
+
     let mut backoff = INITIAL_BACKOFF;
+    // 直前の接続が **どう終わったか**。次に繋がった時の hello で名乗る(AC-4)。
+    let mut failure = LastFailure::default();
     loop {
         // 接続が「どれだけ続いたか」を測る(PBI-0190 review)。clean close でも **すぐ切れた**なら
         // 障害として数える —— そうしないと handshake 直後に切る相手に 500ms 間隔で張り付き、
         // 1 周ごとの registry fetch と discovery scan で CPU と Cloud を焼く
         let started = Instant::now();
+        // **試行そのものを必ず書く**(AC-2)。以前は失敗した時しか行が出ず、
+        // 「黙っている = 諦めた」のか「黙っている = 健全に繋がっている」のかを log から
+        // 区別できなかった(PBI-0277 の調査で実際に詰まった点)
+        blog!("connecting to {ws_url} (consecutive failures={})", failure.attempts);
         let outcome = run_once(
             &ws_url,
             &token,
@@ -128,25 +184,35 @@ async fn main() {
             &results_tx,
             &mut results_rx,
             &mut trigger_rx,
+            timings,
+            &failure,
         )
         .await;
         let lasted = started.elapsed();
         let clean = match &outcome {
             Ok(()) => {
-                eprintln!("broker: connection closed");
+                blog!("connection closed");
                 true
             }
             Err(e) => {
-                eprintln!("broker: connection error: {e}");
+                blog!("connection error: {e}");
                 false
             }
         };
+        // **繋がった接続だけが失敗の履歴を消す**。connect に失敗した周は attempts を積む ——
+        // これが web の「Offline の間に何が起きていたか」の中身になる(AC-3/AC-4)
+        if lasted >= triggers::MIN_HEALTHY_CONNECTION {
+            failure = LastFailure::default();
+        } else {
+            failure.attempts = failure.attempts.saturating_add(1);
+            failure.reason = outcome.err().or(Some("closed immediately".to_string()));
+        }
         // clean close の即時リセットは「実際に繋がっていた接続」だけに効かせる(triggers.rs)。
         // 短命な接続は Err と同じく倍化する —— 判定は純関数 1 つに集約して test で固定する
         let (wait, next) =
             triggers::reconnect_wait(backoff, clean, lasted, INITIAL_BACKOFF, MAX_BACKOFF);
         backoff = next;
-        eprintln!("broker: connection lasted {lasted:?}; reconnecting in {wait:?}");
+        blog!("connection lasted {lasted:?}; reconnecting in {wait:?}");
         tokio::time::sleep(wait).await;
     }
 }
@@ -163,20 +229,20 @@ async fn refresh_registry(state: &mut BrokerState) {
     .await
     .unwrap_or_else(|e| FetchOutcome::Failed(format!("task: {e}")));
     match outcome {
-        FetchOutcome::NotModified => eprintln!("broker: registry 304 (cache kept)"),
+        FetchOutcome::NotModified => blog!("registry 304 (cache kept)"),
         FetchOutcome::Updated(reg) => {
-            eprintln!(
-                "broker: registry updated issued_at={} detectors={:?}",
+            blog!(
+                "registry updated issued_at={} detectors={:?}",
                 reg.issued_at,
                 reg.ids()
             );
             state.registry = reg;
         }
         FetchOutcome::Rejected(e) => {
-            eprintln!("broker: registry signature mismatch ({e}). Discarded; keeping the current registry ({})", state.registry.origin)
+            blog!("registry signature mismatch ({e}). Discarded; keeping the current registry ({})", state.registry.origin)
         }
         FetchOutcome::Failed(e) => {
-            eprintln!("broker: registry fetch failed {e}. Keeping the current registry ({})", state.registry.origin)
+            blog!("registry fetch failed {e}. Keeping the current registry ({})", state.registry.origin)
         }
     }
 }
@@ -199,8 +265,24 @@ async fn scan_now(state: &mut BrokerState) -> Vec<Found> {
     found
 }
 
-fn hello_message(found: &[Found]) -> String {
-    json!({ "type": "hello", "runtimes": found }).to_string()
+/// 接続が **どう終わったか** を次の接続へ運ぶ(PBI-0277 AC-4)。切れている間 broker は Cloud へ
+/// 何も言えないので、owner の画面に理由を出す道は「次に繋がった時に名乗る」しか無い。
+#[derive(Debug, Default, Clone)]
+struct LastFailure {
+    /// 直近の失敗理由(`tls handshake eof` / `no native root CA certificates found` など)
+    reason: Option<String>,
+    /// 連続で失敗した回数(繋がったら 0 に戻す)
+    attempts: u32,
+}
+
+/// `last_failure` は **接続確立直後の 1 通目にだけ** 載せる(以後の差分 hello は None)。
+fn hello_message(found: &[Found], last_failure: Option<&LastFailure>) -> String {
+    let mut msg = json!({ "type": "hello", "runtimes": found });
+    if let Some(f) = last_failure.filter(|f| f.attempts > 0) {
+        msg["last_error"] = json!(f.reason.as_deref().unwrap_or("unknown"));
+        msg["failed_attempts"] = json!(f.attempts);
+    }
+    msg.to_string()
 }
 
 /// **再スキャンの合流点**(図18)。T0 / heartbeat / registry 更新 / 層 2・4 の trigger は全部ここへ
@@ -222,9 +304,9 @@ where
         return Ok(());
     }
     *known = current;
-    eprintln!("broker: discovery updated = {}", serde_json::to_string(known).unwrap_or_default());
+    blog!("discovery updated = {}", serde_json::to_string(known).unwrap_or_default());
     write
-        .send(Message::Text(hello_message(known).into()))
+        .send(Message::Text(hello_message(known, None).into()))
         .await
         .map_err(|e| format!("hello send failed: {e}"))
 }
@@ -241,6 +323,8 @@ async fn run_once(
     results_tx: &tokio::sync::mpsc::UnboundedSender<Value>,
     results_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Value>,
     trigger_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Trigger>,
+    timings: triggers::Timings,
+    failure: &LastFailure,
 ) -> Result<(), String> {
     let mut request = ws_url
         .into_client_request()
@@ -252,10 +336,15 @@ async fn run_once(
             .map_err(|e| format!("invalid token header: {e}"))?,
     );
 
-    let (ws_stream, _resp) = connect_async(request)
-        .await
-        .map_err(|e| format!("connect failed: {e}"))?;
-    eprintln!("broker: connected");
+    // **上限を付ける**(AC-2): TCP は繋がるが TLS handshake が返らない相手(黒穴・落ちかけた
+    // proxy)に当たると、`connect_async` は永久に pending になる。await が返らない以上
+    // 再接続の loop は 1 周も回らず、log にも何も出ない —— 外から見ると「黙って止まった」。
+    let (ws_stream, _resp) = match tokio::time::timeout(timings.connect, connect_async(request)).await
+    {
+        Ok(r) => r.map_err(|e| format!("connect failed: {e}"))?,
+        Err(_) => return Err(format!("connect timed out after {:?}", timings.connect)),
+    };
+    blog!("connected");
 
     let (mut write, mut read) = ws_stream.split();
 
@@ -263,13 +352,13 @@ async fn run_once(
     refresh_registry(state).await;
 
     let mut known_runtimes = scan_now(state).await;
-    eprintln!("broker: discovery = {}", serde_json::to_string(&known_runtimes).unwrap_or_default());
+    blog!("discovery = {}", serde_json::to_string(&known_runtimes).unwrap_or_default());
     write
-        .send(Message::Text(hello_message(&known_runtimes).into()))
+        .send(Message::Text(hello_message(&known_runtimes, Some(failure)).into()))
         .await
         .map_err(|e| format!("hello send failed: {e}"))?;
 
-    // materialize(`registered` → `atn adopt`)は **WS ループの外**で回す(PBI-0248)。
+    // materialize(`registered` → `openroly adopt`)は **WS ループの外**で回す(PBI-0248)。
     // 同時実行に上限を入れた(PBI-0235)結果、ループの中で待つと停止時間が
     // `ceil(件数 / ADOPT_CONCURRENCY) × ADOPT_TIMEOUT` まで伸びる。IDLE_TIMEOUT(40 秒)を
     // 跨ぐと接続が落ちて次の hello からやり直しになり、PBI-0190 で塞いだばかりの
@@ -277,7 +366,7 @@ async fn run_once(
     //
     // worker は **1 本**で、batch を 1 通ずつ順に処理する。ここが要点:
     //   - 上限 4 が接続全体で 1 つになる(`registered` が 2 通来ても 8 本立たない)
-    //   - 同じ runtime_id が 2 通に居ても `atn adopt` が 2 本同時に立たない
+    //   - 同じ runtime_id が 2 通に居ても `openroly adopt` が 2 本同時に立たない
     // 通ごとに task を起こすと、この 2 つが両方とも壊れる。
     let (adopt_tx, mut adopt_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<adopt::Adoption>>();
     let (ack_tx, mut ack_rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
@@ -292,7 +381,23 @@ async fn run_once(
         }
     }));
 
-    let mut heartbeat = interval(HEARTBEAT_INTERVAL);
+    // 常時同期の CLI worker(PBI-0213 / 図18)。`openroly sync` / `openroly share --auto` を起こす口は
+    // **ここ 1 本**で、materialize と同じく WS ループの外に置く —— `openroly sync` は全 runtime 分の
+    // CLI を呼ぶので、ループの中で待つと `IDLE_TIMEOUT` を跨いで接続が落ちる(PBI-0248 の型)。
+    let (cli_tx, cli_rx) = tokio::sync::mpsc::unbounded_channel::<CliJob>();
+    let cli_argv = openroly_cli::cli_argv();
+    let _cli_worker = AbortOnDrop(tokio::spawn(sync::run_cli_worker(
+        cli_argv,
+        sync::CLI_TIMEOUT,
+        sync::NATIVE_POLL,
+        cli_rx,
+    )));
+    // T0: 接続確立の直後に両方向を 1 回ずつ(AC-5 —— 切れている間に web で足された物はここで載り、
+    // 切れている間に端末へ入れた物はここで提案に上がる)
+    let _ = cli_tx.send(CliJob::Sync);
+    let _ = cli_tx.send(CliJob::Share);
+
+    let mut heartbeat = interval(timings.heartbeat);
     heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
     heartbeat.tick().await; // 起動直後の即時 tick を消費(hello 直後にすぐ ping しない)
     let mut registry_tick = interval(state.refresh);
@@ -311,14 +416,20 @@ async fn run_once(
                 // 単調時計なので、長時間 sleep 後は idle 判定が決して発火せず、死んだ TCP へ
                 // ping を打ち続ける。再接続すれば T0 が registry 取得と scan を両方やり直す。
                 let woke = sleep_watch.woke(Instant::now().into_std(), SystemTime::now());
-                match triggers::heartbeat_action(last_activity.elapsed(), IDLE_TIMEOUT, woke) {
+                match triggers::heartbeat_action(last_activity.elapsed(), timings.idle, woke) {
                     TickAction::Reconnect(reason) => return Err(reason.to_string()),
                     TickAction::Rescan => {}
                 }
                 // discovery を再実行し、起動後にインストールされた runtime を拾う(図15/図18)。
                 rescan_and_hello(&mut write, state, &mut known_runtimes).await?;
+                // **WS の Ping ではなく application frame を打つ**(PBI-0277 AC-X1)。
+                // WS の Pong は socket が開いてさえいれば返る —— Cloud 側が「この接続はもう
+                // 自分の registry に居ない」(後から来た接続に上書きされた / 別 instance が
+                // 応答している)状態でも返る。実測(2026-09-05)ではそれで **5 時間**、
+                // process も TCP も生きたまま hello だけが捨てられ、web は Offline のまま
+                // 黙っていた。「相手の application が自分を知っている」ことだけを生存の証拠にする。
                 write
-                    .send(Message::Ping(Vec::new().into()))
+                    .send(Message::Text(json!({ "type": "ping" }).to_string().into()))
                     .await
                     .map_err(|e| format!("ping send failed: {e}"))?;
             }
@@ -355,21 +466,24 @@ async fn run_once(
                         more.push(t);
                     }
                     triggers::absorb(&state.registry, &mut state.hook_dirs, &more);
-                    eprintln!("broker: trigger rescan n={}", batch.len() + more.len());
+                    blog!("trigger rescan n={}", batch.len() + more.len());
                     rescan_and_hello(&mut write, state, &mut known_runtimes).await?;
                 }
             }
             msg = read.next() => {
                 let Some(msg) = msg else { return Ok(()); };
                 let msg = msg.map_err(|e| format!("recv error: {e}"))?;
-                last_activity = Instant::now();
                 let Message::Text(text) = msg else { continue };
+                // **生存の時計は application frame だけで進める**(PBI-0277 AC-X1)。
+                // ここを Ping/Pong でも進めると、Cloud の application が自分を見失っていても
+                // socket が開いている限り idle 判定が永久に発火しない。
+                last_activity = Instant::now();
                 let parsed: Value = match serde_json::from_str(&text) {
                     Ok(v) => v,
                     Err(_) => continue,
                 };
                 // 自動登録(PBI-0023 図18): Cloud が hello の応答で credential を返してきた。
-                // kind ごとに `atn adopt` を起こして materialize し、1 件ごとに register_ack を
+                // kind ごとに `openroly adopt` を起こして materialize し、1 件ごとに register_ack を
                 // 返す(Cloud は ok:false の行を revoke して次の hello で再試行させる)。
                 // 同時実行数は ADOPT_CONCURRENCY で頭打ち(PBI-0235) —— 件数は Cloud が決めるので、
                 // 上限が無いと 1000 件の registered が端末で 1000 個の子プロセスになる。
@@ -378,8 +492,8 @@ async fn run_once(
                 // ack は 1 件終わるごとに `ack_rx` から戻ってきて、下の枝が現在の接続へ送る。
                 if parsed.get("type").and_then(Value::as_str) == Some("registered") {
                     let adoptions = adopt::parse_registered(&parsed);
-                    eprintln!(
-                        "broker: received registered count={} concurrency={}",
+                    blog!(
+                        "received registered count={} concurrency={}",
                         adoptions.len(),
                         adopt::ADOPT_CONCURRENCY
                     );
@@ -388,6 +502,17 @@ async fn run_once(
                     // 接続だけが生き続ける。接続を作り直して worker ごと立て直す。
                     if adopt_tx.send(adoptions).is_err() {
                         return Err("materialize worker gone".to_string());
+                    }
+                    continue;
+                }
+                // desired が変わった(PBI-0213 AC-1)。**中身は載っていない** —— `openroly sync` が
+                // `GET /v1/extensions` で取り直すので、配送経路は HTTP の 1 本のまま。
+                if parsed.get("type").and_then(Value::as_str) == Some("extensions_changed") {
+                    blog!("received extensions_changed");
+                    // worker が消えていたら接続ごと作り直す(materialize worker と同じ扱い ——
+                    // 握り潰すと以後の sync が黙って全部落ちる)
+                    if cli_tx.send(CliJob::Sync).is_err() {
+                        return Err("cli worker gone".to_string());
                     }
                     continue;
                 }
@@ -411,19 +536,25 @@ async fn run_once(
                     .get("instruction")
                     .and_then(Value::as_str)
                     .filter(|s| !s.is_empty());
-                eprintln!(
-                    "broker: received wake runtime={runtime} sessionMode={session_mode} \
+                blog!(
+                    "received wake runtime={runtime} sessionMode={session_mode} \
                      requestId={request_id} dedicated={}",
                     instruction.is_some()
                 );
-                // 外部 API provider(PBI-0070)は端末に binary を持たない —— `atn agent` を
-                // PAA_CLI で起こす。返信先の thread は wake payload の threadId から来る
+                // 外部 API provider(PBI-0070)は端末に binary を持たない —— `openroly agent` を
+                // OPENROLY_CLI で起こす。返信先の thread は wake payload の threadId から来る
                 let thread_id = parsed.get("threadId").and_then(Value::as_str).unwrap_or("");
                 // triage session の scope token(EP-0013 W3 / PBI-0117)。有る時だけ dedicated
-                // session の子 env `PAA_SESSION_SCOPE` へ載る(API provider 経路には載せない —
+                // session の子 env `OPENROLY_SESSION_SCOPE` へ載る(API provider 経路には載せない —
                 // scope は CLI runtime の dedicated session だけが運ぶ v1)。
                 let scope_token = parsed
                     .get("scopeToken")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty());
+                // lane の folder(PBI-0238 AC-4)。owner / work lane だけが持つ(server が rule から
+                // 解決する = PBI-0239)。無ければ session_dir/scratch。
+                let folder = parsed
+                    .get("folder")
                     .and_then(Value::as_str)
                     .filter(|s| !s.is_empty());
                 let is_api = state
@@ -431,16 +562,31 @@ async fn run_once(
                     .detector(runtime)
                     .map(|d| d.kind == "api")
                     .unwrap_or(false);
+                // dedicated session は (child, egress proxy) の対。proxy は child と同じ寿命
+                // (reaper が wait の後に drop = 閉じる)。Manual / API 経路は proxy 無し。
                 let launch_result = if is_api {
-                    launch::launch_api_env(&state.registry, runtime, thread_id)
+                    launch::launch_api_env(&state.registry, runtime, thread_id).map(|c| (c, None))
                 } else {
                     match instruction {
-                        Some(instr) => launch::launch_session_scoped(&state.registry, &known_runtimes, runtime, instr, request_id, scope_token),
-                        None => launch::launch(&state.registry, &known_runtimes, runtime, session_mode),
+                        Some(instr) => {
+                            let isolation = launch::Isolation {
+                                sandbox: state.sandbox.as_ref(),
+                                egress: egress::EgressConfig {
+                                    allow: egress::hosts_for(runtime, &state.server_host),
+                                    events: Some(results_tx.clone()),
+                                    upstream_override: None,
+                                },
+                                folder,
+                                user_home: state.user_home.clone(),
+                            };
+                            launch::launch_session_scoped(&state.registry, &known_runtimes, runtime, instr, request_id, scope_token, &isolation)
+                                .map(|(c, e)| (c, Some(e)))
+                        }
+                        None => launch::launch(&state.registry, &known_runtimes, runtime, session_mode).map(|c| (c, None)),
                     }
                 };
                 let response = match launch_result {
-                    Ok(child) => {
+                    Ok((child, egress)) => {
                         // reaper: 子の終了を待って session_result を送る(zombie 回収も兼ねる)。
                         // Manual routing の bare spawn も同じ reaper を通す —— session_result は
                         // Cloud 側で active session の requestId と一致した時だけ作用するので、
@@ -454,6 +600,8 @@ async fn run_once(
                                 Ok(status) => status.code(),
                                 Err(_) => None,
                             };
+                            // session 終了で proxy を閉じる(PBI-0238)。
+                            drop(egress);
                             let _ = tx.send(json!({
                                 "type": "session_result",
                                 "requestId": rid,
@@ -480,6 +628,15 @@ async fn run_once(
                 let Some(ack) = maybe_ack else {
                     return Err("materialize worker gone".to_string());
                 };
+                // adopt が通った = 新しい runtime が繋がった(AC-4)。既存 extension をその
+                // runtime へ載せ(sync)、その runtime に元から在った物を提案に上げる(share)。
+                // **失敗した ack では起こさない** —— credential が無い runtime に sync しても
+                // 落ちるだけで、次の hello の再試行が本筋
+                if ack.get("ok").and_then(Value::as_bool) == Some(true)
+                    && (cli_tx.send(CliJob::Sync).is_err() || cli_tx.send(CliJob::Share).is_err())
+                {
+                    return Err("cli worker gone".to_string());
+                }
                 // last_activity は **受信** の時計なので、自分の送信では更新しない
                 // (session_result と同じ理由。PBI-0033)
                 write

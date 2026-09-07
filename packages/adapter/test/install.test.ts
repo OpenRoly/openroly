@@ -49,15 +49,17 @@ const fakeAdapter: RuntimeAdapter = {
   extensionKinds: ["mcp"],
   listExtensions: async () => [],
   applyExtension: async () => {},
+  exportExtensions: async () => [],
+  watchPaths: () => [],
 };
 const ctx: AdapterContext = { env: {} };
 
 async function envWithCredential() {
-  // PAA_BINARY_BASE_URL は誰も listen していない port に向ける —— installRuntime は
+  // OPENROLY_BINARY_BASE_URL は誰も listen していない port に向ける —— installRuntime は
   // binary(PBI-0137)を取りに行くので、指定しないと unit test が公開 Release を叩く
   const env = {
-    PAA_HOME: await mkdtemp(join(tmpdir(), "paa-doctor-")),
-    PAA_BINARY_BASE_URL: "http://127.0.0.1:1",
+    OPENROLY_HOME: await mkdtemp(join(tmpdir(), "openroly-doctor-")),
+    OPENROLY_BINARY_BASE_URL: "http://127.0.0.1:1",
   };
   await saveCredential(
     "claude",
@@ -75,11 +77,11 @@ async function envWithCredential() {
 
 describe("doctor", () => {
   test("未 pair なら pairing を促す", async () => {
-    const env = { PAA_HOME: await mkdtemp(join(tmpdir(), "paa-doctor-")) };
+    const env = { OPENROLY_HOME: await mkdtemp(join(tmpdir(), "openroly-doctor-")) };
     const findings = await doctorRuntime({ adapter: fakeAdapter, ctx, env });
     const credential = findings.find((f) => f.label === "credential")!;
     expect(credential.ok).toBe(false);
-    expect(credential.detail).toContain("atn install claude");
+    expect(credential.detail).toContain("openroly install claude");
   });
 
   test("credential が有効なら全て OK", async () => {
@@ -139,7 +141,7 @@ const other = Bun.serve({
 const otherBase = `http://localhost:${other.port}`;
 afterAll(() => other.stop(true));
 
-const installOptions = (env: { PAA_HOME: string; PAA_BINARY_BASE_URL: string }, baseUrl: string) => ({
+const installOptions = (env: { OPENROLY_HOME: string; OPENROLY_BINARY_BASE_URL: string }, baseUrl: string) => ({
   adapter: fakeAdapter,
   ctx,
   env,
@@ -162,7 +164,7 @@ describe("install の base URL 解決", () => {
     expect(registered.at(-1)?.baseUrl).toBe(otherBase);
   });
 
-  test("AC-16: --url / PAA_URL が無ければ既存 credential の server を尊重する", async () => {
+  test("AC-16: --url / OPENROLY_URL が無ければ既存 credential の server を尊重する", async () => {
     revoked = false;
     const env = await envWithCredential(); // base_url = stub(既定値 localhost:8787 ではない)
     // CLI は URL 未指定なら baseUrl を渡さない。ここで既定値に潰すと、リモートに
@@ -217,9 +219,9 @@ describe("accountBaseUrl の優先順(図7.1)", () => {
   const SAVED = "https://saved.example";
   const CRED = "https://cred.example";
 
-  const home = async () => ({ PAA_HOME: await mkdtemp(join(tmpdir(), "paa-url-")) });
+  const home = async () => ({ OPENROLY_HOME: await mkdtemp(join(tmpdir(), "openroly-url-")) });
 
-  test("AC-3: 明示(--url / $PAA_URL)は他の全部に勝つ", async () => {
+  test("AC-3: 明示(--url / $OPENROLY_URL)は他の全部に勝つ", async () => {
     const env = await home();
     await saveAccountUrl(SAVED, env);
     expect(await accountBaseUrl(EXPLICIT, CRED, env)).toBe(EXPLICIT);
@@ -248,8 +250,8 @@ describe("install が account の URL を継ぐ(図7.1)", () => {
     revoked = false;
     // credential が 1 つも無い端末 = README の quickstart の状態
     const env = {
-      PAA_HOME: await mkdtemp(join(tmpdir(), "paa-install-url-")),
-      PAA_BINARY_BASE_URL: "http://127.0.0.1:1",
+      OPENROLY_HOME: await mkdtemp(join(tmpdir(), "openroly-install-url-")),
+      OPENROLY_BINARY_BASE_URL: "http://127.0.0.1:1",
     };
     await saveAccountUrl(otherBase, env);
 
@@ -269,7 +271,7 @@ describe("install が account の URL を継ぐ(図7.1)", () => {
   });
 
   test("AC-2: doctor は未 pair の runtime にも行き先の URL を名乗る", async () => {
-    const env = { PAA_HOME: await mkdtemp(join(tmpdir(), "paa-doctor-url-")) };
+    const env = { OPENROLY_HOME: await mkdtemp(join(tmpdir(), "openroly-doctor-url-")) };
     await saveAccountUrl(otherBase, env);
 
     const findings = await doctorRuntime({ adapter: fakeAdapter, ctx, env });
@@ -283,8 +285,8 @@ describe("install が account の URL を継ぐ(図7.1)", () => {
   test("AC-3: install でも --url の明示が account の URL に勝つ", async () => {
     revoked = false;
     const env = {
-      PAA_HOME: await mkdtemp(join(tmpdir(), "paa-install-explicit-")),
-      PAA_BINARY_BASE_URL: "http://127.0.0.1:1",
+      OPENROLY_HOME: await mkdtemp(join(tmpdir(), "openroly-install-explicit-")),
+      OPENROLY_BINARY_BASE_URL: "http://127.0.0.1:1",
     };
     // account は stub(= base)を指しているが、明示は other。credential はまだ無い
     await saveAccountUrl(base, env);

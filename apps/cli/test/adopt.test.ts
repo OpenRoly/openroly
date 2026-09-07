@@ -4,11 +4,11 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// `atn adopt`(PBI-0023): broker が hello の応答で受け取った credential を非対話で materialize する。
+// `openroly adopt`(PBI-0023): broker が hello の応答で受け取った credential を非対話で materialize する。
 // 実 CLI(codex / claude)には到達させない —— PATH の先頭に fake を置き、そこへ渡った argv を
 // marker file で観測する(EP-0001 LEARN 13)。
 
-const CLI = join(import.meta.dir, "../src/paa.ts");
+const CLI = join(import.meta.dir, "../src/openroly.ts");
 const TOKEN = "par_adopt_test_token";
 
 let root = "";
@@ -17,7 +17,7 @@ let bin = "";
 let marker = "";
 
 beforeAll(async () => {
-  root = await mkdtemp(join(tmpdir(), "paa-adopt-"));
+  root = await mkdtemp(join(tmpdir(), "openroly-adopt-"));
   home = join(root, "home");
   bin = join(root, "bin");
   marker = join(root, "codex-argv.log");
@@ -34,9 +34,10 @@ afterAll(async () => {
 async function adopt(
   args: string[],
   stdin: string,
+  extraEnv: Record<string, string> = {},
 ): Promise<{ code: number; out: string; err: string }> {
   const proc = Bun.spawn(["bun", CLI, "adopt", ...args], {
-    env: { ...process.env, PAA_HOME: home, PATH: `${bin}:${process.env.PATH}` },
+    env: { ...process.env, OPENROLY_HOME: home, PATH: `${bin}:${process.env.PATH}`, ...extraEnv },
     stdin: new TextEncoder().encode(stdin),
     stdout: "pipe",
     stderr: "pipe",
@@ -60,7 +61,7 @@ const OK_ARGS = [
   "--token-stdin",
 ];
 
-describe("atn adopt (PBI-0023)", () => {
+describe("openroly adopt (PBI-0023)", () => {
   test("credential を保存し MCP を登録する。token は argv に出ない", async () => {
     const res = await adopt(OK_ARGS, `${TOKEN}\n`);
     expect(res.code).toBe(0);
@@ -76,8 +77,8 @@ describe("atn adopt (PBI-0023)", () => {
     // adapter.register が 1 回(remove → add の add 側が 1 行)
     const argv = await readFile(marker, "utf8");
     expect(argv.split("\n").filter((l) => l.startsWith("mcp add"))).toHaveLength(1);
-    expect(argv).toContain("PAA_RUNTIME_KIND=codex");
-    expect(argv).toContain("PAA_URL=http://localhost:9999");
+    expect(argv).toContain("OPENROLY_RUNTIME_KIND=codex");
+    expect(argv).toContain("OPENROLY_URL=http://localhost:9999");
     // argv は同一ホストの他プロセスから ps で見える。token を載せていないことを固定する
     expect(argv).not.toContain(TOKEN);
   });
@@ -231,16 +232,16 @@ describe("atn adopt (PBI-0023)", () => {
 });
 
 // PBI-0050 AC-1 / AC-X2: launchd が broker を最小 PATH(/usr/bin:/bin:/usr/sbin:/sbin)で起こすと、
-// broker → `atn adopt` → adapter.register の `claude mcp add` が bare な "claude" を解決できず
+// broker → `openroly adopt` → adapter.register の `claude mcp add` が bare な "claude" を解決できず
 // ENOENT で自動登録が全滅する。run() の PATH 補強(broker の default_bin_dirs 相当)で
 // `~/.local/bin` 等から absolute path 解決できることを、launchd 相当 env の subprocess で固定する。
-describe("atn adopt — launchd 最小 PATH (PBI-0050)", () => {
+describe("openroly adopt — launchd 最小 PATH (PBI-0050)", () => {
   let lroot = "";
   let lhome = "";
   let lmarker = "";
 
   beforeAll(async () => {
-    lroot = await mkdtemp(join(tmpdir(), "paa-adopt-launchd-"));
+    lroot = await mkdtemp(join(tmpdir(), "openroly-adopt-launchd-"));
     lhome = join(lroot, "home");
     const localBin = join(lhome, ".local", "bin");
     lmarker = join(lroot, "claude-argv.log");
@@ -253,8 +254,8 @@ describe("atn adopt — launchd 最小 PATH (PBI-0050)", () => {
     await rm(lroot, { recursive: true, force: true });
   });
 
-  /** launchd 相当の最小 PATH(PAA_HOME は credential 保存先の隔離用に別途渡す)。
-   * PAA_EXTRA_PATH_DIRS で補強 dir を差し替える(review 2026-08-28) — 実機の /usr/local/bin に
+  /** launchd 相当の最小 PATH(OPENROLY_HOME は credential 保存先の隔離用に別途渡す)。
+   * OPENROLY_EXTRA_PATH_DIRS で補強 dir を差し替える(review 2026-08-28) — 実機の /usr/local/bin に
    * 実 claude が居ても(この Mac は 2026-08-28 から居る)fake が shadow されない。AC-1 は
    * 補強 dir を temp の ~/.local/bin に向け、X2 は補強を無効化する(空文字 = 補強なし)。
    * X2 は fake claude を置かない home で起こす(AC-1 と同じ lhome を使うと fake が居て成功してしまう) */
@@ -265,8 +266,8 @@ describe("atn adopt — launchd 最小 PATH (PBI-0050)", () => {
   ): Promise<{ code: number; out: string; err: string }> {
     const proc = Bun.spawn([process.execPath, CLI, "adopt", "--kind", kind, "--runtime-id", "rt_launchd_1",
       "--base-url", "http://localhost:9999", "--name", "MacBook / Claude Code", "--token-stdin"], {
-      env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: home, PAA_HOME: home,
-        PAA_EXTRA_PATH_DIRS: extraDirs ?? "" },
+      env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: home, OPENROLY_HOME: home,
+        OPENROLY_EXTRA_PATH_DIRS: extraDirs ?? "" },
       stdin: new TextEncoder().encode(`${TOKEN}\n`),
       stdout: "pipe",
       stderr: "pipe",
@@ -302,14 +303,14 @@ describe("atn adopt — launchd 最小 PATH (PBI-0050)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// PBI-0236: plist に焼いた PATH は login の瞬間の snapshot。`atn adopt` は
-// `PAA_LOGIN_PATH`(= 焼いた印)が在る時だけ login shell を起こして今の PATH を取り直す。
+// PBI-0236: plist に焼いた PATH は login の瞬間の snapshot。`openroly adopt` は
+// `OPENROLY_LOGIN_PATH`(= 焼いた印)が在る時だけ login shell を起こして今の PATH を取り直す。
 // 実 CLI には到達させない —— stale / fresh の 2 つの dir に別々の fake `codex` を置き、
 // **どちらが走ったか**を marker file で観測する(EP-0001 LEARN 13)。
 // fake は `#!/bin/sh` なので PATH には /usr/bin:/bin を残す(残さないと script 内の command が
 // 解決できず、意図した経路ではなく exit 127 で終わる)。
 // ---------------------------------------------------------------------------
-describe("atn adopt: PATH は adopt の時に解決する (PBI-0236)", () => {
+describe("openroly adopt: PATH は adopt の時に解決する (PBI-0236)", () => {
   const ADOPT_ARGS = [
     "--kind", "codex",
     "--runtime-id", "rt_0236",
@@ -329,7 +330,7 @@ describe("atn adopt: PATH は adopt の時に解決する (PBI-0236)", () => {
 
   /** fake の codex を 2 つ(stale / fresh)と、fresh を PATH に入れて `-c` を実行する fake login shell */
   async function fixture(opts: { staleCodex?: string; loginShell?: string } = {}): Promise<Fixture> {
-    const root = await mkdtemp(join(tmpdir(), "paa-0236-"));
+    const root = await mkdtemp(join(tmpdir(), "openroly-0236-"));
     const home = join(root, "home");
     const stale = join(root, "stale-bin");
     const fresh = join(root, "fresh-bin");
@@ -368,8 +369,8 @@ describe("atn adopt: PATH は adopt の時に解決する (PBI-0236)", () => {
       env: {
         // launchd が broker を起こす時の env を再現する(最小 PATH + plist が焼いた分)
         HOME: f.home,
-        PAA_HOME: f.home,
-        PAA_EXTRA_PATH_DIRS: "", // 実機の /opt/homebrew/bin に本物が居ても決定的にする
+        OPENROLY_HOME: f.home,
+        OPENROLY_EXTRA_PATH_DIRS: "", // 実機の /opt/homebrew/bin に本物が居ても決定的にする
         ...env,
       },
       stdin: new TextEncoder().encode(`${TOKEN}\n`),
@@ -398,8 +399,8 @@ describe("atn adopt: PATH は adopt の時に解決する (PBI-0236)", () => {
     const snapshot = `${f.stale}:/usr/bin:/bin`;
     const res = await runAdopt(f, {
       PATH: snapshot,
-      PAA_LOGIN_PATH: snapshot,
-      PAA_LOGIN_SHELL: join(f.root, "login-shell"),
+      OPENROLY_LOGIN_PATH: snapshot,
+      OPENROLY_LOGIN_SHELL: join(f.root, "login-shell"),
     });
     expect(res.code).toBe(0);
     // 旧 dir の codex は**まだ実在する**(nvm で古い版を消していない人)。それでも新が勝つ
@@ -417,8 +418,8 @@ describe("atn adopt: PATH は adopt の時に解決する (PBI-0236)", () => {
     const snapshot = `${f.stale}:/usr/bin:/bin`;
     const res = await runAdopt(f, {
       PATH: snapshot,
-      PAA_LOGIN_PATH: snapshot,
-      PAA_LOGIN_SHELL: join(f.root, "login-shell"),
+      OPENROLY_LOGIN_PATH: snapshot,
+      OPENROLY_LOGIN_SHELL: join(f.root, "login-shell"),
     });
     expect(res.code).toBe(2);
     // broker は stderr の **1 行目**だけを register_ack.detail と log に載せる
@@ -428,11 +429,11 @@ describe("atn adopt: PATH は adopt の時に解決する (PBI-0236)", () => {
     await rm(f.root, { recursive: true, force: true });
   });
 
-  test("AC-3: PAA_LOGIN_PATH が無ければ login shell を 1 回も起こさない(人が手で打つ経路)", async () => {
+  test("AC-3: OPENROLY_LOGIN_PATH が無ければ login shell を 1 回も起こさない(人が手で打つ経路)", async () => {
     const f = await fixture();
     const res = await runAdopt(f, {
       PATH: `${f.stale}:/usr/bin:/bin`,
-      PAA_LOGIN_SHELL: join(f.root, "login-shell"), // 起こせる状態にしておく
+      OPENROLY_LOGIN_SHELL: join(f.root, "login-shell"), // 起こせる状態にしておく
     });
     expect(res.code).toBe(0);
     expect(await whoRan(f)).toBe("STALE"); // 今の PATH がそのまま使われる
@@ -441,7 +442,7 @@ describe("atn adopt: PATH は adopt の時に解決する (PBI-0236)", () => {
     await rm(f.root, { recursive: true, force: true });
   });
 
-  test("AC-X1: どこにも codex が無ければ runtime_cli_not_found(paa_cli_not_found とは別の名前)", async () => {
+  test("AC-X1: どこにも codex が無ければ runtime_cli_not_found(openroly_cli_not_found とは別の名前)", async () => {
     const f = await fixture();
     // stale / fresh の両方から codex を消す = 「PATH がどうやっても解決できない」
     await rm(join(f.stale, "codex"), { force: true });
@@ -449,13 +450,13 @@ describe("atn adopt: PATH は adopt の時に解決する (PBI-0236)", () => {
     const snapshot = `${f.stale}:/usr/bin:/bin`;
     const res = await runAdopt(f, {
       PATH: snapshot,
-      PAA_LOGIN_PATH: snapshot,
-      PAA_LOGIN_SHELL: join(f.root, "login-shell"),
+      OPENROLY_LOGIN_PATH: snapshot,
+      OPENROLY_LOGIN_SHELL: join(f.root, "login-shell"),
     });
     expect(res.code).toBe(2);
     const first = res.err.split("\n")[0]!;
     expect(first.startsWith("runtime_cli_not_found")).toBe(true);
-    expect(first).not.toContain("paa_cli_not_found"); // broker 側の「atn 自身が無い」と混ぜない
+    expect(first).not.toContain("openroly_cli_not_found"); // broker 側の「openroly 自身が無い」と混ぜない
     await rm(f.root, { recursive: true, force: true });
   });
 
@@ -470,8 +471,8 @@ describe("atn adopt: PATH は adopt の時に解決する (PBI-0236)", () => {
       const snapshot = `${f.stale}:/usr/bin:/bin`;
       const res = await runAdopt(f, {
         PATH: snapshot,
-        PAA_LOGIN_PATH: snapshot,
-        PAA_LOGIN_SHELL: join(f.root, "login-shell"),
+        OPENROLY_LOGIN_PATH: snapshot,
+        OPENROLY_LOGIN_SHELL: join(f.root, "login-shell"),
       });
       expect(`${s.name}: exit ${res.code}`).toBe(`${s.name}: exit 0`);
       expect(`${s.name}: ${await whoRan(f)}`).toBe(`${s.name}: STALE`);
@@ -483,15 +484,156 @@ describe("atn adopt: PATH は adopt の時に解決する (PBI-0236)", () => {
   test("AC-X2 攻撃: allowlist の外の login shell(fish 等)は起こさない", async () => {
     const f = await fixture();
     const snapshot = `${f.stale}:/usr/bin:/bin`;
-    // PAA_LOGIN_SHELL を渡さない = 本番と同じ `SHELL` 経由の判定になる
+    // OPENROLY_LOGIN_SHELL を渡さない = 本番と同じ `SHELL` 経由の判定になる
     const res = await runAdopt(f, {
       PATH: snapshot,
-      PAA_LOGIN_PATH: snapshot,
+      OPENROLY_LOGIN_PATH: snapshot,
       SHELL: "/opt/homebrew/bin/fish",
     });
     expect(res.code).toBe(0);
     expect(await whoRan(f)).toBe("STALE");
     expect(res.out).toContain("kept from the plist snapshot");
     await rm(f.root, { recursive: true, force: true });
+  });
+});
+
+// PBI-0210: broker は `--spec-stdin` で JSON 1 行 `{token, native?}` を渡す。`native` が有れば bundled catalog に
+// 無い runtime でも generic adapter を組んで config を書く(rebuild 無しの新 runtime)。実 opencode には到達させない
+// (PATH 先頭の fake)。HOME も隔離する —— `~/.config/opencode/opencode.json` を **user の実 file に書かない**
+describe("openroly adopt --spec-stdin(PBI-0210)", () => {
+  const OPENCODE_NATIVE = {
+    home: { default: "~/.config/opencode" },
+    bin: "opencode",
+    mcp: {
+      strategy: "file",
+      path: "opencode.json",
+      format: "jsonc",
+      key: "mcp",
+      entry: { type: "local", command: ["${command}", "${args...}"], environment: "${env}", enabled: true },
+    },
+  };
+  const BEFORE = `{
+  // keep me
+  "theme": "dark",
+  "mcp": {
+    "playwright": { "type": "local", "command": ["npx", "@playwright/mcp"], "enabled": true } // trailing
+  }
+}
+`;
+  const ARGS = ["--kind", "opencode", "--runtime-id", "rt_oc_1", "--base-url", "http://localhost:9999", "--name", "MacBook / OpenCode", "--spec-stdin"];
+
+  async function isolatedHome(): Promise<{ ohome: string; cfg: string }> {
+    const ohome = await mkdtemp(join(tmpdir(), "openroly-adopt-oc-"));
+    await mkdir(join(ohome, ".config", "opencode"), { recursive: true });
+    const cfg = join(ohome, ".config", "opencode", "opencode.json");
+    await writeFile(cfg, BEFORE);
+    await writeFile(join(bin, "opencode"), `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.0.0; fi\nexit 0\n`);
+    await chmod(join(bin, "opencode"), 0o755);
+    return { ohome, cfg };
+  }
+
+  test("AC-1: {token, native} で opencode.json の mcp.openroly を書き、他 key とコメントは変わらない。credential も保存", async () => {
+    const { ohome, cfg } = await isolatedHome();
+    const res = await adopt(ARGS, `${JSON.stringify({ token: TOKEN, native: OPENCODE_NATIVE })}\n`, { HOME: ohome, OPENROLY_HOME: join(ohome, ".openroly") });
+    expect(res.code, res.err).toBe(0);
+    const after = await readFile(cfg, "utf8");
+    expect(after).toContain("// keep me");
+    expect(after).toContain("// trailing");
+    const { parse } = await import("jsonc-parser");
+    const doc = parse(after);
+    expect(doc.theme).toBe("dark");
+    expect(doc.mcp.playwright).toEqual({ type: "local", command: ["npx", "@playwright/mcp"], enabled: true });
+    expect(doc.mcp.openroly).toMatchObject({
+      type: "local",
+      environment: { OPENROLY_RUNTIME_KIND: "opencode", OPENROLY_URL: "http://localhost:9999" },
+      enabled: true,
+    });
+    expect(Array.isArray(doc.mcp.openroly.command) && doc.mcp.openroly.command.length >= 1).toBe(true);
+    const creds = JSON.parse(await readFile(join(ohome, ".openroly", "credentials.json"), "utf8"));
+    expect(creds.runtimes.opencode).toMatchObject({ runtime_id: "rt_oc_1", token: TOKEN, base_url: "http://localhost:9999" });
+    // token は argv に出ない(stdin の JSON の中だけ)
+    expect(res.out + res.err).not.toContain(TOKEN);
+    await rm(ohome, { recursive: true, force: true });
+  });
+
+  test("AC-X2: 壊れた opencode.json には 1 byte も書かず exit 2(1 行目が register_ack の detail)。credential も残さない", async () => {
+    const { ohome, cfg } = await isolatedHome();
+    const broken = '{ "mcp": { "x": }\n';
+    await writeFile(cfg, broken);
+    const res = await adopt(ARGS, `${JSON.stringify({ token: TOKEN, native: OPENCODE_NATIVE })}\n`, { HOME: ohome, OPENROLY_HOME: join(ohome, ".openroly") });
+    expect(res.code).toBe(2);
+    expect(res.err.split("\n")[0]).toContain("could not be parsed");
+    expect(await readFile(cfg, "utf8")).toBe(broken);
+    // 端末にも死んだ credential を残さない(Cloud は register_ack ok:false で行を revoke するので、
+    // ここに残ると「繋がっているのに 401」の runtime が次の hello まで居座る)
+    const credsPath = join(ohome, ".openroly", "credentials.json");
+    if (existsSync(credsPath)) expect(JSON.parse(await readFile(credsPath, "utf8")).runtimes.opencode).toBeUndefined();
+    await rm(ohome, { recursive: true, force: true });
+  });
+
+  test("壊れた native / JSON でない stdin は exit 2 で何も書かない", async () => {
+    const { ohome, cfg } = await isolatedHome();
+    const env = { HOME: ohome, OPENROLY_HOME: join(ohome, ".openroly") };
+    const bad = await adopt(ARGS, `${JSON.stringify({ token: TOKEN, native: { mcp: { strategy: "ftp" } } })}\n`, env);
+    expect(bad.code).toBe(2);
+    expect(bad.err.split("\n")[0]).toContain("native(opencode)");
+    const notJson = await adopt(ARGS, `${TOKEN}\n`, env);
+    expect(notJson.code).toBe(2);
+    expect(notJson.err.split("\n")[0]).toContain("expects one JSON line");
+    // native 無し + catalog にも無い kind = unsupported(opencode は catalog に載ったので別 id で測る)
+    const none = await adopt(
+      ["--kind", "no-such-runtime", "--runtime-id", "rt_x", "--base-url", "http://localhost:9999", "--name", "x", "--spec-stdin"],
+      `${JSON.stringify({ token: TOKEN })}\n`,
+      env,
+    );
+    expect(none.code).toBe(2);
+    expect(none.err.split("\n")[0]).toContain("unsupported runtime: no-such-runtime");
+    expect(await readFile(cfg, "utf8")).toBe(BEFORE);
+    expect(existsSync(join(ohome, ".openroly", "credentials.json"))).toBe(false);
+    await rm(ohome, { recursive: true, force: true });
+  });
+
+  test("旧 broker 互換: --token-stdin(生の token 1 行)は従来どおり通る", async () => {
+    const res = await adopt(OK_ARGS, `${TOKEN}\n`);
+    expect(res.code).toBe(0);
+    const spec = await adopt(OK_ARGS.filter((a) => a !== "--token-stdin").concat("--spec-stdin"), `${JSON.stringify({ token: TOKEN })}\n`);
+    expect(spec.code).toBe(0);
+  });
+
+  // AC-4: **bundled catalog に無い id** でも、署名検証済み registry から渡された `native` だけで配線できる
+  // (= catalog に entry を足せば CLI を再 build せずに新しい runtime が繋がる)。catalog に居る opencode で
+  // 通っても、それは「たまたま bundled に有った」経路かもしれないので、居ない id で必ず 1 回測る
+  test("AC-4: bundled catalog に無い id でも native だけで config を書く(rebuild 無しの新 runtime)", async () => {
+    const { ADAPTERS } = await import("../src/registry.ts");
+    expect(ADAPTERS.some((a) => a.id === "superagent")).toBe(false); // 前提: catalog にも official にも居ない
+    const ohome = await mkdtemp(join(tmpdir(), "openroly-adopt-super-"));
+    await mkdir(join(ohome, ".superagent"), { recursive: true });
+    const cfg = join(ohome, ".superagent", "mcp.json");
+    await writeFile(cfg, `{\n  "keepMe": 1,\n  "mcpServers": { "other": { "command": "x" } }\n}\n`);
+    await writeFile(join(bin, "superagent"), `#!/bin/sh\nexit 0\n`);
+    await chmod(join(bin, "superagent"), 0o755);
+    const native = {
+      home: { default: "~/.superagent" },
+      bin: "superagent",
+      mcp: {
+        strategy: "file",
+        path: "mcp.json",
+        format: "json",
+        key: "mcpServers",
+        entry: { command: "${command}", args: "${args}", env: "${env}" },
+      },
+    };
+    const res = await adopt(
+      ["--kind", "superagent", "--runtime-id", "rt_sa_1", "--base-url", "http://localhost:9999", "--name", "Mac / SuperAgent", "--spec-stdin"],
+      `${JSON.stringify({ token: TOKEN, native })}\n`,
+      { HOME: ohome, OPENROLY_HOME: join(ohome, ".openroly") },
+    );
+    expect(res.code, res.err).toBe(0);
+    const doc = JSON.parse(await readFile(cfg, "utf8"));
+    expect(doc.keepMe).toBe(1); // 他 key は消えない
+    expect(doc.mcpServers.other).toEqual({ command: "x" });
+    expect(doc.mcpServers.openroly.env).toMatchObject({ OPENROLY_RUNTIME_KIND: "superagent", OPENROLY_URL: "http://localhost:9999" });
+    expect(typeof doc.mcpServers.openroly.command).toBe("string");
+    await rm(ohome, { recursive: true, force: true });
   });
 });

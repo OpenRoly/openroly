@@ -1,0 +1,47 @@
+﻿rank,slug,name,description
+1,hermes-agent,Hermes Agent,"Hermes Agent is an open-source, self-improving AI agent by Nous Research that runs persistently with memory across sessions, and builds reusable skills from experience. It comes with 40+ built-in tools, including web search, browser automation, and vision, plus scheduled automations and subagents."
+2,claude-code,Claude Code,"Claude Code is Anthropic's agentic coding tool that reads your entire codebase, plans and executes changes across files, runs tests, and iterates on failures, all from natural language prompts."
+3,kilo-code,Kilo Code,"Kilo Code is an open-source AI coding agent that works across VS Code, JetBrains, and CLI to help developers ship code faster with agentic workflows."
+4,cline,Cline,"Cline is an open-source AI coding agent that lives inside your IDE, autonomously exploring your codebase, editing files, running terminal commands, and using browser automation."
+5,pi,pi,"There are many coding agents, but this one is yours."
+6,url/https%3A%2F%2Fomp.sh%2F,omp,omp.sh
+7,openclaw,OpenClaw,"OpenClaw is an open-source AI agent that connects to your messaging apps and takes real actions on your behalf, from running commands and browsing the web to managing files and sending emails."
+8,codex,Codex,A coding agent that helps you build and ship with AI
+9,openhands,OpenHands,"AI coding agent that can run commands, browse the web, call APIs"
+10,url/https%3A%2F%2Fcursor.com%2F,Cursor,cursor.com
+11,url/https%3A%2F%2Fstrix.ai%2F,Strix,strix.ai
+12,url/https%3A%2F%2Fproto.erp.ai%2F,Proto Agent,proto.erp.ai
+13,url/https%3A%2F%2Fcommandcode.ai%2F,Command Code,commandcode.ai
+14,url/https%3A%2F%2Fitonami.cloud%2F,Itonami By KotobaLabs,itonami.cloud
+15,qwen-code,Qwen Code,Powerful command-line AI workflow tool
+16,url/https%3A%2F%2Fgoose-docs.ai%2F,goose,goose-docs.ai
+17,url/https%3A%2F%2Fmimo.xiaomi.com%2Fcoder,mimocode,mimo.xiaomi.com
+18,url/https%3A%2F%2Fagent.openmed.life%2F,OpenMed Agent,agent.openmed.life
+19,url/https%3A%2F%2Fagent.digen.ai%2F,Digen AI,agent.digen.ai
+20,letta,Letta,Platform for stateful agents: AI with advanced memory that can learn and self-improve over time.
+21,url/https%3A%2F%2Fraven.evermind.ai%2F,Raven Agent,raven.evermind.ai
+22,url/https%3A%2F%2Fhermes-studio.ai%2F,Hermes Web UI,hermes-studio.ai
+23,url/https%3A%2F%2Fgithub.com%2Folixis%2Fpi-openrouter-plus,pi,github.com
+24,url/https%3A%2F%2Fcharm.land%2F,Crush,Glamorous command-line interface
+25,url/https%3A%2F%2Ftrenzel.com%2F,Trenzel,trenzel.com
+26,url/https%3A%2F%2Fpostqode.ai%2F,PostQode,postqode.ai
+27,url/https%3A%2F%2Fgithub.com%2FAlthenia%2Fycoding,YCoding,github.com
+28,url/https%3A%2F%2Fagentfield.ai%2F,AgentField AI,agentfield.ai
+29,url/https%3A%2F%2Ffavur.dev%2F,Favur,favur.dev
+30,url/https%3A%2F%2Fgithub.com%2Foguzbilgic%2Fkern-ai,Kern Agent,github.com
+31,url/https%3A%2F%2Fjoni.ai%2F,JONI,joni.ai
+32,url/https%3A%2F%2Ftraycer.ai%2F,Traycer,traycer.ai
+33,url/https%3A%2F%2Fp0.systems%2F,Peezy Gateway,p0.systems
+34,url/https%3A%2F%2Fminara.ai%2F,Minara,minara.ai
+35,url/https%3A%2F%2Fopenjiuwen.com%2F,JiuwenSwarm,openjiuwen.com
+36,url/https%3A%2F%2Fgithub.com%2Fgraveland%2Frafiki,rafiki,github.com
+37,url/https%3A%2F%2Faexol.ai%2F,Aexol.ai,aexol.ai
+38,url/https%3A%2F%2Fv12.sh%2F,V12X,v12.sh
+39,aider,Aider,AI pair programming in your terminal
+40,url/https%3A%2F%2Fwww.vellum.ai%2F,Vellum Assistant,www.vellum.ai
+41,junie,Junie,"Junie is an agentic coding tool by JetBrains that provides an interactive terminal interface for developers to review, write, and modify code."
+42,url/https%3A%2F%2Fapp.stakebetvip.com%2F,StakeBetApp,app.stakebetvip.com
+43,url/https%3A%2F%2Fclawnify.com%2F,Clawnify,clawnify.com
+44,url/https%3A%2F%2Fgithub.com%2Fopenamer%2Fopenamer,OpenAmer Agent,github.com
+45,url/https%3A%2F%2Fromkola.ru%2F,claude-mem,romkola.ru
+46,url/https%3A%2F%2Fjames-agent.ai%2F,James,james-agent.ai

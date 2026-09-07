@@ -20,7 +20,7 @@ async function put(path: string, mode: number): Promise<string> {
 }
 
 beforeEach(async () => {
-  home = await mkdtemp(join(tmpdir(), "atn-mcpcmd-"));
+  home = await mkdtemp(join(tmpdir(), "openroly-mcpcmd-"));
   bin = join(home, "bin");
   await mkdir(bin, { recursive: true });
 });
@@ -30,32 +30,32 @@ afterEach(async () => {
 });
 
 describe("resolveMcpServerCommand (PBI-0132)", () => {
-  test("AC-1: PAA_MCP_BINARY が実行可能ならそれを args 無しで使う", async () => {
+  test("AC-1: OPENROLY_MCP_BINARY が実行可能ならそれを args 無しで使う", async () => {
     const explicit = await put(join(home, "custom-mcp"), 0o755);
-    expect(resolveMcpServerCommand(ENTRY, { PAA_HOME: home, PAA_MCP_BINARY: explicit })).toEqual({
+    expect(resolveMcpServerCommand(ENTRY, { OPENROLY_HOME: home, OPENROLY_MCP_BINARY: explicit })).toEqual({
       command: explicit,
       args: [],
     });
   });
 
-  test("AC-2: PAA_MCP_BINARY 無しなら <PAA_HOME>/bin/atn-mcp", async () => {
-    const installed = await put(join(bin, "atn-mcp"), 0o755);
-    expect(resolveMcpServerCommand(ENTRY, { PAA_HOME: home })).toEqual({
+  test("AC-2: OPENROLY_MCP_BINARY 無しなら <OPENROLY_HOME>/bin/openroly-mcp", async () => {
+    const installed = await put(join(bin, "openroly-mcp"), 0o755);
+    expect(resolveMcpServerCommand(ENTRY, { OPENROLY_HOME: home })).toEqual({
       command: installed,
       args: [],
     });
   });
 
-  test("AC-1 > AC-2: 両方在れば PAA_MCP_BINARY が勝つ", async () => {
+  test("AC-1 > AC-2: 両方在れば OPENROLY_MCP_BINARY が勝つ", async () => {
     const explicit = await put(join(home, "custom-mcp"), 0o755);
-    await put(join(bin, "atn-mcp"), 0o755);
-    expect(resolveMcpServerCommand(ENTRY, { PAA_HOME: home, PAA_MCP_BINARY: explicit }).command).toBe(
+    await put(join(bin, "openroly-mcp"), 0o755);
+    expect(resolveMcpServerCommand(ENTRY, { OPENROLY_HOME: home, OPENROLY_MCP_BINARY: explicit }).command).toBe(
       explicit,
     );
   });
 
   test("AC-3: binary が 1 つも無ければ従来どおり bun <entry>", () => {
-    expect(resolveMcpServerCommand(ENTRY, { PAA_HOME: home })).toEqual({
+    expect(resolveMcpServerCommand(ENTRY, { OPENROLY_HOME: home })).toEqual({
       command: "bun",
       args: [ENTRY],
     });
@@ -64,12 +64,12 @@ describe("resolveMcpServerCommand (PBI-0132)", () => {
   test("AC-4: 実行不可(無い / 権限無し / dir)は黙って次の候補へ落ちる", async () => {
     // 存在しない path
     expect(
-      resolveMcpServerCommand(ENTRY, { PAA_HOME: home, PAA_MCP_BINARY: join(home, "nope") }),
+      resolveMcpServerCommand(ENTRY, { OPENROLY_HOME: home, OPENROLY_MCP_BINARY: join(home, "nope") }),
     ).toEqual({ command: "bun", args: [ENTRY] });
 
     // 在るが実行権が無い(chmod 忘れ / download 直後)
     const notExec = await put(join(home, "not-exec"), 0o644);
-    expect(resolveMcpServerCommand(ENTRY, { PAA_HOME: home, PAA_MCP_BINARY: notExec })).toEqual({
+    expect(resolveMcpServerCommand(ENTRY, { OPENROLY_HOME: home, OPENROLY_MCP_BINARY: notExec })).toEqual({
       command: "bun",
       args: [ENTRY],
     });
@@ -77,21 +77,21 @@ describe("resolveMcpServerCommand (PBI-0132)", () => {
     // dir は X_OK が立つ(= access だけ見ると通ってしまう)ので isFile まで見る
     const asDir = join(home, "dir-mcp");
     await mkdir(asDir);
-    expect(resolveMcpServerCommand(ENTRY, { PAA_HOME: home, PAA_MCP_BINARY: asDir })).toEqual({
+    expect(resolveMcpServerCommand(ENTRY, { OPENROLY_HOME: home, OPENROLY_MCP_BINARY: asDir })).toEqual({
       command: "bun",
       args: [ENTRY],
     });
 
     // 空文字の env は「未設定」と同じ扱い(存在しない path を command にしない)
-    expect(resolveMcpServerCommand(ENTRY, { PAA_HOME: home, PAA_MCP_BINARY: "" })).toEqual({
+    expect(resolveMcpServerCommand(ENTRY, { OPENROLY_HOME: home, OPENROLY_MCP_BINARY: "" })).toEqual({
       command: "bun",
       args: [ENTRY],
     });
   });
 
-  test("AC-4 攻撃: <PAA_HOME>/bin/atn-mcp が実行不可でも explicit へ戻らず bun に落ちる", async () => {
-    await put(join(bin, "atn-mcp"), 0o644);
-    expect(resolveMcpServerCommand(ENTRY, { PAA_HOME: home })).toEqual({
+  test("AC-4 攻撃: <OPENROLY_HOME>/bin/openroly-mcp が実行不可でも explicit へ戻らず bun に落ちる", async () => {
+    await put(join(bin, "openroly-mcp"), 0o644);
+    expect(resolveMcpServerCommand(ENTRY, { OPENROLY_HOME: home })).toEqual({
       command: "bun",
       args: [ENTRY],
     });

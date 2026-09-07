@@ -1,4 +1,4 @@
-import type { AdapterContext } from "@paa/adapter";
+import type { AdapterContext } from "@openroly/adapter";
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +15,7 @@ async function makeCtx(opts: {
   configServers: Record<string, unknown>;
   removeExitCode: number;
 }): Promise<AdapterContext> {
-  const home = await mkdtemp(join(tmpdir(), "paa-claude-adapter-"));
+  const home = await mkdtemp(join(tmpdir(), "openroly-claude-adapter-"));
   const binDir = join(home, "bin");
   await mkdir(binDir);
   await writeFile(

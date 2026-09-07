@@ -4,17 +4,42 @@
 
 /**
  * 持ち込みの 2 種。**MX を自分で向けられるか**で割れる:
- *  - `domain`  = 自分の DNS を持つ(shibubu.ai)。MX を PAA に向ければ任意 local-part が直接届く
+ *  - `domain`  = 自分の DNS を持つ(shibubu.ai)。MX を OpenRoly に向ければ任意 local-part が直接届く
  *  - `address` = MX は他人が持つ(gmail.com)。転送でしか届かないので所有証明は code
  */
 export type MailIdentityKind = "address" | "domain";
 
 /** DNS TXT の値の頭。これが付いた TXT だけを所有証明として読む */
-export const MAIL_IDENTITY_TXT_PREFIX = "atn-verify=";
+export const MAIL_IDENTITY_TXT_PREFIX = "openroly-verify=";
 
-/** 所有証明の TXT を貼る場所。`shibubu.ai` → `_atn-verify.shibubu.ai` */
+/** 旧 token の頭(PBI-0344 AC-5)。**少なくとも 1 release は受け続ける**(貼り直しを強制しない) */
+export const LEGACY_MAIL_IDENTITY_TXT_PREFIX = "atn-verify=";
+
+/** 所有証明の TXT を貼る場所。`shibubu.ai` → `_openroly-verify.shibubu.ai` */
 export function verificationTxtName(domain: string): string {
+  return `_openroly-verify.${domain}`;
+}
+
+/** 旧所有証明の TXT を貼る場所(改名前に案内した物。受け側はこちらも引く) */
+export function legacyVerificationTxtName(domain: string): string {
   return `_atn-verify.${domain}`;
+}
+
+/**
+ * TXT 1 件の値と challenge が**同じ payload**を指すか。新旧どちらの頭でも通す
+ * (PBI-0344 AC-5) —— 改名後に challenge を作り直した account の DNS には、まだ旧頭の
+ * 値が貼られたままかもしれない。頭がどちらでも無い値は所有証明として読まない。
+ */
+export function mailIdentityChallengeMatches(txtValue: string, challenge: string): boolean {
+  const payload = (v: string): string | null => {
+    for (const p of [MAIL_IDENTITY_TXT_PREFIX, LEGACY_MAIL_IDENTITY_TXT_PREFIX]) {
+      if (v.startsWith(p)) return v.slice(p.length);
+    }
+    return null;
+  };
+  const want = payload(challenge.trim());
+  const got = payload(txtValue.trim());
+  return want !== null && got !== null && want === got;
 }
 
 /** RFC 5321 の path 上限。address の受け口の上限に使う */

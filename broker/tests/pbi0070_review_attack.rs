@@ -5,14 +5,20 @@
 //! (`pbi0033_review_attack.rs` と同じ回避策)。launch.rs 末尾の unit test も
 //! 一緒にコンパイルされるが重複実行の害は無い。
 
+#[path = "../src/env_compat.rs"]
+mod env_compat;
 #[path = "../src/registry.rs"]
 mod registry;
 #[path = "../src/discovery.rs"]
 mod discovery;
-#[path = "../src/paa_cli.rs"]
-mod paa_cli;
+#[path = "../src/openroly_cli.rs"]
+mod openroly_cli;
 #[path = "../src/launch.rs"]
 mod launch;
+#[path = "../src/egress.rs"]
+mod egress;
+#[path = "../src/sandbox.rs"]
+mod sandbox;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -32,12 +38,12 @@ fn reg_with_api() -> registry::Registry {
 /// 1 引数 1 行で argv を記録する fake CLI(`echo "$@"` だと引数内の空白が判別できない)。
 /// 引数に細工された `touch` を仕込めるので、展開されていれば副作用 file が残る
 fn fake_cli(name: &str) -> (PathBuf, PathBuf, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("paa-pbi0070-atk-{name}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("openroly-pbi0070-atk-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     let marker = dir.join("argv.log");
     let pwned = dir.join("pwned");
-    let bin = dir.join("fake-paa");
+    let bin = dir.join("fake-openroly");
     fs::write(
         &bin,
         format!(

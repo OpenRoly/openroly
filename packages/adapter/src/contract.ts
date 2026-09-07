@@ -1,4 +1,4 @@
-import type { ExtensionKind } from "@paa/core";
+import type { ExtensionKind } from "@openroly/core";
 import { accessSync, constants as fsConstants } from "node:fs";
 
 // Runtime Adapter Contract(配布戦略 §8)。
@@ -18,6 +18,8 @@ export const ADAPTER_OPS = [
   "extensionKinds",
   "listExtensions",
   "applyExtension",
+  "exportExtensions",
+  "watchPaths",
 ] as const;
 
 export type AdapterOp = (typeof ADAPTER_OPS)[number];
@@ -50,7 +52,7 @@ export interface AdapterContext {
 export interface RegisterInput {
   /** MCP server の entry file(bun で起動する) */
   serverEntry: string;
-  /** credential store 内の key。MCP server は PAA_RUNTIME_KIND でこれを選ぶ */
+  /** credential store 内の key。MCP server は OPENROLY_RUNTIME_KIND でこれを選ぶ */
   runtimeKind: string;
   baseUrl: string;
   /** runtime 側に登録する MCP server 名 */
@@ -75,6 +77,24 @@ export interface Finding {
 /** listExtensions の結果。今のところ mcp のみなので kind は持たない(採用したら足す) */
 export interface ExtensionListing {
   name: string;
+}
+
+/**
+ * `exportExtensions` の 1 件(PBI-0212)。**人がその runtime に自分で入れた物**を、Account へ
+ * 提案として上げられる形にした物。
+ *
+ * `spec` から env は**丸ごと**抜いてある —— 抜くのを `validateExtensionSpec` の辞書
+ * (token / apikey / password / secret / authorization)に絞ると、`GH_PAT` のような綴りの
+ * 生 credential がそのまま Account に載る。どれが秘密かは端末の外からは決して分からないので
+ * fail-closed に倒し、**env の値は 1 つも Account へ送らない**(アーキ §40)。値は端末の
+ * `~/.openroly/secrets.json` に残り、Account が持つのは `env:NAME` という名前だけ。
+ */
+export interface ExportedExtension {
+  kind: ExtensionKind;
+  name: string;
+  spec: Record<string, unknown>;
+  /** spec から抜いた env(名前 → 値)。空なら credential_ref は付かない */
+  secretEnv: Record<string, string>;
 }
 
 export type ExtensionApplyAction =
@@ -113,6 +133,22 @@ export interface RuntimeAdapter {
   listExtensions(ctx: AdapterContext): Promise<ExtensionListing[]>;
   /** install/update/disable/uninstall を native へ反映する。書式は runtime CLI に任せる */
   applyExtension(ctx: AdapterContext, action: ExtensionApplyAction): Promise<void>;
+  /**
+   * native に**人が自分で入れた**物を提案の形で吸い上げる(PBI-0212 / 図67)。
+   * OpenRoly が入れた物(`openroly` MCP server・`.openroly-managed` を持つ skill)は除く —— 自分が配った物を
+   * 自分で提案し直すと、承認するたびに `<name>-<runtime>` が増える循環になる。
+   */
+  exportExtensions(ctx: AdapterContext): Promise<ExportedExtension[]>;
+  /**
+   * この runtime の native が変わったと分かる path(PBI-0213 / 図18)。MCP config の file と
+   * skills dir —— broker がここを見張って `openroly share --auto` を起こすので、人が
+   * `openroly share` を打たなくても「Found on <device>」が出る。
+   *
+   * **同期・実在を問わない**: 存在しない path も返す(まだ作られていない skills dir が
+   * 後から現れるのを見張り側が拾えるように)。`detect()` を使わないのは、あちらが
+   * `<bin> --version` を叩く(実測 3s)ため —— 見張る場所を知るために毎回 probe しない。
+   */
+  watchPaths(ctx: AdapterContext): string[];
 }
 
 export class AdapterError extends Error {
@@ -127,7 +163,7 @@ export class AdapterError extends Error {
 /**
  * `run()` が bare な command を解決する時に PATH の後ろへ足す dir(PBI-0050)。
  * broker の discovery `default_bin_dirs`(broker/src/discovery.rs) と同じ一覧 — launchd が
- * `atn broker` を最小 PATH(`/usr/bin:/bin:/usr/sbin:/sbin`)で起こした時も、adopt →
+ * `openroly broker` を最小 PATH(`/usr/bin:/bin:/usr/sbin:/sbin`)で起こした時も、adopt →
  * `claude mcp add` がユーザーの install 先(`~/.local/bin` 等)を解決できるようにする。
  * broker が検出した場所で登録できないと自動登録(EP-0004)が heartbeat 毎に失敗し続けるので、
  * この一覧は broker 側と意図的に同じ内容を保つ(片方だけ直ると検出と登録が噛み合わない)
@@ -136,8 +172,8 @@ function extraPathDirs(env: Record<string, string>): string[] {
   // 上書きの口(PBI-0050 レビュー 2026-08-28): 未設定なら本番どおりの既定一覧。設定した時は
   // それだけで置き換える(空文字 = 補強なし)。test が「CLI 無し / fake のみ」の env を作る時に
   // 実機の /usr/local/bin 等へ届かないようにするための口で、本番の launchd では未設定のまま
-  if (env.PAA_EXTRA_PATH_DIRS !== undefined) {
-    return env.PAA_EXTRA_PATH_DIRS.split(":").filter(Boolean);
+  if (env.OPENROLY_EXTRA_PATH_DIRS !== undefined) {
+    return env.OPENROLY_EXTRA_PATH_DIRS.split(":").filter(Boolean);
   }
   const dirs = ["/usr/local/bin", "/opt/homebrew/bin"];
   if (env.HOME) {
@@ -149,9 +185,9 @@ function extraPathDirs(env: Record<string, string>): string[] {
 
 /**
  * **runtime 側の CLI がどこにも無い**時の named reason(PBI-0236)。broker の `register_ack.detail` と
- * broker log(`broker: adopt kind=… detail=…`)にそのまま載るので、`paa_cli_not_found`
- * (= broker が **`atn` 自身**を起こせない)と**混ざらない別の名前**を持たせる —— 混ぜると
- * 「node/CLI を入れ直せ」と「atn が配布で PATH に無い」が同じ顔になり、人が直せなくなる。
+ * broker log(`broker: adopt kind=… detail=…`)にそのまま載るので、`openroly_cli_not_found`
+ * (= broker が **`openroly` 自身**を起こせない)と**混ざらない別の名前**を持たせる —— 混ぜると
+ * 「node/CLI を入れ直せ」と「openroly が配布で PATH に無い」が同じ顔になり、人が直せなくなる。
  */
 export const RUNTIME_CLI_NOT_FOUND = "runtime_cli_not_found";
 

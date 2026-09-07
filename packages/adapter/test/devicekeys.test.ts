@@ -6,7 +6,7 @@ import { getOrCreateDeviceKey } from "../src/devicekeys.ts";
 import { saveCredential, type RuntimeCredential } from "../src/credentials.ts";
 
 async function tempEnv() {
-  return { PAA_HOME: await mkdtemp(join(tmpdir(), "paa-devkeys-")) };
+  return { OPENROLY_HOME: await mkdtemp(join(tmpdir(), "openroly-devkeys-")) };
 }
 
 const cred = (id: string): RuntimeCredential => ({
@@ -33,7 +33,7 @@ describe("device key store", () => {
     const env = await tempEnv();
     const before = await getOrCreateDeviceKey("claude", env);
 
-    // atn install claude の再実行を模す: credential entry を丸ごと置換
+    // openroly install claude の再実行を模す: credential entry を丸ごと置換
     await saveCredential("claude", cred("claude-2"), env);
     await saveCredential("claude", cred("claude-3"), env);
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// proxy.test.ts 用の最小 MCP server(PAA 以外の任意 server の代わり。PBI-0177 AC-4)。
+// proxy.test.ts 用の最小 MCP server(OpenRoly 以外の任意 server の代わり。PBI-0177 AC-4)。
 // echo tool は params.text をそのまま result.text に返す(mask/restore の往復を検査する為)。
 // text が "exit:<n>" なら process.exit(n) する(子の exit code 伝播を検査する為・AC-4)。
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";

@@ -1,4 +1,7 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { reconcile } from "../src/reconcile.ts";
 import {
   STAGE0_CAPABILITIES,
@@ -21,6 +24,8 @@ let resolveResponses: Record<string, { status: number; body: unknown }> = {};
 const resolveCalls: string[] = [];
 /** PBI-0023 F3: status 報告の HTTP 応答を差し替える(既定は 200) */
 let statusResponse: { status: number; body: unknown } = { status: 200, body: { ok: true } };
+/** env: 解決の落ち先(`~/.openroly/secrets.json`)を開発機の本物から切り離す(PBI-0212) */
+const emptyHome = mkdtempSync(join(tmpdir(), "openroly-reconcile-"));
 
 const stub = Bun.serve({
   port: 0,
@@ -77,6 +82,8 @@ function makeFakeAdapter(state: FakeAdapterState): RuntimeAdapter {
       state.applyCalls.push(action);
       if (state.throwOn === action.name) throw new Error(`boom on ${action.name}`);
     },
+    exportExtensions: async () => [],
+    watchPaths: () => [],
   };
 }
 
@@ -138,13 +145,14 @@ describe("reconcile()", () => {
       baseUrl,
       token: "par_x",
       runtimeId: "rt_1",
-      env: {}, // GITHUB_TOKEN が無い
+      // GITHUB_TOKEN が無い。OPENROLY_HOME も空 dir に向ける —— PBI-0212 で env: は
+      // `~/.openroly/secrets.json` にも落ちるので、指さないと**開発機の本物**を読んでしまう
+      env: { OPENROLY_HOME: emptyHome },
     });
+    const detail = "cannot resolve env:GITHUB_TOKEN (not in the environment or ~/.openroly/secrets.json)";
     expect(state.applyCalls).toEqual([]); // native を書かない
-    expect(result.failed).toMatchObject([{ name: "github", detail: "cannot resolve env:GITHUB_TOKEN" }]);
-    expect(statusCalls).toMatchObject([
-      { extensionId: "ext_gh", body: { status: "failed", detail: "cannot resolve env:GITHUB_TOKEN" } },
-    ]);
+    expect(result.failed).toMatchObject([{ name: "github", detail }]);
+    expect(statusCalls).toMatchObject([{ extensionId: "ext_gh", body: { status: "failed", detail } }]);
   });
 
   test("credential_ref が解決できる時は env に注入されて applyExtension へ渡る", async () => {
@@ -335,7 +343,7 @@ describe("reconcile()", () => {
     desiredResponse = [];
     const state: FakeAdapterState = {
       applyCalls: [],
-      listing: [{ name: "paa" }, { name: "other" }],
+      listing: [{ name: "openroly" }, { name: "other" }],
     };
     const result = await reconcile({
       adapter: makeFakeAdapter(state),

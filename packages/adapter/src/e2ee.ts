@@ -1,15 +1,15 @@
-import { fromEnvelopePlaintext, toEnvelopePlaintext, type MessageContent } from "@paa/core";
+import { fromEnvelopePlaintext, toEnvelopePlaintext, type MessageContent } from "@openroly/core";
 import {
   open,
   seal,
   unwrapPrivateKeyFromDevice,
   type EncryptedEnvelope,
-} from "@paa/crypto-envelope";
+} from "@openroly/crypto-envelope";
 import { apiCall } from "./api.ts";
 import { getOrCreateDeviceKey, hasDeviceKey, rotateDeviceKey } from "./devicekeys.ts";
 
 // Native E2EE(要件 §9-11 / PBI-0006 → **PBI-0247 で seal 先が account 鍵になった**)の
-// client 側の作法を 1 箇所に集める。使うのは MCP tools(packages/mcp)と `atn agent`(apps/cli)。
+// client 側の作法を 1 箇所に集める。使うのは MCP tools(packages/mcp)と `openroly agent`(apps/cli)。
 // HTTP の呼び方(認証・error 型)は呼び出し側で違うので `call` を注入する —— ここに 2 つ目の
 // API client を作らないための境界(呼び出し側の error 型・retry 方針をそのまま活かす)。
 //
@@ -21,7 +21,7 @@ import { getOrCreateDeviceKey, hasDeviceKey, rotateDeviceKey } from "./devicekey
 
 /**
  * 注入する HTTP 呼び出し。**非 2xx は `status: number` と応答 `body` を持つ error を投げる**
- * (MCP の `PaaApiError`・`atn agent` の `call`)。`resolveSealTargets` はその `status` が 404 の時だけを
+ * (MCP の `OpenRolyApiError`・`openroly agent` の `call`)。`resolveSealTargets` はその `status` が 404 の時だけを
  * 「宛先がまだ account 鍵を持たない」と読む —— status の無い失敗(通信断・壊れた応答)は平文の合図に
  * ならない(PBI-0259)。`body.error` は同じ status に複数の理由がある時に使う —— POST /v1/devices の
  * 409 は「他 account が持つ id」と「revoke された device」の 2 つで、復帰の手順が違う(PBI-0253)。
@@ -32,8 +32,8 @@ export type E2eeCall = (
 ) => Promise<unknown>;
 
 /**
- * credential 1 本から E2eeCall を作る(`atn agent` と pairing の後の名乗り直しが共有する)。
- * 契約どおり非 2xx は `status` と `body` を持つ error。message の形は `atn agent` の
+ * credential 1 本から E2eeCall を作る(`openroly agent` と pairing の後の名乗り直しが共有する)。
+ * 契約どおり非 2xx は `status` と `body` を持つ error。message の形は `openroly agent` の
  * 失敗表示(`NG account_api_error(409) /v1/devices`)がそのまま読む。
  */
 export function e2eeCallFor(baseUrl: string, token: string, kind?: string): E2eeCall {
@@ -55,14 +55,14 @@ export function e2eeCallFor(baseUrl: string, token: string, kind?: string): E2ee
  * 401 を受けた agent が読む 1 行(PBI-0264 有界レビュー 2026-09-05)。Revoke は runtime token ごと落とすので、
  * 0253 が 409 device_revoked に書いた復帰の案内の **手前で 401 が返る** = revoke された agent はあの案内に
  * 二度と到達しない。無人で動く相手が生の `401 unauthorized` で止まらないよう、戻り道(人が承認し直す
- * pairing)をここに 1 本だけ持つ —— MCP の PaaApiError / `atn agent` / e2eeCallFor が同じ文を出す。
+ * pairing)をここに 1 本だけ持つ —— MCP の OpenRolyApiError / `openroly agent` / e2eeCallFor が同じ文を出す。
  * server は revoke 済みと未 pair を言い分けない(token_hash を消すので言い分けられない)が、戻り道は同じ
  */
 export function credentialRejectedHint(kind?: string): string {
   const k = kind && kind !== "default" ? kind : "<kind>";
   return (
     `this agent's credential was rejected (401): it was revoked from the account, or was never paired. ` +
-    `Run 'atn pair ${k}' and approve it again to reconnect.`
+    `Run 'openroly pair ${k}' and approve it again to reconnect.`
   );
 }
 
@@ -104,7 +104,7 @@ async function registerOwnDevice(
  * 手元に残るので id は変わらず、黙って再登録できてしまうと押した Revoke が効かない。
  * ここで理由を名乗らないと agent は生の `account_api_error(409)` で止まる —— 無人で動く
  * 相手なので、**復帰の手順を error 文字列そのものに書く**(AC-X1)。手順は **pairing の
- * やり直し**(`atn pair <kind>`)—— `atn login` は broker を pair するだけで device 鍵に触らないので、
+ * やり直し**(`openroly pair <kind>`)—— `openroly login` は broker を pair するだけで device 鍵に触らないので、
  * 案内しても同じ id で 409 のまま永久に詰む(有界レビュー 2026-09-05 で実測)。
  */
 export async function ensureOwnDevice(
@@ -117,7 +117,7 @@ export async function ensureOwnDevice(
   if (registered === "revoked") {
     throw new Error(
       `This device (${deviceKind}) was revoked from the account, so it can no longer read or send messages. ` +
-        `Run 'atn pair ${deviceKind}' and approve it again to connect with a new device key.`,
+        `Run 'openroly pair ${deviceKind}' and approve it again to connect with a new device key.`,
     );
   }
   if (registered === "taken") {
@@ -126,7 +126,7 @@ export async function ensureOwnDevice(
     throw new Error(
       `This device key (${deviceKind}) is held by another connection of this machine — a different agent or ` +
         `account paired here — so it cannot be used by this one. ` +
-        `Run 'atn pair ${deviceKind}' and approve it again to connect with a new device key.`,
+        `Run 'openroly pair ${deviceKind}' and approve it again to connect with a new device key.`,
     );
   }
   return record;
@@ -138,7 +138,7 @@ export async function ensureOwnDevice(
  * 唯一の戻り道(Apple の trusted device と同じく、戻るには人の認証を通る)。
  * agent が自分の判断で作り直す道は作らない(押した Revoke が新しい id で黙って取り消される)。
  *
- * 手元に鍵の無い kind(broker の `atn login`)では **何もしない** —— ここで作ると、封もしない
+ * 手元に鍵の無い kind(broker の `openroly login`)では **何もしない** —— ここで作ると、封もしない
  * broker が Settings › Devices に 1 行増える。失敗(通信断・5xx)は投げる。呼び出し元は pairing を
  * 成功のまま返してよい(credential は書けている。鍵の登録は次の送信でもう一度通る)。
  */
@@ -165,7 +165,7 @@ export async function reconnectOwnDevice(
 
 /**
  * この device に降りている account 鍵(人が承認した grant)。無ければ null。
- * **「無い」は 30 秒だけ覚える**(PBI-0259) —— MCP server / `atn agent` は長生きする process で、
+ * **「無い」は 30 秒だけ覚える**(PBI-0259) —— MCP server / `openroly agent` は長生きする process で、
  * 人が web で grant を押すのはたいてい agent を起こした後。無期限に覚えると、その process は
  * 再起動するまで account 鍵で封をした item を 1 つも開けない(全部 `undecryptable`)。
  *
@@ -243,7 +243,7 @@ async function accountPublicKeyOf(
  *
  * grant は「過去を読む」為に降りてくる **秘密**鍵で、自分の写しを入れるのに要るのは公開鍵だけ。
  * agent は **grant される前が既定状態**(人が Settings で承認して初めて包みが降りる)なので、
- * ここを grant に掛けると `atn send` / MCP の send・reply の初期の送信が全部
+ * ここを grant に掛けると `openroly send` / MCP の send・reply の初期の送信が全部
  * 「送った本人だけが永久に読めない 1 通」になる。
  *
  * `/v1/me/account-key` は human only(PBI-0247 AC-X2 —— AI に人の包みは渡さない)なので、

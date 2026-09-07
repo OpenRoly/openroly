@@ -1,0 +1,78 @@
+﻿id,display_name,skills_dir_expr,detect_expr
+aider-desk,AiderDesk,"join(home, '.aider-desk/skills')","join(home, '.aider-desk'"
+amp,Amp,"join(configHome, 'agents/skills')","join(configHome, 'amp'"
+antigravity,Antigravity,"join(home, '.gemini/antigravity/skills')","join(home, '.gemini/antigravity'"
+antigravity-cli,Antigravity CLI,"join(home, '.gemini/antigravity-cli/skills')","join(home, '.gemini/antigravity-cli'"
+astrbot,AstrBot,"join(home, '.astrbot/data/skills')",join(process.cwd(
+autohand-code,Autohand Code CLI,"join(autohandHome, 'skills')",autohandHome
+augment,Augment,"join(home, '.augment/skills')","join(home, '.augment'"
+bob,IBM Bob,"join(home, '.bob/skills')","join(home, '.bob'"
+claude-code,Claude Code,"join(claudeHome, 'skills')",claudeHome
+openclaw,OpenClaw,getOpenClawGlobalSkillsDir(),"join(home, '.openclaw'"
+cline,Cline,"join(home, '.agents', 'skills')","join(home, '.cline'"
+codearts-agent,CodeArts Agent,"join(home, '.codeartsdoer/skills')","join(home, '.codeartsdoer'"
+codebuddy,CodeBuddy,"join(home, '.codebuddy/skills')",join(process.cwd(
+codemaker,Codemaker,"join(home, '.codemaker/skills')","join(home, '.codemaker'"
+codestudio,Code Studio,"join(home, '.codestudio/skills')","join(home, '.codestudio'"
+codex,Codex,"join(codexHome, 'skills')",codexHome
+command-code,Command Code,"join(home, '.commandcode/skills')","join(home, '.commandcode'"
+continue,Continue,"join(home, '.continue/skills')",join(process.cwd(
+cortex,Cortex Code,"join(home, '.snowflake/cortex/skills')","join(home, '.snowflake/cortex'"
+crush,Crush,"join(home, '.config/crush/skills')","join(home, '.config/crush'"
+cursor,Cursor,"join(home, '.cursor/skills')","join(home, '.cursor'"
+deepagents,Deep Agents,"join(home, '.deepagents/agent/skills')","join(home, '.deepagents'"
+devin,Devin for Terminal,"join(configHome, 'devin/skills')","join(configHome, 'devin'"
+dexto,Dexto,"join(home, '.agents/skills')","join(home, '.dexto'"
+droid,Droid,"join(home, '.factory/skills')","join(home, '.factory'"
+eve,Eve,undefined,"join(cwd, 'agent'"
+firebender,Firebender,"join(home, '.firebender/skills')","join(home, '.firebender'"
+forgecode,ForgeCode,"join(home, '.forge/skills')","join(home, '.forge'"
+gemini-cli,Gemini CLI,"join(home, '.gemini/skills')","join(home, '.gemini'"
+github-copilot,GitHub Copilot,"join(home, '.copilot/skills')","join(home, '.copilot'"
+goose,Goose,"join(configHome, 'goose/skills')","join(configHome, 'goose'"
+grok,Grok Build,"join(grokHome, 'skills')",grokHome
+hermes-agent,Hermes Agent,"join(hermesHome, 'skills')",hermesHome
+inference-sh,inference.sh,"join(home, '.inferencesh/skills')","join(home, '.inferencesh'"
+jazz,Jazz,"join(home, '.jazz/skills')","join(home, '.jazz'"
+junie,Junie,"join(home, '.junie/skills')","join(home, '.junie'"
+iflow-cli,iFlow CLI,"join(home, '.iflow/skills')","join(home, '.iflow'"
+kilo,Kilo Code,"join(home, '.kilocode/skills')","join(home, '.kilocode'"
+kimchi,Kimchi,"join(home, '.config', 'kimchi', 'harness', 'skills')",
+kimi-code-cli,Kimi Code CLI,"join(home, '.agents/skills')","join(home, '.kimi-code'"
+kiro-cli,Kiro CLI,"join(home, '.kiro/skills')","join(home, '.kiro'"
+kode,Kode,"join(home, '.kode/skills')","join(home, '.kode'"
+lingma,Lingma,"join(home, '.lingma/skills')","join(home, '.lingma'"
+loaf,Loaf,"join(home, '.agents/skills')","join(home, '.loaf'"
+mcpjam,MCPJam,"join(home, '.mcpjam/skills')","join(home, '.mcpjam'"
+minimax-code,MiniMax Code,"join(home, '.minimax/skills')",
+mistral-vibe,Mistral Vibe,"join(vibeHome, 'skills')",vibeHome
+moxby,Moxby,"join(home, '.moxby/skills')","join(home, '.moxby'"
+mux,Mux,"join(home, '.mux/skills')","join(home, '.mux'"
+opencode,OpenCode,"join(configHome, 'opencode/skills')","join(configHome, 'opencode'"
+openhands,OpenHands,"join(home, '.openhands/skills')","join(home, '.openhands'"
+ona,Ona,"join(home, '.ona/skills')","join(home, '.ona'"
+pi,Pi,"join(home, '.pi/agent/skills')","join(home, '.pi/agent'"
+posit-assistant,Posit Assistant,"join(home, '.posit/assistant/skills')",
+qoder,Qoder,"join(home, '.qoder/skills')","join(home, '.qoder'"
+qoder-cn,Qoder CN,"join(home, '.qoder-cn/skills')","join(home, '.qoder-cn'"
+qwen-code,Qwen Code,"join(home, '.qwen/skills')","join(home, '.qwen'"
+replit,Replit,"join(configHome, 'agents/skills')",join(process.cwd(
+reasonix,Reasonix,"join(home, '.reasonix/skills')","join(home, '.reasonix'"
+rovodev,Rovo Dev,"join(home, '.rovodev/skills')","join(home, '.rovodev'"
+roo,Roo Code,"join(home, '.roo/skills')","join(home, '.roo'"
+tabnine-cli,Tabnine CLI,"join(home, '.tabnine/agent/skills')","join(home, '.tabnine'"
+terramind,Terramind,"join(home, '.terramind/skills')","join(home, '.terramind'"
+tinycloud,Tinycloud,"join(home, '.tinycloud/skills')","join(home, '.tinycloud'"
+trae,Trae,"join(home, '.trae/skills')","join(home, '.trae'"
+trae-cn,Trae CN,"join(home, '.trae-cn/skills')","join(home, '.trae-cn'"
+warp,Warp,"join(home, '.agents/skills')","join(home, '.warp'"
+windsurf,Windsurf,"join(home, '.codeium/windsurf/skills')","join(home, '.codeium/windsurf'"
+zed,Zed,"join(home, '.agents/skills')","join(configHome, 'zed'"
+zcode,ZCode,"join(home, '.zcode/skills')",
+zencoder,Zencoder,"join(home, '.zencoder/skills')","join(home, '.zencoder'"
+zenflow,Zenflow,"join(home, '.zencoder/skills')","join(home, '.zencoder'"
+neovate,Neovate,"join(home, '.neovate/skills')","join(home, '.neovate'"
+pochi,Pochi,"join(home, '.pochi/skills')","join(home, '.pochi'"
+promptscript,PromptScript,undefined,join(process.cwd(
+adal,AdaL,"join(home, '.adal/skills')","join(home, '.adal'"
+universal,Universal,"join(configHome, 'agents/skills')",

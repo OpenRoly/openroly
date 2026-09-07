@@ -1,6 +1,6 @@
 // PBI-0115 AC-1 の interop check(Android SDK 無し環境での byte 互換の証明)。
-// app/src/main/java/ai/paa/collector/Crypto.kt と同一手順(collector が通る seal の path)を
-// Java + BouncyCastle で実行し、出した envelope を bun 側の @paa/crypto-envelope の open で
+// app/src/main/java/ai/openroly/collector/Crypto.kt と同一手順(collector が通る seal の path)を
+// Java + BouncyCastle で実行し、出した envelope を bun 側の @openroly/crypto-envelope の open で
 // 開けられる事を check-interop.sh が検証する。手順は crypto-envelope/src/index.ts の seal と
 // 1:1 に対応させる:
 //   content key 16 byte → AES-128-GCM(IV 12 byte・AAD 無し・ct||tag)

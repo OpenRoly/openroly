@@ -1,10 +1,10 @@
 {
   "mcp_servers": {
-    "atn": {
-      "command": "${PLUGIN_ROOT}/atn-mcp",
+    "openroly": {
+      "command": "${PLUGIN_ROOT}/openroly-mcp",
       "args": ["${PLUGIN_ROOT}/mcp-server.bundle.js"],
       "env": {
-        "PAA_RUNTIME_KIND": "codex"
+        "OPENROLY_RUNTIME_KIND": "codex"
       }
     }
   }

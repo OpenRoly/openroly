@@ -3,21 +3,27 @@
 //!
 //! 既定では走らせない(`#[ignore]`): 実 CLI = 実 API 呼び出し = 課金と認証と quota が要る。
 //! runtime が在る環境で
-//!   `PAA_ATTACK_RUNTIMES=claude,gemini,codex cargo test --manifest-path broker/Cargo.toml \
+//!   `OPENROLY_ATTACK_RUNTIMES=claude,gemini,codex cargo test --manifest-path broker/Cargo.toml \
 //!      --test pbi0167_containment_attack -- --ignored --nocapture`
 //! と明示した時だけ、名前を挙げた runtime を実際に起こす(挙げなかった物は skip)。
 //!
 //! `broker` は lib crate を持たないため `#[path]` で src を直接取り込む
 //! (`pbi0033_review_attack.rs` と同じ回避策)。
 
+#[path = "../src/env_compat.rs"]
+mod env_compat;
 #[path = "../src/registry.rs"]
 mod registry;
 #[path = "../src/discovery.rs"]
 mod discovery;
-#[path = "../src/paa_cli.rs"]
-mod paa_cli;
+#[path = "../src/openroly_cli.rs"]
+mod openroly_cli;
 #[path = "../src/launch.rs"]
 mod launch;
+#[path = "../src/egress.rs"]
+mod egress;
+#[path = "../src/sandbox.rs"]
+mod sandbox;
 
 use std::fs;
 use std::path::PathBuf;
@@ -36,19 +42,21 @@ fn attack_instruction(marker: &PathBuf) -> String {
 }
 
 #[tokio::test]
-#[ignore = "実 runtime CLI を起こす(課金・認証・quota)。PAA_ATTACK_RUNTIMES で明示した時だけ"]
+#[ignore = "実 runtime CLI を起こす(課金・認証・quota)。OPENROLY_ATTACK_RUNTIMES で明示した時だけ"]
 async fn attacker_written_body_cannot_run_shell_in_any_runtime() {
-    let wanted = std::env::var("PAA_ATTACK_RUNTIMES").unwrap_or_default();
+    let wanted = std::env::var("OPENROLY_ATTACK_RUNTIMES").unwrap_or_default();
     let wanted: Vec<&str> = wanted.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
     assert!(
         !wanted.is_empty(),
-        "PAA_ATTACK_RUNTIMES に起こす runtime を挙げること(例: PAA_ATTACK_RUNTIMES=claude,gemini)"
+        "OPENROLY_ATTACK_RUNTIMES に起こす runtime を挙げること(例: OPENROLY_ATTACK_RUNTIMES=claude,gemini)"
     );
 
-    let home = std::env::temp_dir().join(format!("atn-broker-0167-{}", std::process::id()));
+    let home = std::env::temp_dir().join(format!("openroly-broker-0167-{}", std::process::id()));
     let _ = fs::remove_dir_all(&home);
     let reg = registry::builtin();
     let env = launch::containment_env();
+    // PBI-0238: 実 runtime は実 seatbelt の中で起こす(閉じ込めの土台。model host だけ許す)
+    let egress_allow = |runtime: &str| egress::hosts_for(runtime, "");
 
     for runtime in wanted {
         let marker = home.join(format!("pwned-{runtime}"));
@@ -62,13 +70,19 @@ async fn attacker_written_body_cannot_run_shell_in_any_runtime() {
             &request_id,
             None,
             &env,
+            &launch::Isolation {
+                sandbox: &sandbox::Seatbelt,
+                egress: egress::EgressConfig { allow: egress_allow(runtime), events: None, upstream_override: None },
+                folder: None,
+                user_home: std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())),
+            },
         );
         // 閉じ込めが組めない環境(AC-4)は「起こさない」が正解 —— そのまま合格にする。
-        if result.as_ref().err().map(String::as_str) == Some("containment_unavailable") {
-            println!("· {runtime}: containment_unavailable(fail-closed で起こさない)");
+        if matches!(result.as_ref().err().map(String::as_str), Some("containment_unavailable" | "sandbox_unavailable")) {
+            println!("· {runtime}: {}(fail-closed で起こさない)", result.as_ref().err().unwrap());
             continue;
         }
-        let mut child = result.expect("spawn できること");
+        let (mut child, _egress) = result.expect("spawn できること");
         let status = child.wait().await.expect("wait");
         let dir = home.join("sessions").join(&request_id);
         let stdout = fs::read_to_string(dir.join("stdout.log")).unwrap_or_default();

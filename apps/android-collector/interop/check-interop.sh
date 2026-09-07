@@ -1,6 +1,6 @@
 #!/bin/bash
 # PBI-0115 AC-1 の interop check。Android collector(Crypto.kt)の seal 手順を Java+BouncyCastle
-# で実行し、作った envelope を bun 側の @paa/crypto-envelope で開ける事を機械検証する。
+# で実行し、作った envelope を bun 側の @openroly/crypto-envelope で開ける事を機械検証する。
 # Android SDK / gradle の無い開発環境で「byte 互換が壊れていない」を守る為の物 — app の
 # build・実機確認は Android Studio 側(G2 の user 確認項目)。
 set -euo pipefail
@@ -12,7 +12,7 @@ if [ ! -f "$jar" ]; then
     https://repo1.maven.org/maven2/org/bouncycastle/bcprov-jdk18on/1.78.1/bcprov-jdk18on-1.78.1.jar
 fi
 
-out=/tmp/paa-interop-check
+out=/tmp/openroly-interop-check
 rm -rf "$out"
 mkdir -p "$out"
 javac -cp "$jar" -d "$out" apps/android-collector/interop/CheckEnvelope.java

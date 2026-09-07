@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
-  "name": "atn",
+  "name": "openroly",
   "version": "0.2.1",
-  "description": "All Together Now — attach this runtime to your @handle so it can use the account's inbox and contacts (pairing via `atn pair claude`)",
+  "description": "OpenRoly — attach this runtime to your @handle so it can use the account's inbox and contacts (pairing via `openroly pair claude`)",
   "author": { "name": "shibu003" }
 }

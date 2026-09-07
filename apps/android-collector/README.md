@@ -1,4 +1,4 @@
-# paa-collector (Android)
+# openroly-collector (Android)
 
 EP-0013 W2b — 端末の通知を capture し、seal して server に送る collector app(図44)。
 
@@ -29,7 +29,7 @@ Java + BouncyCastle で seal した envelope を `packages/crypto-envelope`(TS)�
 
 ## Setup(実機)
 
-1. アプリを開き **Open notification access settings** で PAA Collector を許可。
+1. アプリを開き **Open notification access settings** で OpenRoly Collector を許可。
 2. **Source token**(`pso_…`)を paste して **Save & connect**。device 公開鍵を取得して cache。
 3. **Apps** で capture したい app を Title only / Full text にする(既定 Off)。
 

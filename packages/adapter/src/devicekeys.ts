@@ -1,11 +1,11 @@
 import { chmod, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { generateDeviceKeyPair } from "@paa/crypto-envelope";
-import { paaHome } from "./credentials.ts";
+import { generateDeviceKeyPair } from "@openroly/crypto-envelope";
+import { openrolyHome } from "./credentials.ts";
 
 // E2EE device keypair のローカル保管(要件 §9-11、PBI-0006)。
 // `credentials.json` とは**別ファイル**にする: saveCredential は entry 丸ごと置換なので、
-// もし同居させると `atn install claude` の再実行(通常の再pairing経路)で private key が
+// もし同居させると `openroly install claude` の再実行(通常の再pairing経路)で private key が
 // 黙って消え、その鍵で seal 済みの過去メッセージが恒久的に復号不能になる
 // (EP-0001 LEARN #5「credential を単一 token で持つと壊れる」と同型の事故)。
 // lock/atomic-write は credentials.ts と同じパターンをこのファイル内に個別実装する
@@ -29,7 +29,7 @@ const LOCK_TIMEOUT_MS = 5_000;
 const LOCK_STALE_MS = 30_000;
 
 export function deviceKeysPath(env: Env = process.env): string {
-  return join(paaHome(env), "device-keys.json");
+  return join(openrolyHome(env), "device-keys.json");
 }
 
 async function loadFile(env: Env): Promise<DeviceKeyFile> {

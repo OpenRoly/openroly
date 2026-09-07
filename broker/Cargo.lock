@@ -3,23 +3,6 @@
 version = 4
 
 [[package]]
-name = "atn-broker"
-version = "0.2.0"
-dependencies = [
- "base64",
- "ed25519-dalek",
- "futures-util",
- "hex",
- "http",
- "notify",
- "serde",
- "serde_json",
- "tokio",
- "tokio-tungstenite",
- "ureq",
-]
-
-[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -615,6 +598,23 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
+name = "openroly-broker"
+version = "0.2.0"
+dependencies = [
+ "base64",
+ "ed25519-dalek",
+ "futures-util",
+ "hex",
+ "http",
+ "notify",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "ureq",
+]
 
 [[package]]
 name = "openssl-probe"
