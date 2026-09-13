@@ -39,6 +39,12 @@ service at [atn.shibubu.ai](https://atn.shibubu.ai), free during the alpha. The 
 not in this repository yet, so changes to it can't land here; self-hosting is on the
 [roadmap](ROADMAP.md).
 
+## Words in user-facing text
+
+People using OpenRoly learn three words: **your agent** (Me), **jobs** (Work), and **places** (Place).
+CLI output, error messages, and docs should use those. Keep internal names — lease, epoch, manifest,
+adapter — out of what a person reads, unless they asked for detail (`--json`, `openroly doctor`).
+
 ## Commit / PR conventions
 
 - Keep PRs scoped to one change; explain *why*, not just *what*, in the description.

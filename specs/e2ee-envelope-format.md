@@ -96,6 +96,8 @@ with a `recipients[].device_key_id` it can route by. A conforming server impleme
 - Message **routing/bucketing** (inbox vs. requests vs. blocked) — Account-layer logic, has
   nothing to do with the envelope.
 - Key rotation / multi-device re-encryption on new device pairing — not implemented yet.
+- Sharing a sealed job snapshot with someone who has no account (planned, see `ROADMAP.md`) — the
+  server must still never see the key; how the key travels with the link will get its own section.
 
 ## Status / stability
 

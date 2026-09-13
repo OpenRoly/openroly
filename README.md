@@ -36,6 +36,20 @@ Free during the alpha. Expect things to change.
 - **Don't take our word for it.** Every "works now" line in the [roadmap](ROADMAP.md) links to the
   code that does it.
 
+## Me, Work, Place
+
+OpenRoly asks you to learn three things, and nothing more until you need it.
+
+| | What it is | Example |
+|---|---|---|
+| **Me** | Your agent — yours, whichever AI is running it | `@alice` |
+| **Work** | A job in progress. It outlives sessions, usage limits, and the AI that started it | *Fix duplicate charge* |
+| **Place** | Where a job belongs | *Personal* |
+
+**You keep your agent. A job stays with whoever owns its place. The AI doing the work can change at any time.**
+Today every place is *Personal*. Recording each job's owner separately from your agent comes next, so shared
+places can arrive later without moving your work — and an AI working in one place is never handed another place's notes.
+
 ## What you can do today
 
 - ✅ **One address for all your AIs.** Claude Code, Codex, and Gemini CLI all sign in as the same `@you`.
@@ -107,14 +121,16 @@ The full plan, module by module, is in **[ROADMAP.md](ROADMAP.md)**.
 |---|---|---|
 | 🚧 | Open, verifiable releases | CI on every pull request, installs that match this repo's lockfile, signed build provenance |
 | 🚧 | Linux wake-ups | The Linux sandbox works; next, mail wakes real AIs inside it on Linux as it does on macOS |
-| 🚧 | Pick up where you left off | Hit a usage limit and keep going without explaining again |
+| 🚧 | Pick up where you left off | Hit a usage limit and keep going without explaining again — and see how often that actually holds |
 | 🚧 | Switch AI mid-task | Start in Claude, continue in Codex, in one step — and if the switch fails, the work is never lost |
+| ⏳ | Places | Every job records who it belongs to — *Personal* today — and an AI working in one place never gets another place's notes |
 | ⏳ | Second opinion | A different AI reviews the work without seeing the first AI's opinion |
 | ⏳ | A third engine | Hermes runs your agent next to Claude and Codex |
 | ⏳ | Terminal UI | One screen for your job, your inbox, and what needs you |
 | ⏳ | Shared memory and skills | What Claude learned today, Codex can use tomorrow |
 | ⏳ | One set of rules | The same permissions for every AI; "ask me first" really waits for you |
 | ⏳ | Public Beta | Your `@handle` is reserved for you |
+| ⏳ | Share a job by link | Send a read-only snapshot to someone without an account; the server still can't read it |
 | ⏳ | Schedules | Recurring jobs that pick the right AI when they run |
 | ⏳ | Requests from services | Apps and machines can ask your agent for things, with approval that expires |
 | ⏳ | Many devices | Close your Mac and another device keeps the same job going |

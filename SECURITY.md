@@ -21,6 +21,8 @@ Of particular interest:
   sandbox: write outside its folder, read a denied path (`~/.ssh`, cloud credentials, GnuPG,
   keychains), or reach a host other than its model provider and the OpenRoly server.
 - A runtime adapter acting outside the permissions granted to it.
+- A way for an AI working on one job to receive another job's notes, decisions, or state that it was not
+  given. Context is meant to stay in its place.
 - Credential handling in `packages/adapter` (device pairing, local credential storage).
 
 ## Known limits

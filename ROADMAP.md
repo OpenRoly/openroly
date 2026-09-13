@@ -4,6 +4,10 @@
 of work, one memory, one set of rules — carried across Claude Code, Codex, Gemini CLI, Hermes, and
 whatever comes next. You pick the engine for the moment; the agent stays the same.
 
+Three words carry the whole model: **Me** (your agent), **Work** (a job in progress), and **Place** (where
+that job belongs). **People keep their agents. Whoever owns a place keeps its work. The AI running it is
+replaceable.** Switching AI is a feature; the point is that nothing about you or your work breaks when you do.
+
 The end goal goes one step further: an open account protocol, so your agent can outlive any single
 product — including OpenRoly.
 
@@ -32,14 +36,16 @@ Steps 1 and 2 are the next milestones. Step 3 comes with schedules.
 | 🚧 | Open, verifiable releases | CI on every pull request, installs that match this repo's lockfile, signed build provenance on every binary |
 | 🚧 | Linux wake-ups | The Linux sandbox works; next, incoming mail wakes real AIs inside it on Linux |
 | ⏳ | Self-hosting | Run the account server yourself |
-| 🚧 | Pick up where you left off | Hit a usage limit and keep going without explaining again |
+| 🚧 | Pick up where you left off | Hit a usage limit and keep going without explaining again — and see how often that actually holds |
 | 🚧 | Switch AI mid-task | Start in Claude, continue in Codex, in one step |
+| ⏳ | Places | Every job records who it belongs to — *Personal* today — and an AI working in one place never gets another place's notes |
 | ⏳ | Second opinion | A different AI reviews the work without seeing the first AI's opinion |
 | ⏳ | A third engine | Hermes runs your agent next to Claude and Codex |
 | ⏳ | Terminal UI | One screen for your job, your inbox, and what needs you |
 | ⏳ | Shared memory and skills | What Claude learned today, Codex can use tomorrow |
 | ⏳ | One set of rules | The same permissions for every AI; "ask me first" really waits for you |
 | ⏳ | Public Beta | Your `@handle` is reserved for you |
+| ⏳ | Share a job by link | Send a read-only snapshot to someone without an account; the server still can't read it |
 | ⏳ | Schedules and chat apps | Recurring jobs pick the right AI; WhatsApp, Telegram, Discord, and Slack reach your agent |
 | ⏳ | Requests from services | Apps and machines can ask your agent for things, with approval that expires |
 | ⏳ | Many devices | Close your Mac and another device keeps the same job going; open it from two places and it never runs twice |
@@ -73,6 +79,7 @@ Your agent is `@you`, no matter which AI is running it.
 | ⏳ | A handle always resolves to exactly one account — never two servers answering the same name — with strict name normalization | |
 | ⏳ | Clear recovery: what you get back after losing a device, and what you don't | |
 | ⏳ | Export your whole agent — identity, projects, memory, skills, relationships, policies, schedules, receipts — as one `.capsule` with no secret values in it, plus a count of the secrets you'd re-enter elsewhere | |
+| ⏳ | Show who is behind a `@handle`: link an email address, a GitHub account, a company sign-in, or a domain you control | |
 | ⏳ | Public Beta: your `@handle` reserved | |
 
 ### 2. Inbox and attention
@@ -92,6 +99,7 @@ Everything that wants your agent's attention lands in one place, sealed, and wai
 | ⏳ | "Sealed" split into precise, named guarantees, so you know exactly what each kind of item protects | |
 | ⏳ | One generic way in for every service, GitHub included — adding a source needs no special code | |
 | ⏳ | Items that already live in another app (GitHub, Slack, Calendar, Gmail) are referenced, not copied; your AI reads them through that app's MCP server | |
+| ⏳ | The inbox holds attention, not the work: an incoming item becomes a job or joins one, in the place it belongs, while the original stays in its app | |
 | ⏳ | Hand an incoming message to a running job: you always see it; the AI only gets it when you say so or the sender is one you trust | |
 | ⏳ | One contact per person across mail, chat, and GitHub | |
 | ⏳ | A trust level per source, with untrusted content read by an isolated reader | |
@@ -121,6 +129,9 @@ The job outlives the session, the usage limit, and the AI that started it.
 | 🚧 | Pick up after a usage limit without explaining again | |
 | 🚧 | Switch AI mid-task in one step (Claude → Codex): checkpoint, freeze, package, hand over, claim. If any step fails, the work stays ready — never lost | |
 | 🚧 | See exactly what the model received in a session, masked the way the model saw it (`openroly peek`) | |
+| ⏳ | Every job has an owner, recorded separately from your agent and inherited by its tasks — *Personal* today. Deleting or leaving an account is decided by who owns the work, not by who ran it | |
+| ⏳ | Context stays in its place: an AI gets your personal context, the current place, and the current job — never another place's notes, decisions, candidates, or job state. Enforced on your device, where the context is assembled, and covered by tests | |
+| ⏳ | Continuity you can measure: how often a resumed job needed no re-explaining, and how long until the AI did something useful | |
 | ⏳ | Fork and review: a second AI reviews a read-only snapshot without being told the first AI's opinion | |
 | ⏳ | Each task in its own git worktree, merged back only when it applies cleanly, never committed for you | |
 | ⏳ | Finished tasks fold back into the parent job | |
@@ -132,6 +143,9 @@ The job outlives the session, the usage limit, and the AI that started it.
 | ⏳ | Closed questions stay closed, so an AI doesn't retry an idea that already failed | |
 | ⏳ | A check before risky actions that usually costs no extra model call | |
 | ⏳ | Borrow another model's judgment at the risky moments (security, schema changes, the same failure twice) without leaving the job | |
+| ⏳ | What an AI says about a job is a claim until a test, a trace, or a person backs it — then it's verified or rejected, never silently promoted to fact | |
+| ⏳ | A job record that says more than the chat did: constraints, decisions, claims and their evidence, each attempt with the engine that ran it and why it stopped (for example, a usage limit), artifacts, and approvals still pending | |
+| ⏳ | Share a job with someone who has no account: a read-only snapshot by link, sealed so the server can't read it | |
 
 ### 4. Engines
 
@@ -179,6 +193,7 @@ Incoming content is untrusted. Big moves need you.
 | ⏳ | Sending catches mistakes (wrong recipient, missing fields) instead of passing them through | |
 | ⏳ | A stance per contact richer than on/off, including "deliver this person's messages to my AI automatically" | |
 | ⏳ | Permissions travel with the job when it moves to another engine | |
+| ⏳ | Jobs never carry raw secrets: they say what they need (for example, open a pull request) and receive a short-lived credential only at that moment | |
 | ⏳ | Permissions per project, and per contact within a project | |
 | ⏳ | Permissions per device and per operator (read, write, approve) | |
 | ⏳ | Signed delegation: you sign a grant, the account enforces it | |
@@ -192,6 +207,7 @@ What one AI learns, every AI can use — and you decide what sticks.
 |---|---|---|
 | ⏳ | Shared account memory: facts learned in one engine show up in the next, imported from each engine's own memory files | |
 | ⏳ | You approve what gets remembered; every memory keeps where it came from; old facts are superseded, not silently deleted | |
+| ⏳ | Two kinds of memory, kept apart: facts about you stay with your agent; facts about a project stay with that project. One memory screen shows which is which (*About you* / *From Acme / Payments*) | |
 | ⏳ | Memory search runs on your device — the server can't search your memory | |
 | ⏳ | The right memories reach each AI through its context package, within budget | |
 | ⏳ | Anything from an unknown sender is never remembered automatically, and memories are checked for injected instructions | |
@@ -219,6 +235,7 @@ Set it up once; every AI gets the same kit.
 | ✅ | A one-line status for your terminal or editor status bar (`openroly statusline`) | [`apps/cli`](apps/cli) |
 | ✅ | A web app for your phone and for Windows, with push notifications *(hosted)* | |
 | 🚧 | Machine-readable output: `--json` on status, doctor, runtimes, extensions, sync, share, work, and context today; stable exit codes for every command next | [`apps/cli`](apps/cli) |
+| ⏳ | Jobs listed with their place next to their name (`openroly work list`) | |
 | ⏳ | Account notifications reach your terminal too | |
 | ⏳ | An export of what you allowed and what your agent did | |
 | ⏳ | Notifications that fit where you are: a count in the terminal UI, a bell in a background tab, web push when no terminal is open | |
@@ -292,6 +309,20 @@ The last step: your agent doesn't depend on this product either.
 | ⏳ | `openroly doctor` checks your account, network, and engines live | |
 | ⏳ | The account server's source, and a way to run it yourself | |
 
+## Principles
+
+1. **You own your agent.** Your identity, preferences, memory, and skills belong to you.
+2. **Whoever owns a place owns its work.** A job's decisions, evidence, and history stay with its owner.
+3. **The engine is replaceable.** No AI is the agent; each one is a way to run it.
+4. **The inbox receives attention; jobs hold durable state.** Mail, GitHub, and chat stay the source of
+   truth for what lives there.
+5. **Memory about you and knowledge about a job are separate.**
+6. **A claim isn't a fact until something supports it.**
+7. **A team is a state, not a separate product.** Working with someone should change what you can do,
+   not which app you use.
+8. **Complexity lives in the architecture, not in onboarding.** Pick a handle, connect an AI, done.
+9. **Teach only the next thing you need.** You learn Me, Work, and Place; internal terms stay off the screen.
+
 ## What we won't build
 
 Saying no keeps OpenRoly small enough to trust.
@@ -308,6 +339,18 @@ Saying no keeps OpenRoly small enough to trust.
 - **Commits made on your behalf.** Checkpoints and handoffs never write to your git history.
 - **Terminal scrollback synced between devices.** Jobs move between devices; raw terminal output
   stays where it ran.
+- **A plan picker at sign-up.** Nobody is asked "Personal, Team, or Enterprise?" — everyone starts with
+  their own agent.
+- **A separate team product, or a workspace layer above projects.** A project is the place. Team and
+  organization accounts — invites, roles, admin screens — wait until people actually need to share; each job's
+  owner is recorded now so adding them never means moving your work.
+- **One memory for everything.** Knowledge about a job doesn't go into your personal memory.
+- **A replacement for Jira, Slack, or Gmail.** OpenRoly points at what lives there.
+- **A model router or billing gateway.** Use the providers and plans you already have.
+- **Our own compute cloud.** Engines run where they already run.
+- **Engine count before quality.** A few engines that hand work off reliably beat many that don't.
+- **"Same agent" meaning "same model".** Claude and Codex stay different; what stays the same is you,
+  your account, and your work.
 
 Something here doesn't match what the code does? That's a bug —
 [open an issue](https://github.com/OpenRoly/openroly/issues/new?template=spec_mismatch.yml).

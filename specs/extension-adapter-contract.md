@@ -137,6 +137,8 @@ binary to compute them — this is called often.
   crypto half; the pairing handshake itself is not yet split into its own draft).
 - Extension Sync's desired-state reconciliation algorithm (`packages/core/src/extension.ts`,
   `planReconciliation`) — kind-agnostic and lives outside any adapter.
+- Who owns a job, its notes, or its memory — the account decides that. An adapter runs work for the
+  agent; it never owns it, and switching adapters never changes an owner.
 
 ## Status / stability
 

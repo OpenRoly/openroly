@@ -7,6 +7,7 @@
 - [ ] `bun run typecheck && bun test apps/cli packages` passes locally (and `cargo test` in `broker/` if you touched it)
 - [ ] If this changes behavior described in `README.md`, `ROADMAP.md`, or `specs/*.md`, that text is
       updated in the same PR (not left to drift from the implementation)
+- [ ] User-facing text uses the words people see (your agent, jobs, places), not internal names
 
 ## Related issue / discussion
 
