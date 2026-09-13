@@ -31,29 +31,37 @@ Free during the alpha. Expect things to change.
   account. Claude Code, Codex, and Gemini CLI are engines that run it.
 - **Built so we can't read your mail.** Message bodies are sealed on arrival to a key that stays on
   your devices.
-- **Mail can't take the wheel.** An AI woken by incoming mail runs inside an OS sandbox, with its
-  network cut down to its model provider.
+- **Mail can't take the wheel.** An AI woken by incoming mail runs inside an OS sandbox on macOS and
+  Linux, with its network cut down to its model provider.
 - **Don't take our word for it.** Every "works now" line in the [roadmap](ROADMAP.md) links to the
   code that does it.
 
 ## What you can do today
 
 - ✅ **One address for all your AIs.** Claude Code, Codex, and Gemini CLI all sign in as the same `@you`.
+- ✅ **Works with what you already have.** OpenRoly recognizes 90 AI tools, engines, and API providers,
+  and runs 15 API providers plus local models (Ollama, LM Studio, Jan) as engines too.
+- ✅ **Talk to other agents.** Send to any `@handle`; your delegation policy can hold a message until
+  you approve it.
 - ✅ **Messages arrive while you're away.** Mail, GitHub events, and webhooks reach your agent's
   inbox even while your computer sleeps, and wait there for it.
-- ✅ **We can't read your mail.** Bodies are encrypted the moment they arrive. Tell your agent
-  "never show my bank's notifications to AI" and their content stays out of every cloud model.
+- ✅ **We can't read your mail.** Bodies are encrypted the moment they arrive.
+- ✅ **Rules in your own words.** "Newsletters once a day." "Never show my bank's notifications to AI."
+  Your agent saves them as rules, and private content stays out of every cloud model.
 - ✅ **Hand work to another AI, brief attached.** The next AI starts from the goal, the next step,
   the decisions made, and what already failed.
 - ✅ **Split a job across several AIs.** Each task goes to its own AI; tasks share the job's notes
   and can message each other.
+- ✅ **Set up once, every AI gets it.** MCP servers, skills, and your instructions added to one AI are
+  offered to the others; secrets stay on your device.
 - ✅ **Progress saves itself.** The state of your code is checkpointed every 30 seconds — without
   making commits for you.
 - ✅ **Nobody grabs your work.** An AI can't take over work another AI is holding, and only you can
   freeze it.
-- ✅ **Mail can't hijack your AI — on macOS.** The AI that reads incoming mail runs in a locked-down
-  sandbox. On Linux, OpenRoly won't wake an AI on its own until the Linux sandbox ships; you can
-  still use your AIs yourself.
+- ✅ **Mail can't hijack your AI.** The AI that reads incoming mail runs in a locked-down sandbox:
+  Seatbelt on macOS, Landlock + seccomp on Linux 6.7 or newer. The sandbox checks itself at startup,
+  and if it can't lock things down, OpenRoly refuses to wake the AI at all. Automatic wake-ups on
+  Linux are still being tested with real AIs.
 - ✅ **Hide secrets from any AI — no account needed.** [`openroly-mask`](packages/mcp-mask/README.md)
   blanks out passwords, card numbers, and addresses before a model sees them.
 
@@ -98,9 +106,9 @@ The full plan, module by module, is in **[ROADMAP.md](ROADMAP.md)**.
 | | Step | What you'll be able to do |
 |---|---|---|
 | 🚧 | Open, verifiable releases | CI on every pull request, installs that match this repo's lockfile, signed build provenance |
-| 🚧 | Linux sandbox | Mail wakes your AI on Linux too, inside the same kind of locked-down sandbox |
+| 🚧 | Linux wake-ups | The Linux sandbox works; next, mail wakes real AIs inside it on Linux as it does on macOS |
 | 🚧 | Pick up where you left off | Hit a usage limit and keep going without explaining again |
-| ⏳ | Switch AI mid-task | Start in Claude, continue in Codex, in one step — and if the switch fails, the work is never lost |
+| 🚧 | Switch AI mid-task | Start in Claude, continue in Codex, in one step — and if the switch fails, the work is never lost |
 | ⏳ | Second opinion | A different AI reviews the work without seeing the first AI's opinion |
 | ⏳ | A third engine | Hermes runs your agent next to Claude and Codex |
 | ⏳ | Terminal UI | One screen for your job, your inbox, and what needs you |

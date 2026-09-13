@@ -81,7 +81,7 @@ describe("PBI-0438 review 攻撃", () => {
     // 1 超え: 末尾の行だけ外れ、前の行は入ったまま(詰め直しをしない)
     const oneOver = await resolveContextEntries(rows, { cwd, env, maxTokens: total - 1 });
     expect(oneOver.entries.map((e) => e.key)).toEqual(["goal", "next_step"]);
-    expect(oneOver.budget.omitted).toEqual([{ kind: "context", key: "zeta", est_tokens: est[2] }]);
+    expect(oneOver.budget.omitted).toEqual([{ kind: "context", key: "zeta", est_tokens: est[2]! }]);
     expect(oneOver.budget.used_tokens).toBe(est[0]! + est[1]!);
   });
 

@@ -10,8 +10,9 @@ pull request itself.
   (Hermes, OpenClaw, or another). Start with [`specs/extension-adapter-contract.md`](specs/extension-adapter-contract.md)
   and the reference implementations in `adapters/official/{claude,codex,gemini,api}`. Runtime
   neutrality only means something if many runtimes implement the contract.
-- **Linux.** The Linux sandbox is being built (see [ROADMAP.md](ROADMAP.md)). Running the broker on
-  real distributions and kernels, and reporting what the sandbox could or couldn't enforce, helps a lot.
+- **Linux.** The Linux sandbox (Landlock + seccomp) is in, and waking real AIs inside it is being tested
+  (see [ROADMAP.md](ROADMAP.md)). Running the broker on real distributions and kernels, and reporting
+  what the startup self-test says, helps a lot.
 - **Documents that don't match the code.** If the README, the roadmap, or `specs/*.md` says one thing
   and the code does another, that's a bug either way — please open an issue.
 - **Tests** for `packages/*`, the adapters, and `broker/`.

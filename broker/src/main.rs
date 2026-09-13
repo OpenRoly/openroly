@@ -126,7 +126,7 @@ async fn main() {
     let egress_check = std::net::TcpListener::bind("127.0.0.1:0")
         .map(|_| ())
         .map_err(|e| format!("loopback bind failed: {e}"));
-    sandbox::write_status(&cache_dir, &sandbox_status, &egress_check);
+    sandbox::write_status(&cache_dir, &sandbox_status, &egress_check, sandbox.egress_enforcement());
     let server_host = ws_url
         .parse::<http::Uri>()
         .ok()
@@ -300,9 +300,15 @@ struct LastFailure {
 /// `last_failure` は **接続確立直後の 1 通目にだけ** 載せる(以後の差分 hello は None)。
 /// sessions(PBI-0229)は逆に **毎回** 載せる —— これが server 側 cache の reconcile の正本。
 /// 旧 server は未知の key を読まないので互換は壊れない。capacity.max は dedicated session の
-/// 同時実行上限(adopt と同じ ADOPT_CONCURRENCY)。
-fn hello_message(found: &[Found], last_failure: Option<&LastFailure>, sessions: &sessions::Sessions) -> String {
-    let mut msg = json!({ "type": "hello", "runtimes": found });
+/// 同時実行上限(adopt と同じ ADOPT_CONCURRENCY)。`egress_enforcement` は sandbox backend が
+/// 名乗る値(PBI-0441)で、毎回載せる(server は hello ごとに写し直す)。
+fn hello_message(
+    found: &[Found],
+    last_failure: Option<&LastFailure>,
+    sessions: &sessions::Sessions,
+    egress_enforcement: &str,
+) -> String {
+    let mut msg = json!({ "type": "hello", "runtimes": found, "egress_enforcement": egress_enforcement });
     let (live, capacity) = sessions.hello_snapshot(adopt::ADOPT_CONCURRENCY);
     msg["sessions"] = live;
     msg["capacity"] = capacity;
@@ -334,7 +340,7 @@ where
     *known = current;
     blog!("discovery updated = {}", serde_json::to_string(known).unwrap_or_default());
     write
-        .send(Message::Text(hello_message(known, None, &state.sessions).into()))
+        .send(Message::Text(hello_message(known, None, &state.sessions, state.sandbox.egress_enforcement()).into()))
         .await
         .map_err(|e| format!("hello send failed: {e}"))
 }
@@ -382,7 +388,7 @@ async fn run_once(
     let mut known_runtimes = scan_now(state).await;
     blog!("discovery = {}", serde_json::to_string(&known_runtimes).unwrap_or_default());
     write
-        .send(Message::Text(hello_message(&known_runtimes, Some(failure), &state.sessions).into()))
+        .send(Message::Text(hello_message(&known_runtimes, Some(failure), &state.sessions, state.sandbox.egress_enforcement()).into()))
         .await
         .map_err(|e| format!("hello send failed: {e}"))?;
 
@@ -782,6 +788,26 @@ async fn run_once(
                     return Err(format!("session_result send failed: {e}"));
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sandbox::SandboxBackend;
+
+    // PBI-0441: hello は sandbox backend が名乗る egress_enforcement を **毎回**運ぶ(接続直後の 1 通目も
+    // 差分 hello も)。server は hello ごとに端末の行へ写し直す
+    #[test]
+    fn hello_carries_the_backends_egress_enforcement() {
+        let sessions = sessions::Sessions::new(None);
+        let backend = sandbox::NoSandbox { reason: "test".into() };
+        let failure = LastFailure { reason: Some("x".into()), attempts: 1 };
+        for last_failure in [None, Some(&failure)] {
+            let msg: Value =
+                serde_json::from_str(&hello_message(&[], last_failure, &sessions, backend.egress_enforcement())).unwrap();
+            assert_eq!(msg["egress_enforcement"], "none");
         }
     }
 }

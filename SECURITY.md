@@ -27,8 +27,11 @@ Of particular interest:
 
 These are known and documented; they are not vulnerabilities by themselves.
 
-- The OS sandbox exists on macOS only. On Linux and Windows the broker refuses automatic
-  wake-ups (`sandbox_unavailable`) instead of running them unsandboxed.
+- The OS sandbox is Seatbelt on macOS and Landlock + seccomp on Linux. Linux needs Landlock ABI 4
+  (kernel 6.7+) and `bash` for the startup self-test; without them, and on Windows, the broker refuses
+  automatic wake-ups (`sandbox_unavailable`) instead of running them unsandboxed.
+- On both platforms the network rule pins a port, not a host: a woken session can reach any host
+  listening on its own proxy's port number (a random ephemeral port per session).
 - The sandbox deliberately leaves `~/.openroly/credentials.json` readable, because the MCP server
   inside the session needs its token. A way to use that token beyond its scope is in scope.
 - The project has not had an external security audit yet.

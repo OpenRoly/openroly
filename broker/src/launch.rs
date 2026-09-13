@@ -908,8 +908,8 @@ pub fn launch_session_scoped_in(
         })?;
     }
     // 閉じ込めの土台(PBI-0238 / 図72): session の egress proxy を先に立て(port が profile に要る)、
-    // その port だけを許す sandbox で包んでから spawn する。proxy が立たない / 包めない(Linux・
-    // Windows・seatbelt が壊れた機)は **何も spawn せず** `sandbox_unavailable`(AC-X2)。
+    // その port だけを許す sandbox で包んでから spawn する。proxy が立たない / 包めない(Windows・
+    // Landlock ABI 4 未満の Linux・seatbelt が壊れた機)は **何も spawn せず** `sandbox_unavailable`(AC-X2)。
     let egress = egress::start(isolation.egress.clone(), request_id)
         .inspect_err(|_| discard_session_dir(&session_dir))?;
     let spec = SandboxSpec {
@@ -1224,7 +1224,12 @@ mod tests {
 
     /// openroly MCP が登録済みの claude user config と、admin policy の無い gemini を模した env。
     fn test_env() -> ContainmentEnv {
-        let dir = std::env::temp_dir().join(format!("openroly-broker-cenv-{}", std::process::id()));
+        // 呼び出しごとに別の dir(PBI-0452 の公開 CI で実測)。pid だけだと同じ process で並列に走る
+        // test が同じ `.claude.json` を取り合い、片方の `fs::write`(truncate → write)の途中を
+        // もう片方が読んで「not valid JSON: EOF」→ `containment_unavailable` になる(ubuntu で 2 本赤)
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("openroly-broker-cenv-{}-{seq}", std::process::id()));
         let _ = fs::create_dir_all(&dir);
         let config = dir.join(".claude.json");
         fs::write(
@@ -1922,7 +1927,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    // AC-5 / AC-X2: backend が無い(Linux / Windows / seatbelt が壊れた機)= 何も spawn せず
+    // AC-5 / AC-X2: backend が無い(Windows / Landlock ABI 4 未満の Linux / seatbelt が壊れた機)= 何も spawn せず
     // `sandbox_unavailable`。session_dir も残さない。
     #[tokio::test]
     async fn dedicated_launch_sandbox_unavailable_spawns_nothing() {
