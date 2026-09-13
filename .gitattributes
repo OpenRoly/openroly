@@ -1,25 +1,25 @@
-# 並列 worktree で merge を壊さないための属性（PBI-0365・正本は docs/agents/parallel-merge.md §4）
+# Attributes that keep merges from parallel worktrees from breaking files
 #
-# `-merge` = git に 3-way merge をさせない。衝突したら「どちらか片側を取って作り直す」で終わる。
-# `-diff`  = binary 扱い（1MB の minified diff を log や review に出さない）。
+# `-merge` = git does not 3-way merge the file. On conflict, take one side and regenerate it.
+# `-diff`  = treat as binary (keeps 1MB minified diffs out of logs and reviews).
 #
-# なぜ要るか: 直近 60 merge で衝突解決が要った file のうち、**追跡された bundle が 24 回**。
-# 過去に git が 1MB の bundle を 3-way merge して壊し、統合後の e2ee.ts から作り直している。
-# 生成物は「混ぜる」物ではなく「作り直す」物なので、混ぜさせない。
+# Why: of the files that needed conflict resolution in the last 60 merges, **tracked bundles came up 24 times**.
+# git once 3-way merged a 1MB bundle and broke it; it had to be rebuilt from e2ee.ts.
+# Generated files are meant to be regenerated, not merged.
 
-# ---------- 生成物（衝突したら再生成する。混ぜない）----------
-# 作り直し方: bun run plugin:build（adapters/official/*/package.json）
+# ---------- Generated files (regenerate on conflict; never merge) ----------
+# Regenerate: bun run plugin:build (adapters/official/*/package.json)
 *.bundle.js                                 -merge -diff
-# 作り直し方: bun scripts/catalog-build.ts（--check で commit 済みとの差分を見る）
+# Regenerate: bun scripts/catalog-build.ts (--check shows the diff against the committed file)
 packages/core/registry/detectors.v1.json    -merge
-# 作り直し方: bash scripts/diagrams-build.sh（source は docs/diagrams/*.md・PBI-0366）
+# Regenerate: bash scripts/diagrams-build.sh (sources are docs/diagrams/*.md)
 docs/diagrams.md                            -merge
 
-# ---------- lock（片側を取ってから install し直す）----------
+# ---------- Lock files (take one side, then reinstall) ----------
 bun.lock                                    -merge
 broker/Cargo.lock                           -merge
 
-# ---------- binary（拡張子で明示。自動判定に任せない）----------
+# ---------- Binary (explicit by extension; don't rely on auto-detection) ----------
 *.png                                       binary
 *.gif                                       binary
 *.jpg                                       binary
@@ -30,9 +30,9 @@ broker/Cargo.lock                           -merge
 *.woff                                      binary
 *.woff2                                     binary
 
-# ---------- 入れなかった物（理由を残す）----------
-# docs/diagrams.md に merge=union は**入れない**。union は衝突マーカーを出さずに両側を混ぜるので、
-#   構造のある markdown では黙って壊れる。あの file の手当ては「1 図 1 file に割る」（§4 の (2)）。
-# merge=mergiraf（構文を見る merge driver）も**まだ入れない**。この platform に bottle が無く
-#   source build になるのと、driver を git config に設定する前に属性だけ書くと**無言で効かない**ため。
-#   install と同じ commit で書く（docs/agents/parallel-merge.md §8）。
+# ---------- Deliberately left out (with reasons) ----------
+# No merge=union for docs/diagrams.md: union mixes both sides without conflict markers, which
+#   silently breaks structured markdown. The fix for that file is one file per figure.
+# No merge=mergiraf (a syntax-aware merge driver) yet: there is no bottle for this platform, so it
+#   would be a source build, and attributes written before the driver is set in git config
+#   **silently do nothing**. Add it in the same commit as the install.

@@ -3,7 +3,7 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- per-app 選択の一覧を取る為の package visibility(API 30+) -->
+    <!-- package visibility to list apps for per-app capture (API 30+) -->
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />
@@ -26,7 +26,7 @@
             </intent-filter>
         </activity>
 
-        <!-- REQ-68/71: 通知の読み取りは user の明示同意(system の notification access)のみ -->
+        <!-- Notifications are read only with the user's explicit consent (system notification access) -->
         <service
             android:name=".CollectorService"
             android:exported="false"

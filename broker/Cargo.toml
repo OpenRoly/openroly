@@ -5,27 +5,27 @@ edition = "2024"
 
 [dependencies]
 base64 = "0.22.1"
-# Detector Registry の署名検証(PBI-0022)。verify_strict のみ使う(鍵生成は Cloud 側)
+# Signature verification for the Detector Registry. Only verify_strict is used (keys are generated in the cloud)
 ed25519-dalek = "2.2.0"
 futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
 hex = "0.4.3"
 http = "1.5.0"
-# `kill(-pgid, sig)` = process group ごとの signal(PBI-0403)。**新しい crate ではない** ——
-# tokio が既に引いているので lock に crate は 1 つも増えない(`nix` は新規に増える側なので採らない)。
-# 外部 `kill` command を fork する形をやめるのは、負数 pid の解釈が実装ごとに違ううえ、
-# `.status()` の待ちが tokio の worker thread を止めるから。
+# `kill(-pgid, sig)` = signal a whole process group. **Not a new crate** —
+# tokio already pulls it in, so the lock file gains no crates (`nix` would be a new one, so it isn't used).
+# We no longer fork an external `kill` command: implementations disagree on negative pids, and
+# waiting on `.status()` blocks a tokio worker thread.
 libc = "0.2.189"
-# 層 2 filesystem watch(要件 §45.3 / アーキ §39 で決定済み)。macOS は FSEvents backend のみ使う
+# Filesystem watch. On macOS only the FSEvents backend is used
 notify = { version = "8.2.0", default-features = false, features = ["macos_fsevent"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "process", "time", "net", "sync", "io-util"] }
-# **TLS は rustls**(PBI-0190)。native-tls ではなく rustls にするのは、配布 binary を複数 OS 向けに
-# 作るので OS の TLS 実装に依存しない方が壊れにくいから。root 証明書は OS のストアを使う
-# (`*-native-roots`) —— 企業の TLS 傍受環境でも通る。
-# これが無いと hosted(https / wss)に **一度も繋がらない** ——
-# `connect failed: URL error: TLS support not compiled in` で無限に再接続し、
-# runtime の自動登録(PBI-0023 の hello → adopt)が起きない(2026-09-03 に本番で踏んだ)
+# **TLS uses rustls**, not native-tls: the distributed binaries target several OSes, and not depending
+# on each OS's TLS stack breaks less. Root certificates come from the OS store (`*-native-roots`),
+# so it also works behind corporate TLS interception.
+# Without it the broker **never connects** to hosted (https / wss) —
+# it reconnects forever with `connect failed: URL error: TLS support not compiled in`,
+# and runtimes are never registered automatically (hit in production on 2026-09-03)
 tokio-tungstenite = { version = "0.30.0", features = ["connect", "handshake", "rustls-tls-native-roots"] }
-# registry の取得。同じ理由で TLS が要る(署名検証の前に取得できない)
+# Registry download. Needs TLS for the same reason (a signature can't be verified before the fetch)
 ureq = { version = "2.12.1", default-features = false, features = ["tls", "native-certs"] }

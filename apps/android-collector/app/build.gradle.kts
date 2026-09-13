@@ -30,7 +30,7 @@ android {
     }
     packaging {
         resources {
-            // BouncyCastle jar が運ぶ複数 version の META-INF を重複 resource として落とさない
+            // Don't fail on the duplicate META-INF resources the BouncyCastle jar ships for multiple versions
             excludes += setOf(
                 "META-INF/versions/**",
                 "META-INF/*.SF",
@@ -42,7 +42,7 @@ android {
 }
 
 dependencies {
-    // HPKE(RFC 9180)は BouncyCastle。byte 互換は apps/android-collector/interop/ の
-    // check-interop.sh が機械検証する(図44・AC-1)
+    // HPKE (RFC 9180) comes from BouncyCastle. Byte compatibility is checked by
+    // apps/android-collector/interop/check-interop.sh
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
 }

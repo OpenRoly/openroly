@@ -2,34 +2,34 @@
 
 This file records third-party notices for code or substantial implementation
 portions incorporated into OpenRoly source, beyond normal package-manager
-dependency metadata. 形式は OpenClaw の `THIRD_PARTY_NOTICES.md` に倣う（upstream URL /
-components / license 種別 / copyright / 採った path / license 本文）。
+dependency metadata. The format follows OpenClaw's `THIRD_PARTY_NOTICES.md` (upstream URL /
+components / license type / copyright / imported path / license text).
 
-Upstream の org / repo 名は **2026-09 時点の名前**で書く（rename 後の新名。URL は redirect するが
-notices は新しい名前で書く・C12 #37）。license 種別は GitHub API の license 表示でなく
-**各 repo の LICENSE file 本文**から取る（C12 #2 — openclaw / codex-acp は API が NOASSERTION でも
-本文は MIT / Apache-2.0）。本文は全文を掲載する（要約・省略しない）。
+Upstream org / repo names are written as of **2026-09** (the new names after renames; old URLs
+redirect). The license type is taken from **each repo's LICENSE file text**, not from the license
+shown by the GitHub API (for openclaw / codex-acp the API reports NOASSERTION, but the text is
+MIT / Apache-2.0). License texts are reproduced in full, never summarized or shortened.
 
-この file を作った時点（PBI-0394・CAP-1 新規 N1）ではまだ port が 1 本も無い。そのため各節の
-Imported to は `planned:` で書き、**実在しない実装 path を書かない**。port と同じ commit で
-実在 path に置き換える（最初の port = P1 の新規 B `@openclaw/workboard-contract`）。
+A component that has not been ported yet is listed as `Imported to: planned:`, and **no
+implementation path is written until it exists**. The real path replaces `planned:` in the same
+commit as the port.
 
-**取り寄せた実物は `third_party/<upstream>/` に上流の path のまま置く**（PBI-0401）。
-値や振る舞いを手で写すと、上流がずれても永久に緑のままになる（写し間違いが赤にならない）ので、
-**写しを置いてそこから derive する / 写しの関数を実際に呼ぶ**。写しは改変せず、先頭 3 行の
-provenance を除いた本文の blob sha を `scripts/provenance-check.sh` が上流の sha と突き合わせる。
-どこに何を置いたかは `third_party/README.md`。
+**Upstream sources we copy live under `third_party/<upstream>/`, keeping the upstream path.**
+Retyping values or behavior by hand would stay green forever after upstream drifts, so we
+**keep the copy and derive from it / call the copied functions directly**. Copies are never
+modified; `scripts/provenance-check.sh` compares each copy's blob sha (minus its 3-line provenance
+header) against upstream. What lives where is listed in `third_party/README.md`.
 
 ## Hermes Agent
 
-TUI（React 19 + Ink）・skill manager・memory・cron を component 単位で adapted する
-（`third_party/` への丸ごとコピーはしない・C12 #4）。
+The TUI (React 19 + Ink), skill manager, memory, and cron are adapted component by component
+(no wholesale copy into `third_party/`).
 
 - Upstream: https://github.com/NousResearch/hermes-agent
 - Components: `ui-tui` / `skill_manager` family / `memory_tool` / `cron`
 - License: MIT
 - Copyright: Copyright (c) 2025 Nous Research
-- Imported to: planned: 新規 I (`packages/tui/`)・新規 F (hermes executor)・CAP-7 (memory)・CAP-12 (cron)
+- Imported to: planned: TUI (`packages/tui/`), Hermes executor, shared memory, schedules (cron)
 - License text from: https://raw.githubusercontent.com/NousResearch/hermes-agent/main/LICENSE
 
 MIT License
@@ -56,14 +56,14 @@ SOFTWARE.
 
 ## OpenClaw
 
-work ledger の値集合（status / event kind）・bootstrap context 上限の判定・gateway client 側の
-再接続 policy を component 単位で port する。
+Ported component by component: the work ledger value sets (status / event kind), the bootstrap
+context budget check, and the gateway client's reconnect policy.
 
 - Upstream: https://github.com/openclaw/openclaw
 - Components: `@openclaw/workboard-contract` / `bootstrap-budget.ts` / `@openclaw/gateway-client`
 - License: MIT
 - Copyright: Copyright (c) 2026 OpenClaw Foundation
-- Imported to: 実物の写し = `third_party/openclaw/packages/workboard-contract/src/index.ts` / `third_party/openclaw/src/agents/bootstrap-budget.ts`（+ 型の `third_party/openclaw/src/agents/bootstrap-budget.types.ts`）。使う所 = `packages/core/src/work.ts` (B: workboard-contract の status 9 値 / event kind 24 値 / attempt 5 値 / proof 4 値を**写しから derive**する。手で写さない・PBI-0393 / PBI-0395 / PBI-0401)・`packages/core/src/context.ts` (B2: bootstrap-budget.ts の予算判定を「file ごと」→「要素ごと」に読み替え。等価は `packages/core/test/context.test.ts` が**写しの `analyzeBootstrapBudget` を実際に呼んで**測る・PBI-0398 / PBI-0401)・planned: CAP-6 新規 I2 (gateway-client)
+- Imported to: upstream copies = `third_party/openclaw/packages/workboard-contract/src/index.ts` / `third_party/openclaw/src/agents/bootstrap-budget.ts` (+ types in `third_party/openclaw/src/agents/bootstrap-budget.types.ts`). Used by `packages/core/src/work.ts` (the workboard-contract value sets — 9 statuses / 24 event kinds / 5 attempt values / 4 proof values — are **derived from the copy**, never retyped) and `packages/core/src/context.ts` (the bootstrap-budget.ts check, applied per element instead of per file; `packages/core/test/context.test.ts` measures equivalence by **calling the copied `analyzeBootstrapBudget` directly**). planned: gateway-client
 - License text from: https://raw.githubusercontent.com/openclaw/openclaw/main/LICENSE
 
 MIT License
@@ -93,14 +93,14 @@ THIRD_PARTY_NOTICES.md.
 
 ## gemini-cli
 
-TUI の approval / diff 表示の Ink components を component 単位で port する（Hermes `ui-tui` fork と
-同じ commit・同じ Ink 前提）。
+The TUI's Ink components for approval and diff display are ported component by component (same
+commit and same Ink version as the Hermes `ui-tui` fork).
 
 - Upstream: https://github.com/google-gemini/gemini-cli
 - Components: Ink components (`ToolConfirmationQueue` / `ToolConfirmationMessage` / `DiffRenderer`)
 - License: Apache-2.0
-- Copyright: Google（LICENSE 本文に名義の記載なし — 本文は Apache-2.0 標準文のまま）
-- Imported to: planned: 新規 I (`packages/tui/`)
+- Copyright: Google (the LICENSE text names no holder; it is the standard Apache-2.0 text)
+- Imported to: planned: TUI (`packages/tui/`)
 - License text from: https://raw.githubusercontent.com/google-gemini/gemini-cli/main/LICENSE
 
 
@@ -307,14 +307,14 @@ TUI の approval / diff 表示の Ink components を component 単位で port �
    limitations under the License.
 ## claude-agent-acp
 
-Claude の ACP adapter。broker が sandbox 内で spawn する（CAP-4 新規 A）。upstream org 名は
-2026-09 時点の名前で書く（rename 前は zed-industries org）。
+Claude's ACP adapter, spawned by the broker inside its sandbox. The upstream org name is as of
+2026-09 (it was the zed-industries org before the rename).
 
 - Upstream: https://github.com/agentclientprotocol/claude-agent-acp
-- Components: `claude-agent-acp`（ACP adapter for Claude）
+- Components: `claude-agent-acp` (ACP adapter for Claude)
 - License: Apache-2.0
 - Copyright: Copyright 2025 Zed Industries, Inc. and contributors
-- Imported to: planned: CAP-4 新規 A (broker の ACP client 側)
+- Imported to: planned: the broker's ACP client
 - License text from: https://raw.githubusercontent.com/agentclientprotocol/claude-agent-acp/main/LICENSE
 
 
@@ -511,14 +511,14 @@ Claude の ACP adapter。broker が sandbox 内で spawn する（CAP-4 新規 A
 
 ## codex-acp
 
-Codex の ACP adapter。broker が sandbox 内で spawn する（CAP-4 新規 A と同じ slice）。
-upstream org 名は 2026-09 時点の名前で書く（rename 前は zed-industries org）。
+Codex's ACP adapter, spawned by the broker inside its sandbox (same work as claude-agent-acp).
+The upstream org name is as of 2026-09 (it was the zed-industries org before the rename).
 
 - Upstream: https://github.com/agentclientprotocol/codex-acp
-- Components: `codex-acp`（ACP adapter for Codex）
+- Components: `codex-acp` (ACP adapter for Codex)
 - License: Apache-2.0
 - Copyright: Copyright 2025 JetBrains s.r.o.
-- Imported to: planned: CAP-4 新規 A
+- Imported to: planned: the broker's ACP client
 - License text from: https://raw.githubusercontent.com/agentclientprotocol/codex-acp/main/LICENSE
 
    Copyright 2025 JetBrains s.r.o.
@@ -714,13 +714,13 @@ upstream org 名は 2026-09 時点の名前で書く（rename 前は zed-industr
 
 ## pg-boss
 
-schedule 登録・実行の queue（`cron-parser` を内包）。CAP-12 新規 G1 で port する。
+Queue for registering and running schedules (bundles `cron-parser`). To be ported for schedules.
 
 - Upstream: https://github.com/timgit/pg-boss
-- Components: `pg-boss`（`cron-parser` 内包）
+- Components: `pg-boss` (bundles `cron-parser`)
 - License: MIT
 - Copyright: Copyright (c) 2016 Tim Jones
-- Imported to: planned: CAP-12 新規 G1
+- Imported to: planned: schedules
 - License text from: https://raw.githubusercontent.com/timgit/pg-boss/master/LICENSE
 
 The MIT License (MIT)
@@ -748,20 +748,20 @@ SOFTWARE.
 
 ## postal-mime
 
-inbound mail の MIME parse（RFC 5322 の address list / encoded-word / charset / multipart）。
-**依存として借りる**（写しは置かない）—— `apps/server` の `postal-mime` で、`parseMime` と
-Resend 口の `parseFromHeader` / `addressesFromHeader` が上流の `PostalMime.parse` /
-`addressParser` / `decodeWords` を直接呼ぶ（PBI-0402）。
+MIME parsing for inbound mail (RFC 5322 address lists / encoded-words / charsets / multipart).
+**Used as a dependency** (no copy is kept): `apps/server` depends on `postal-mime`, and `parseMime`
+plus the Resend path's `parseFromHeader` / `addressesFromHeader` call upstream's `PostalMime.parse` /
+`addressParser` / `decodeWords` directly.
 
 - Upstream: https://github.com/postalsys/postal-mime
-- Components: `postal-mime@3.0.0`（依存なし）
-- License: **MIT-0**（MIT No Attribution）—— package.json の `license` も LICENSE 本文も MIT-0。
-  MIT 本文に在る「上記の著作権表示と本許諾表示を全ての複製に含める」条項が**無い**版なので、
-  PBI 本文の「MIT」は本文で読み直した結果こちらが正しい（横断ルール 1: 種別は LICENSE 本文から取る）
+- Components: `postal-mime@3.0.0` (no dependencies)
+- License: **MIT-0** (MIT No Attribution) — both the `license` field in package.json and the LICENSE
+  text say MIT-0. This variant **lacks** MIT's clause requiring the copyright and permission notice
+  in all copies, so it is recorded as MIT-0 (read from the license text, not assumed to be MIT).
 - Copyright: Copyright (c) 2021-2025 Andris Reinman
 - Imported to: `apps/server/src/mail-inbound.ts` / `apps/server/src/mail-inbound-resend.ts`
-  （npm 依存。source の写しは repo に置かない）
-- License text from: npm tarball の `postal-mime@3.0.0/LICENSE.txt`（実際に読んだのはこの file）
+  (npm dependency; no source copy is kept in the repo)
+- License text from: `postal-mime@3.0.0/LICENSE.txt` in the npm tarball (the file actually read)
 
 Copyright (c) 2021-2025 Andris Reinman
 

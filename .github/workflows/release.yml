@@ -1,14 +1,14 @@
-# tag を打つと単体実行ファイル + broker(Rust)binary を作って Release に添付する(PBI-0137・PBI-0154)。
+# Pushing a tag builds the standalone binaries and the broker (Rust) binaries and attaches them to a Release.
 #
-# `openroly install` / `openroly login` と plugin の launcher はここで公開された asset を取りに来る
-# (`https://github.com/<owner>/<repo>/releases/download/v<version>/openroly-mcp-<target>`)。
-# **公開 repo(openroly/openroly)側で走った Release だけが token 無しで取れる** ——
-# 正本 repo(private)で走らせた場合、asset は private になり取得側は 404 になる。
-# action の版は 2026-09-01 に GitHub API で実測した最新 major:
+# `openroly install` / `openroly login` and the plugin launcher download the assets published here
+# (`https://github.com/<owner>/<repo>/releases/download/v<version>/openroly-mcp-<target>`).
+# **Only Releases built in the public repo (openroly/openroly) can be downloaded without a token** —
+# if this runs in the private source repo, the assets are private and downloads return 404.
+# Action versions are the latest majors checked against the GitHub API on 2026-09-01:
 #   actions/checkout v7.0.1 / oven-sh/setup-bun v2.2.0 / softprops/action-gh-release v3.0.3 /
 #   actions/upload-artifact v7.0.1 / actions/download-artifact v8.0.1
-# `macos-14` は 2026-07-06 から非推奨(2026-11-02 に廃止)なので broker の darwin build は
-# `macos-latest` を使う(実測: 2026-09-01 時点で macOS 26 相当)。
+# `macos-14` is deprecated from 2026-07-06 (removed 2026-11-02), so the darwin broker build uses
+# `macos-latest` (macOS 26 as of 2026-09-01).
 name: release
 
 on:
@@ -16,7 +16,7 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write # Release を作って asset を添付するのに要る(それ以外は要らない)
+  contents: write # needed to create the Release and attach assets (nothing else)
 
 jobs:
   binaries:
@@ -26,14 +26,14 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
-      # `bun.lock` は正本 repo で作られるので `apps/server` / `apps/web` の workspace 項を持つ。
-      # 公開 repo にその 2 つは無いので **公開側では frozen が原理的に通らない**
-      # (2026-09-07 実測: 公開 clone 4/4 で `lockfile had changes`・正本の fresh clone は pass。
-      # 2 つの package.json を戻すと通る = 機序は workspace 集合のずれ)。ここが赤いと binaries job が
-      # 落ち、`openroly install` / launcher が取りに来る asset が 1 つも出ない(PBI-0303 有界レビュー)。
+      # `bun.lock` is generated in the source repo, so it lists the `apps/server` / `apps/web` workspaces.
+      # Those two don't exist in the public repo, so **a frozen install can never pass here**
+      # (checked 2026-09-07: 4/4 public clones failed with `lockfile had changes`; a fresh clone of the
+      # source repo passed). If this step failed, the binaries job would fail and none of the assets
+      # that `openroly install` / the launcher download would be published.
       - run: bun install --frozen-lockfile || bun install
 
-      # cross target の runtime は bun が自分で download するので、3 target とも 1 job で作れる
+      # bun downloads the cross-target runtimes itself, so one job builds all 3 targets
       - name: build binaries
         run: ./scripts/build-binaries.sh --out dist
 
@@ -43,22 +43,22 @@ jobs:
           path: dist/*
           retention-days: 1
 
-  # broker(Rust)は bun compile と違って自前でクロスコンパイルしない(notify クレートが
-  # macOS backend を要る)。darwin 2 target(arm64/x64)は macOS runner 1 本で作る ——
-  # Apple 純正ツールチェーンは同一 host から両 darwin arch を linker 追加無しでビルドできる
-  # (2026-09-01 実測: このリポジトリの x64 mac で aarch64-apple-darwin への `cargo check` が
-  # 素で通った。逆向きの arm64 → x86_64-apple-darwin も同じ toolchain で成立する)
+  # Unlike bun compile, the broker (Rust) is not cross-compiled here (the notify crate needs the
+  # macOS backend). Both darwin targets (arm64/x64) are built on one macOS runner — Apple's
+  # toolchain builds both darwin archs from a single host without an extra linker
+  # (checked 2026-09-01: `cargo check` for aarch64-apple-darwin passed as-is on an x64 Mac;
+  # the reverse, arm64 → x86_64-apple-darwin, works with the same toolchain).
   broker-darwin:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
       - run: rustup target add x86_64-apple-darwin
 
-      # OPENROLY_REGISTRY_PUBLIC_KEY は compile-time pin(broker/src/registry.rs)。**本番は
-      # broker/registry.prod.pub**(PBI-0244) —— dev 鍵(registry.pub = apps/server/.env.local の
-      # 平文 seed の対)で署名した registry は、配った binary には通らない。public key なので
-      # secret ではなくそのまま焼く。file が無い / 中身が壊れていれば `set -e` で job が落ちる
-      # (cargo test の prod_pinned_key_parses_and_differs_from_dev が CI で先に落とす)
+      # OPENROLY_REGISTRY_PUBLIC_KEY is pinned at compile time (broker/src/registry.rs). **Production
+      # uses broker/registry.prod.pub** — a registry signed with the dev key (registry.pub) is rejected
+      # by the distributed binary. It is a public key, not a secret, so it is baked in as-is. If the
+      # file is missing or malformed, `set -e` fails the job
+      # (cargo test's prod_pinned_key_parses_and_differs_from_dev catches it earlier in CI).
       - name: build broker (darwin-arm64 / darwin-x64)
         working-directory: broker
         run: |
@@ -102,8 +102,8 @@ jobs:
           path: dist
           merge-multiple: true
 
-      # 取得側(ensureBinary / launcher)は SHA256SUMS を**必ず**照合する。
-      # ここで作らないと、どちらも「照合表が無い」として取得を諦める(壊れた binary は流れない)
+      # The downloaders (ensureBinary / the launcher) **always** verify SHA256SUMS.
+      # Without it, both give up for lack of a checksum list (so a broken binary is never installed)
       - name: SHA256SUMS
         working-directory: dist
         run: sha256sum openroly-mcp-* openroly-darwin-* openroly-linux-* openroly-broker-* > SHA256SUMS

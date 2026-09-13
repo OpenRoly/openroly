@@ -1,31 +1,31 @@
 #!/bin/sh
-# openroly MCP server の起動口(PBI-0132)。plugin の `.mcp.json` はここを `command` に指す。
+# Entry point for the openroly MCP server. The plugin's `.mcp.json` points `command` here.
 #
-# 静的 JSON では「binary が在れば binary、無ければ bun」を分岐できないので、1 枚だけ挟む。
-# 順序は `packages/adapter/src/mcp-config.ts` の resolveMcpServerCommand と同じ:
+# Static JSON can't choose "the binary if present, otherwise bun", so this one script sits in between.
+# The order matches resolveMcpServerCommand in `packages/adapter/src/mcp-config.ts`:
 #
-#   1. $OPENROLY_MCP_BINARY   (明示指定)
-#   2. $OPENROLY_HOME/bin/openroly-mcp  (既定 ~/.openroly/bin/openroly-mcp。PBI-0137 の download 先)
-#      **ただし版が合っている物だけ** —— 版が古ければ 2.5 で取り直す(PBI-0172)
-#   3. bun "$@"          (= .mcp.json の args に入っている bundle。従来経路)
-#   4. どれも無ければ公開 Release から binary を取ってきて 2 段目に落とす(PBI-0137)
+#   1. $OPENROLY_MCP_BINARY   (explicit override)
+#   2. $OPENROLY_HOME/bin/openroly-mcp  (default ~/.openroly/bin/openroly-mcp, where downloads go)
+#      **only if its version matches** — an older version is re-fetched in step 2.5
+#   3. bun "$@"          (= the bundle listed in .mcp.json's args; the original path)
+#   4. if none of these exist, fetch the binary from the public Release and use step 2
 #
-# binary 経路では `$@`(bundle path)を渡さない —— bundle は bun 用の材料で、compile 済み
-# binary は自分の entry を内蔵しているため。env はそのまま継承される(exec なので透過)。
+# The binary path does not receive `$@` (the bundle path): the bundle is input for bun, and the
+# compiled binary has its own entry point built in. The environment is inherited as-is (exec).
 #
-# **stdout に何も書かない**(MCP は stdio で JSON-RPC を流す面。1 byte でも混ぜたら handshake が壊れる)。
-# 何も見つからない時だけ stderr に「何を入れれば動くか」を出して exit 1 ——
-# 黙って無反応にすると runtime 側は「tool が無い」としか見えない。
+# **Never write to stdout** (MCP speaks JSON-RPC over stdio; a single stray byte breaks the handshake).
+# Only when nothing is found, print what to install on stderr and exit 1 —
+# failing silently would look to the runtime like "the tool doesn't exist".
 set -u
 
 if [ -n "${OPENROLY_MCP_BINARY:-}" ] && [ -x "$OPENROLY_MCP_BINARY" ]; then
-  # exec が失敗したらそのまま落とす(握り潰して bun に落ちない = 壊れた binary を隠さない)
+  # if exec fails, fail here (don't fall back to bun and hide a broken binary)
   exec "$OPENROLY_MCP_BINARY"
 fi
 
 openroly_bin="${OPENROLY_HOME:-${HOME:-}/.openroly}/bin/openroly-mcp"
-# plugin が期待する版。TS 側 `packages/adapter/src/binary.ts` の OPENROLY_BINARY_VERSION と
-# **同じ値**にする(apps/cli/test/login-binary.test.ts が両者の一致を機械検査する)
+# The version the plugin expects. Keep it **equal** to OPENROLY_BINARY_VERSION in
+# `packages/adapter/src/binary.ts` (apps/cli/test/login-binary.test.ts checks that they match)
 ver="${OPENROLY_BINARY_VERSION:-0.2.3}"
 
 sha256_of() {
@@ -34,21 +34,21 @@ sha256_of() {
   fi
 }
 
-# 公開 Release から binary を取ってくる(PBI-0137)。取得の形は TypeScript 側の
-# ensureBinary() と同じ: checksum 必須・tmp → rename・公開 Release のみ(token を要求しない)。
+# Fetch the binary from the public Release. Same shape as ensureBinary() on the TypeScript side:
+# checksum required, tmp → rename, public Release only (no token needed).
 fetch_binary() {
   command -v curl >/dev/null 2>&1 || return 1
   case "$(uname -s)/$(uname -m)" in
     Darwin/arm64) target=darwin-arm64 ;;
     Darwin/x86_64) target=darwin-x64 ;;
     Linux/x86_64) target=linux-x64 ;;
-    *) return 1 ;;  # 未対応 OS/arch
+    *) return 1 ;;  # unsupported OS/arch
   esac
   base="${OPENROLY_BINARY_BASE_URL:-https://github.com/openroly/openroly/releases/download}"
   dir=$(dirname "$openroly_bin")
   mkdir -p "$dir" 2>/dev/null || return 1
 
-  # 照合表を先に取る(66MB を引いてから「表が無い」と分かるのは無駄)
+  # Fetch the checksum list first (no point downloading 66MB to find there's no list)
   want=$(curl -fsSL --max-time 60 "$base/v$ver/SHA256SUMS" 2>/dev/null | grep " openroly-mcp-$target$" | cut -d" " -f1)
   [ -n "$want" ] || return 1
 
@@ -60,12 +60,12 @@ fetch_binary() {
   return 0
 }
 
-# 版の印 `<binary>.version` は ensureBinary / fetch_binary が binary を**置いた後**に書く 1 行。
-# **在って中身が違う = 前の版の binary が残っている**ので取り直す(PBI-0172 AC-6)。ここを見ないと
-# plugin だけ新しくなった端末が古い binary を exec し続け、runtime からは「その tool は無い」と
-# しか見えない(何が古いのか誰にも分からない形で壊れる)。
-# **印が無い時は取り直さない** —— 下の案内が「binary をここに置け」と言っている手置きの道を、
-# 版が読めないという理由で捨てない(手置きの人は自分で版を管理している)。
+# The version marker `<binary>.version` is one line that ensureBinary / fetch_binary write **after**
+# placing the binary. **Present but different = a previous version's binary is still there**, so
+# re-fetch. Without this check, a machine whose plugin was updated keeps exec'ing the old binary, and
+# the runtime only sees "that tool doesn't exist" (broken in a way nobody can trace).
+# **No marker = don't re-fetch** — the message below tells people they can place the binary by hand,
+# and that path shouldn't be thrown away just because the version can't be read.
 stale=0
 if [ -x "$openroly_bin" ] && [ -f "$openroly_bin.version" ]; then
   installed=$(tr -d " \t\r\n" < "$openroly_bin.version" 2>/dev/null)
@@ -76,8 +76,8 @@ if [ -x "$openroly_bin" ] && [ "$stale" -eq 0 ]; then
   exec "$openroly_bin"
 fi
 
-# 版が古い: **取り直してから**起動する。取れた時だけ exec —— 取れなければ下の bun に落ち、
-# bun も無ければ最後に古い binary で起動する(取り直せないだけで無反応にはしない)
+# Out of date: **re-fetch, then** start. Only exec if the fetch worked — otherwise fall back to bun,
+# and if there's no bun either, start the old binary at the end (never just do nothing)
 fetched=0
 if [ "$stale" -eq 1 ]; then
   fetched=1
@@ -91,21 +91,21 @@ if command -v bun >/dev/null 2>&1; then
   exec bun "$@"
 fi
 
-# 最後の手段: 公開 Release から binary を取ってくる(PBI-0137)。
-# ここに来た = binary も bun も無い = **このままでは絶対に起動できない**ので、遅くても取りに行く
-# 方が無反応で終わるより良い(2 回目からは 1 段目で当たる)。上で既に試していれば繰り返さない。
+# Last resort: fetch the binary from the public Release.
+# Getting here means no binary and no bun, so **it cannot start as things are**; a slow fetch beats
+# doing nothing (the next start hits step 1). Don't retry if it was already tried above.
 if [ "$fetched" -eq 0 ] && fetch_binary && [ -x "$openroly_bin" ]; then
   exec "$openroly_bin"
 fi
 
-# 取り直せなかった古い binary は、ここまで来たら使う —— 版が古いのは
-# 「起動しない」より遥かに軽い(この枝に来るのは network も bun も無い端末だけ)
+# An old binary that couldn't be refreshed is still used at this point — being out of date is far
+# better than not starting (only machines with no network and no bun reach this branch)
 if [ -x "$openroly_bin" ]; then
   exec "$openroly_bin"
 fi
 
-# `echo` だけで書く(builtin) —— ここは PATH が痩せている環境ほど踏む枝なので、
-# 案内を出すために外部 command(cat 等)を要求しない
+# Use only `echo` (a builtin) — this branch is hit most on machines with a minimal PATH, so
+# printing the help must not require an external command (cat etc.)
 {
   echo "openroly: cannot start the MCP server (neither the binary nor bun was found)."
   echo "  Either one fixes it:"

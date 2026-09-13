@@ -1,36 +1,37 @@
 # openroly-collector (Android)
 
-EP-0013 W2b — 端末の通知を capture し、seal して server に送る collector app(図44)。
+An Android app that captures notifications on the device, seals them, and sends them to the server.
 
-- 平文は端末で 1 回だけ AEAD 暗号化(envelope)され、server は素通しするだけ。
-- capture は per-app 3 段階(既定 Off / Title only / Full text)。user が選んだ app のみ。
-- server が unreachable でも端末内 queue に envelope だけ溜め、後で送る。
+- Plain text is encrypted once, on the device (an AEAD envelope). The server only passes it through.
+- Capture is set per app, in 3 levels: Off (default) / Title only / Full text. Only apps you choose are captured.
+- If the server is unreachable, the sealed envelopes wait in an on-device queue and are sent later.
 
 ## Build
 
-[Android Studio](https://developer.android.com/studio)(Ladybug 以降)でこの directory を
-開いて Run を押す。AGP 8.5.2 / Kotlin 2.0.20 / compileSdk 34 / minSdk 26。
+Open this directory in [Android Studio](https://developer.android.com/studio) (Ladybug or later) and
+press Run. AGP 8.5.2 / Kotlin 2.0.20 / compileSdk 34 / minSdk 26.
 
-repo には gradle wrapper を同梱していない。CLI で build する場合は Android Studio 付属の
-gradle を使うか、`gradle wrapper --gradle-version 8.7` を 1 回実行して wrapper を生成する。
+The repo does not include a Gradle wrapper. To build from the command line, use the Gradle bundled
+with Android Studio, or run `gradle wrapper --gradle-version 8.7` once to generate the wrapper.
 
-依存は `org.bouncycastle:bcprov-jdk18on:1.78.1`(HPKE)のみ。androidx 無し。
+The only dependency is `org.bouncycastle:bcprov-jdk18on:1.78.1` (HPKE). No androidx.
 
-## byte 互換の検証(AC-1)
+## Checking byte compatibility
 
-Android SDK が無い環境でも、envelope 形式の byte 互換は interop harness で検証出来る:
+Even without the Android SDK, you can check that the envelope format is byte-compatible with the
+interop harness:
 
 ```sh
 apps/android-collector/interop/check-interop.sh
 ```
 
-Java + BouncyCastle で seal した envelope を `packages/crypto-envelope`(TS)の `open` で
-復号し、`deriveKeyId` も一致することを機械検査する。`Crypto.kt` と同じ手順の Java 実装。
+It seals an envelope with Java + BouncyCastle, opens it with `open` from `packages/crypto-envelope`
+(TypeScript), and checks that `deriveKeyId` matches too. The Java code follows the same steps as `Crypto.kt`.
 
-## Setup(実機)
+## Setup (on a device)
 
-1. アプリを開き **Open notification access settings** で OpenRoly Collector を許可。
-2. **Source token**(`pso_…`)を paste して **Save & connect**。device 公開鍵を取得して cache。
-3. **Apps** で capture したい app を Title only / Full text にする(既定 Off)。
+1. Open the app and allow OpenRoly Collector under **Open notification access settings**.
+2. Paste your **Source token** (`pso_…`) and tap **Save & connect**. The device public key is fetched and cached.
+3. Under **Apps**, set the apps you want to capture to Title only or Full text (Off by default).
 
-Server URL の既定は `https://atn.shibubu.ai`。
+The default server URL is `https://atn.shibubu.ai`.

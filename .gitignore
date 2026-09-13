@@ -1,9 +1,9 @@
 node_modules/
 dist/
-# 単体実行ファイル(PBI-0137。1 本 66MB。配布は Release の仕事)
+# Standalone binaries (66MB each; distribution is the Release's job)
 adapters/official/*/bin/
 coverage/
-# broker(Rust)の build 成果物(PBI-0154。配布は Release の仕事。手元 cargo build の fallback 用)
+# broker (Rust) build output (distribution is the Release's job; for the local cargo build fallback)
 broker/target/
 
 .env*
@@ -12,12 +12,13 @@ broker/target/
 .paa/
 credentials.json
 
-# a `paa` binary downloaded by the Quickstart into the repo root (never commit a 70MB binary)
+# binaries the Quickstart downloads into the repo root (never commit a 70MB binary)
+/openroly
+/openroly-broker
+/openroly-mcp
 /paa
 /paa-darwin-*
 /paa-linux-*
-
-# quickstart で落としてくる binary（68MB。public repo に入れない）
 /atn
 /atn-broker
 /atn-mcp
