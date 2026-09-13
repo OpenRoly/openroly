@@ -77,6 +77,14 @@ pub struct Detector {
     /// `verify` 前に読まない(allowlist と同じ不変条件 = 署名不一致の `native` は捨てる)。
     #[serde(default)]
     pub native: Option<serde_json::Value>,
+    /// session の egress proxy の allowlist 追加分(PBI-0240 / 図84)。`builtin_hosts` との union で
+    /// 使う —— catalog が古くても内蔵表が効く(撤去しない = この file の built-in と同じ不変条件)。
+    #[serde(default)]
+    pub egress: Option<EgressSpec>,
+    /// sandbox ごと実測した印(PBI-0240)。`launch.headless` が有ってもこれが無い entry は
+    /// generic 経路に入らない(`not_verified` = fail-closed。起こさない)。
+    #[serde(default)]
+    pub sandbox_verified: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
@@ -133,6 +141,28 @@ pub struct LaunchArgs {
     pub new: Vec<String>,
     #[serde(default)]
     pub existing: Vec<String>,
+    /// dedicated wake を generic に起こす引数(PBI-0240 / 図84)。**program は含まない**
+    /// (`resolve_program` が `detect.binaries` の path を解決する)。各要素の中の
+    /// `${instruction}` / `${folder}` / `${session_dir}` を置換する(shell は経由しない)。
+    /// official 3 種(claude / codex / gemini)は hard-code の実測 argv が勝つ。
+    #[serde(default)]
+    pub headless: Option<HeadlessArgs>,
+}
+
+/// `launch.headless`(PBI-0240)。argv の要素内置換のみで、env の上乗せは持たない ——
+/// dedicated session に載せる env(proxy 向けの `NODE_USE_ENV_PROXY` 等)は `launch_in` が
+/// 閉じ込めの一部として全 runtime に同じ値を載せるので、runtime 固有の env が実測で
+/// 必要になるまでは field を作らない。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct HeadlessArgs {
+    pub argv: Vec<String>,
+}
+
+/// `egress.hosts`(PBI-0240)。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct EgressSpec {
+    #[serde(default)]
+    pub hosts: Vec<String>,
 }
 
 fn is_safe_id(id: &str) -> bool {
@@ -155,6 +185,23 @@ fn is_safe_id(id: &str) -> bool {
 const FORBIDDEN_PROGRAMS: &str = include_str!("../../packages/core/src/forbidden-programs.txt");
 /// version probe に許す引数。
 const ALLOWED_PROBE_ARGS: &str = include_str!("../../packages/core/src/allowed-probe-args.txt");
+
+/// catalog の `egress.hosts` の 1 要素の形式(catalog-build と同じ規則。PBI-0240)。
+/// URL(`https://…`)・中間 wildcard(`api.*.example`)・大文字を弾く —— 署名済み catalog が
+/// 壊れていても allowlist の幅が規則外に広がらない(2 本目の門)。
+fn is_host_pattern(h: &str) -> bool {
+    let h = h.strip_prefix("*.").unwrap_or(h);
+    !h.is_empty()
+        && h.len() <= 253
+        && h.matches('.').count() >= 1
+        && !h.contains('*')
+        && h.split('.').all(|l| {
+            !l.is_empty()
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+                && l.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
+}
 
 /// txt の 1 行 1 語(空行と `#` の comment を落とす)。
 fn words(list: &str) -> impl Iterator<Item = &str> {
@@ -196,9 +243,24 @@ fn validate(d: &Detector) -> Result<(), String> {
     }
     // `launch` は program になり得る位置を持たないが、`-c` / `-e` / `--eval` は「引数の中に
     // 別の言語を持ち込む」形なので、将来 program 側に穴が空いた時のために今から閉じておく。
-    for a in d.launch.new.iter().chain(d.launch.existing.iter()) {
+    // `launch.headless.argv` は spawn に直接渡る(PBI-0240)なので同じ deny を掛ける。
+    for a in d
+        .launch
+        .new
+        .iter()
+        .chain(d.launch.existing.iter())
+        .chain(d.launch.headless.iter().flat_map(|h| h.argv.iter()))
+    {
         if a == "-c" || a == "-e" || a == "--eval" || a.starts_with("--eval=") {
             return Err(format!("registry: forbidden launch arg {a:?} (id {})", d.id));
+        }
+    }
+    // egress.hosts の形式(PBI-0240)。catalog-build と同じ規則で、署名済みでも壊れた形は弾く
+    if let Some(spec) = &d.egress {
+        for h in &spec.hosts {
+            if !is_host_pattern(h) {
+                return Err(format!("registry: bad egress host {h:?} (id {})", d.id));
+            }
         }
     }
     Ok(())
@@ -621,6 +683,67 @@ mod tests {
     #[test]
     fn builtin_passes_validate() {
         assert_eq!(builtin().ids(), vec!["claude", "codex"]);
+    }
+
+    // PBI-0240: `launch.headless` / `egress` / `sandbox_verified` を解釈せずに保持する
+    // (official 3 種は hard-code が勝つが、generic 経路と egress の union はここから読む)
+    #[test]
+    fn parse_keeps_headless_egress_and_sandbox_verified() {
+        let reg = parse(
+            r#"{"version":1,"detectors":[{"id":"foo","adapter":"generic/native",
+                "launch":{"headless":{"argv":["--run","${instruction}"]}},
+                "egress":{"hosts":["api.foo.example","*.foo-cdn.example"]},
+                "sandbox_verified":"2026-09-12 foo 1.0"}]}"#,
+            "t",
+        )
+        .unwrap();
+        let d = reg.detector("foo").unwrap();
+        assert_eq!(
+            d.launch.headless.as_ref().unwrap().argv,
+            vec!["--run".to_string(), "${instruction}".to_string()]
+        );
+        assert_eq!(d.egress.as_ref().unwrap().hosts, vec!["api.foo.example".to_string(), "*.foo-cdn.example".to_string()]);
+        assert_eq!(d.sandbox_verified.as_deref(), Some("2026-09-12 foo 1.0"));
+        // 無い entry は None(古い registry でも壊れない)
+        assert!(builtin().detector("claude").unwrap().launch.headless.is_none());
+        assert!(builtin().detector("claude").unwrap().egress.is_none());
+    }
+
+    // PBI-0240 AC-X1: 署名済み catalog でも壊れた `egress.hosts`(URL / 中間 wildcard / 大文字)は
+    // registry ごと拒否 = allowlist が規則外に広がらない(validate が 2 本目の門)
+    #[test]
+    fn parse_rejects_url_and_mid_wildcard_hosts() {
+        for bad in [
+            r#"{"version":1,"detectors":[{"id":"a","egress":{"hosts":["https://api.example.com"]}}]}"#,
+            r#"{"version":1,"detectors":[{"id":"a","egress":{"hosts":["api.*.example.com"]}}]}"#,
+            r#"{"version":1,"detectors":[{"id":"a","egress":{"hosts":["API.Example.com"]}}]}"#,
+            r#"{"version":1,"detectors":[{"id":"a","egress":{"hosts":["api..example.com"]}}]}"#,
+            r#"{"version":1,"detectors":[{"id":"a","egress":{"hosts":["api.example.com:8443"]}}]}"#,
+            r#"{"version":1,"detectors":[{"id":"a","egress":{"hosts":["api.example.com/path"]}}]}"#,
+            r#"{"version":1,"detectors":[{"id":"a","egress":{"hosts":["*"]}}]}"#,
+        ] {
+            let err = parse(bad, "t").unwrap_err();
+            assert!(err.starts_with("registry: bad egress host"), "{bad} → {err}");
+        }
+        // 正しい形は通る
+        for ok in [
+            r#"{"version":1,"detectors":[{"id":"a","egress":{"hosts":["api.example.com"]}}]}"#,
+            r#"{"version":1,"detectors":[{"id":"a","egress":{"hosts":["*.example.com"]}}]}"#,
+            r#"{"version":1,"detectors":[{"id":"a","egress":{"hosts":["x-y.example.com"]}}]}"#,
+        ] {
+            assert!(parse(ok, "t").is_ok(), "{ok} が通らなかった");
+        }
+    }
+
+    // PBI-0240: `launch.headless.argv` は spawn に直接渡るので launch.new/existing と同じ deny
+    #[test]
+    fn parse_rejects_forbidden_args_in_headless_argv() {
+        let err = parse(
+            r#"{"version":1,"detectors":[{"id":"foo","launch":{"headless":{"argv":["--run","-c","${instruction}"]}}}]}"#,
+            "t",
+        )
+        .unwrap_err();
+        assert!(err.contains("forbidden launch arg"), "{err}");
     }
 
     // PBI-0210 AC-X1: 署名の合わない body に `native` が載っていても、broker はそれを読まない

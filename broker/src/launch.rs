@@ -290,13 +290,24 @@ fn has_toml(dir: &Path) -> bool {
 /// **PBI-0238 以降、ここで組む flag は上乗せ**(図72)。主の壁は broker が spawn の前に掛ける
 /// OS sandbox + egress proxy(`launch_session_scoped_in` → `sandbox.wrap`)で、runtime が何であれ同じ。
 /// `folder` は lane の作業 folder(cwd。codex は `-C` にも載せる)。
+///
+/// **generic 経路(PBI-0240 / 図84)**: official 3 種に当たらない runtime は registry の entry から
+/// 起こす。`launch.headless` + `sandbox_verified` が有れば argv を要素内置換して返す。
+/// `sandbox_verified` が無ければ `not_verified`、`launch.headless` 自体が無ければ `not_headless`
+/// (旧 `dedicated_unsupported` の改名 —— 理由が伝わる語に)。どちらも spawn しない(fail-closed)。
 pub fn dedicated_launch(
+    registry: &Registry,
     runtime: &str,
     instruction: &str,
     session_dir: &str,
     folder: &str,
     env: &ContainmentEnv,
 ) -> Result<(Vec<String>, Vec<(String, String)>), String> {
+    // argv の要素は NUL を運べない(spawn が落とす)。official / generic のどの経路でも
+    // 先に止める(AC-X2 = 起動して拒否されるより先)
+    if instruction.bytes().any(|b| b == 0) {
+        return Err("invalid_instruction".to_string());
+    }
     let argv = |args: &[&str]| args.iter().map(|s| s.to_string()).collect::<Vec<String>>();
     match runtime {
         // 実測 C(PBI-0019)+ 実測 E(PBI-0167, 2026-09-02, Claude Code 2.1.258):
@@ -400,8 +411,53 @@ pub fn dedicated_launch(
                 vec![(rel.to_string(), GEMINI_POLICY_TOML.to_string())],
             ))
         }
-        _ => Err("dedicated_unsupported".to_string()),
+        // generic 経路(PBI-0240 / 図84): registry の entry が起こし方を持つ runtime。
+        // argv は program を含まない(`resolve_program` が `detect.binaries` を解決する)。
+        _ => {
+            let Some(d) = registry.detector(runtime) else {
+                return Err("not_headless".to_string());
+            };
+            let Some(h) = d.launch.headless.as_ref() else {
+                return Err("not_headless".to_string());
+            };
+            if d.sandbox_verified.is_none() {
+                return Err("not_verified".to_string());
+            }
+            Ok((substitute_elementwise(&h.argv, instruction, folder, session_dir), vec![]))
+        }
     }
+}
+
+/// generic 経路の argv 組み立て(PBI-0240)。各要素の中の `${instruction}` / `${folder}` /
+/// `${session_dir}` を置換する —— **shell は経由しない**(1 要素 = 1 引数のまま。`format!` で
+/// 1 文字列に繋ぐと Cloud から届いた instruction を shell に解釈させる口になる)。
+fn substitute_elementwise(argv: &[String], instruction: &str, folder: &str, session_dir: &str) -> Vec<String> {
+    argv.iter()
+        .map(|a| {
+            a.replace("${instruction}", instruction)
+                .replace("${folder}", folder)
+                .replace("${session_dir}", session_dir)
+        })
+        .collect()
+}
+
+/// `not_headless` の wake に添える代替(PBI-0240 AC-2)。hello で見つかった runtime のうち、
+/// catalog 上 headless 可(official 3 種 ∪ `launch.headless` を持つ entry)で、起こそうとした
+/// runtime と別の id の最初の 1 つ。owner は仕事を folder 単位で渡すので runtime は替えられる。
+pub fn headless_alternative(registry: &Registry, found: &[Found], runtime: &str) -> Option<String> {
+    found
+        .iter()
+        .find(|f| f.id != runtime && is_headless_capable(registry, &f.id))
+        .map(|f| f.id.clone())
+}
+
+/// dedicated wake で instruction 付きで起こせる runtime か(official 3 種は hard-code の実測 argv)。
+fn is_headless_capable(registry: &Registry, id: &str) -> bool {
+    matches!(id, "claude" | "codex" | "gemini")
+        || registry
+            .detector(id)
+            .and_then(|d| d.launch.headless.as_ref())
+            .is_some()
 }
 
 /// requestId は session_dir のパス要素になる(信頼境界を跨ぐ Cloud からの文字列)。
@@ -834,7 +890,8 @@ pub fn launch_session_scoped_in(
     let folder = resolve_folder(isolation.folder, scope, &session_dir, home, &isolation.user_home)
         .inspect_err(|_| discard_session_dir(&session_dir))?;
     let folder_str = folder.to_string_lossy().to_string();
-    let (args, files) = dedicated_launch(runtime, instruction, &dir_str, &folder_str, env)?;
+    let (args, files) = dedicated_launch(registry, runtime, instruction, &dir_str, &folder_str, env)
+        .inspect_err(|_| discard_session_dir(&session_dir))?;
     // 閉じ込め用の file(claude の `--mcp-config` / gemini の admin policy)を session_dir に置く。
     // spawn より **前** に全部書く —— 置けなかった runtime を「flag だけ付いた丸腰」で起こさない。
     for (rel, content) in &files {
@@ -884,6 +941,18 @@ pub fn launch_session_scoped_in(
 mod tests {
     use super::*;
     use crate::registry;
+
+    /// dedicated_launch の test 用 wrapper(official 3 種は registry を読まないので builtin で足りる。
+    /// generic 経路の test は registry を直に組む)
+    fn dedicated(
+        runtime: &str,
+        instruction: &str,
+        session_dir: &str,
+        folder: &str,
+        env: &ContainmentEnv,
+    ) -> Result<(Vec<String>, Vec<(String, String)>), String> {
+        dedicated_launch(&registry::builtin(), runtime, instruction, session_dir, folder, env)
+    }
 
     // 実 claude/codex には触れない(テストプロセスの PATH 上に本物が存在しうるため、
     // built-in registry をそのまま使う spawn 検証は事故のもと — allowlist ごと差し替えて検証する)。
@@ -1186,7 +1255,7 @@ mod tests {
 
     #[test]
     fn dedicated_launch_claude_matches_measured_argv() {
-        let (args, files) = dedicated_launch("claude", "INSTR", "/tmp/sess", "/tmp/work", &test_env()).unwrap();
+        let (args, files) = dedicated("claude", "INSTR", "/tmp/sess", "/tmp/work", &test_env()).unwrap();
         assert_eq!(
             args,
             vec![
@@ -1246,19 +1315,19 @@ mod tests {
             gemini_admin_dirs: vec![],
         };
         assert_eq!(
-            dedicated_launch("claude", "I", "/tmp/s", "/tmp/work", &missing).err(),
+            dedicated("claude", "I", "/tmp/s", "/tmp/work", &missing).err(),
             Some("containment_unavailable".to_string())
         );
         let broken = dir.join("broken.json");
         fs::write(&broken, "{ not json").unwrap();
         assert_eq!(
-            dedicated_launch("claude", "I", "/tmp/s", "/tmp/work", &ContainmentEnv { claude_config: broken, claude_plugin_registry: no_plugin.clone(), codex_config: dir.join("no-such-codex.toml"), gemini_admin_dirs: vec![] }).err(),
+            dedicated("claude", "I", "/tmp/s", "/tmp/work", &ContainmentEnv { claude_config: broken, claude_plugin_registry: no_plugin.clone(), codex_config: dir.join("no-such-codex.toml"), gemini_admin_dirs: vec![] }).err(),
             Some("containment_unavailable".to_string())
         );
         let no_openroly = dir.join("no-openroly.json");
         fs::write(&no_openroly, r#"{"mcpServers":{"other":{"command":"x"}}}"#).unwrap();
         assert_eq!(
-            dedicated_launch("claude", "I", "/tmp/s", "/tmp/work", &ContainmentEnv { claude_config: no_openroly, claude_plugin_registry: no_plugin.clone(), codex_config: dir.join("no-such-codex.toml"), gemini_admin_dirs: vec![] }).err(),
+            dedicated("claude", "I", "/tmp/s", "/tmp/work", &ContainmentEnv { claude_config: no_openroly, claude_plugin_registry: no_plugin.clone(), codex_config: dir.join("no-such-codex.toml"), gemini_admin_dirs: vec![] }).err(),
             Some("containment_unavailable".to_string())
         );
         let _ = fs::remove_dir_all(&dir);
@@ -1310,7 +1379,7 @@ mod tests {
             codex_config: dir.join("no-such-codex.toml"),
             gemini_admin_dirs: vec![],
         };
-        let (_, files) = dedicated_launch("claude", "I", "/tmp/sess", "/tmp/work", &env).expect("起こせること");
+        let (_, files) = dedicated("claude", "I", "/tmp/sess", "/tmp/work", &env).expect("起こせること");
         let cfg: serde_json::Value = serde_json::from_str(&files[0].1).unwrap();
         let root = user_root.display().to_string();
         assert_eq!(cfg["mcpServers"]["openroly"]["command"], format!("{root}/openroly-mcp"));
@@ -1327,7 +1396,7 @@ mod tests {
     // ① が有る時は ① を使う(plugin 台帳より user 登録が優先。`openroly install claude` した人の実態)。
     #[test]
     fn dedicated_launch_claude_prefers_user_config_over_plugin() {
-        let (_, files) = dedicated_launch("claude", "I", "/tmp/sess", "/tmp/work", &test_env()).unwrap();
+        let (_, files) = dedicated("claude", "I", "/tmp/sess", "/tmp/work", &test_env()).unwrap();
         let cfg: serde_json::Value = serde_json::from_str(&files[0].1).unwrap();
         assert_eq!(cfg["mcpServers"]["openroly"]["command"], "bun");
     }
@@ -1336,7 +1405,7 @@ mod tests {
     // ~/.codex/config.toml で上書きできる)。
     #[test]
     fn dedicated_launch_codex_matches_measured_argv() {
-        let (args, files) = dedicated_launch("codex", "INSTR", "/tmp/sess", "/tmp/work", &test_env()).unwrap();
+        let (args, files) = dedicated("codex", "INSTR", "/tmp/sess", "/tmp/work", &test_env()).unwrap();
         assert_eq!(
             args,
             vec![
@@ -1384,13 +1453,13 @@ mod tests {
         // inline table: 行単位では名前を取り切れない
         let inline = env_with("inline.toml", "mcp_servers = { github = { command = \"x\" } }\n");
         assert_eq!(
-            dedicated_launch("codex", "I", "/tmp/s", "/tmp/work", &inline).err(),
+            dedicated("codex", "I", "/tmp/s", "/tmp/work", &inline).err(),
             Some("containment_unavailable".to_string())
         );
         // quoted key: `-c` の key に埋められない
         let quoted = env_with("quoted.toml", "[mcp_servers.\"we ird\"]\ncommand = \"x\"\n");
         assert_eq!(
-            dedicated_launch("codex", "I", "/tmp/s", "/tmp/work", &quoted).err(),
+            dedicated("codex", "I", "/tmp/s", "/tmp/work", &quoted).err(),
             Some("containment_unavailable".to_string())
         );
         // config.toml 自体が無い = 落とす相手が居ない(openroly は plugin 側から来る)。起こしてよい
@@ -1400,7 +1469,7 @@ mod tests {
             codex_config: dir.join("absent.toml"),
             gemini_admin_dirs: vec![],
         };
-        let (args, _) = dedicated_launch("codex", "I", "/tmp/s", "/tmp/work", &none).unwrap();
+        let (args, _) = dedicated("codex", "I", "/tmp/s", "/tmp/work", &none).unwrap();
         assert!(!args.iter().any(|a| a == "-c"));
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1412,7 +1481,7 @@ mod tests {
     // admin tier の deny policy が唯一の壁になる(実測 E: policy 無しで shell が動いた)。
     #[test]
     fn dedicated_launch_gemini_matches_measured_argv() {
-        let (args, files) = dedicated_launch("gemini", "INSTR", "/tmp/sess", "/tmp/work", &test_env()).unwrap();
+        let (args, files) = dedicated("gemini", "INSTR", "/tmp/sess", "/tmp/work", &test_env()).unwrap();
         assert_eq!(
             args,
             vec![
@@ -1453,13 +1522,13 @@ mod tests {
             gemini_admin_dirs: vec![dir.clone()],
         };
         assert_eq!(
-            dedicated_launch("gemini", "I", "/tmp/s", "/tmp/work", &env).err(),
+            dedicated("gemini", "I", "/tmp/s", "/tmp/work", &env).err(),
             Some("containment_unavailable".to_string())
         );
         // .toml 以外しか無い dir は素通し(閉じ込めは効く)
         fs::remove_file(dir.join("corp.toml")).unwrap();
         fs::write(dir.join("README.md"), "").unwrap();
-        assert!(dedicated_launch("gemini", "I", "/tmp/s", "/tmp/work", &env).is_ok());
+        assert!(dedicated("gemini", "I", "/tmp/s", "/tmp/work", &env).is_ok());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1467,21 +1536,102 @@ mod tests {
     fn dedicated_launch_unknown_runtime_is_unsupported() {
         let env = test_env();
         assert_eq!(
-            dedicated_launch("hermes", "INSTR", "/tmp/sess", "/tmp/work", &env).err(),
-            Some("dedicated_unsupported".to_string())
+            dedicated("hermes", "INSTR", "/tmp/sess", "/tmp/work", &env).err(),
+            Some("not_headless".to_string())
         );
         assert_eq!(
-            dedicated_launch("superagent", "INSTR", "/tmp/sess", "/tmp/work", &env).err(),
-            Some("dedicated_unsupported".to_string())
+            dedicated("superagent", "INSTR", "/tmp/sess", "/tmp/work", &env).err(),
+            Some("not_headless".to_string())
         );
     }
 
-    // registry で足した runtime を AUTO で起こそうとしても bare spawn にはならない(dedicated_unsupported)
+    // ---------- generic 経路(PBI-0240) ----------
+
+    fn generic_registry(launch_headless: bool, sandbox_verified: bool) -> Registry {
+        let mut body = r#"{"version":1,"detectors":[
+            {"id":"foo","detect":{"binaries":["foo"]},"adapter":"generic/native""#.to_string();
+        if launch_headless {
+            body.push_str(r#","launch":{"headless":{"argv":["--run","${instruction}","--folder","${folder}","--dir","${session_dir}"]}}"#);
+        }
+        if sandbox_verified {
+            body.push_str(r#","sandbox_verified":"2026-09-12 foo 1.0""#);
+        }
+        body.push_str("}]}");
+        registry::parse(&body, "t").unwrap()
+    }
+
+    // AC-1: argv の要素内置換。instruction 全文(改行・引用符を含む)が 1 要素のまま残る
+    #[test]
+    fn generic_headless_substitutes_elementwise() {
+        let reg = generic_registry(true, true);
+        let instruction = "line1\nline2 \"quoted\" $(pwd) `id`";
+        let (args, files) = dedicated_launch(&reg, "foo", instruction, "/tmp/sess", "/tmp/work", &test_env()).unwrap();
+        assert_eq!(files, vec![]);
+        assert_eq!(args[0], "--run");
+        assert_eq!(args[1], instruction, "instruction 全文が 1 要素で無い: {args:?}");
+        assert_eq!(args[3], "/tmp/work");
+        assert_eq!(args[5], "/tmp/sess");
+        assert_eq!(args.len(), 6);
+    }
+
+    // AC-4: sandbox_verified が無い entry は generic 経路に入らない(fail-closed)
+    #[test]
+    fn unverified_is_not_generic() {
+        let reg = generic_registry(true, false);
+        assert_eq!(
+            dedicated_launch(&reg, "foo", "I", "/tmp/s", "/tmp/work", &test_env()).err(),
+            Some("not_verified".to_string())
+        );
+        // verified が有れば通る(対)
+        let ok = generic_registry(true, true);
+        assert!(dedicated_launch(&ok, "foo", "I", "/tmp/s", "/tmp/work", &test_env()).is_ok());
+    }
+
+    // AC-X2: instruction に NUL が含まれる時は spawn の前に弾く(official 3 種でも同じ門)
+    #[test]
+    fn invalid_instruction_nul() {
+        let reg = generic_registry(true, true);
+        assert_eq!(
+            dedicated_launch(&reg, "foo", "a\0b", "/tmp/s", "/tmp/work", &test_env()).err(),
+            Some("invalid_instruction".to_string())
+        );
+        assert_eq!(
+            dedicated("claude", "a\0b", "/tmp/s", "/tmp/work", &test_env()).err(),
+            Some("invalid_instruction".to_string())
+        );
+    }
+
+    // AC-2: not_headless の代替 = hello found の headless 可(official ∪ launch.headless 有り)で別 id の最初
+    #[test]
+    fn not_headless_carries_alternative() {
+        let reg = generic_registry(true, true);
+        let found = |ids: &[&str]| {
+            ids.iter()
+                .map(|id| Found { id: id.to_string(), version: None, source: "path".to_string(), path: format!("/bin/{id}"), models: vec![] })
+                .collect::<Vec<_>>()
+        };
+        // official が見つかっていればそれが代替になる
+        assert_eq!(headless_alternative(&reg, &found(&["cursor-agent", "claude"]), "cursor-agent"), Some("claude".to_string()));
+        // generic entry も代替になれる
+        assert_eq!(headless_alternative(&reg, &found(&["cursor-agent", "foo"]), "cursor-agent"), Some("foo".to_string()));
+        // wake された物自身・headless 不可の物は代替にならない
+        assert_eq!(headless_alternative(&reg, &found(&["claude", "codex"]), "claude"), Some("codex".to_string()));
+        assert_eq!(headless_alternative(&reg, &found(&["cursor-agent"]), "cursor-agent"), None);
+        let reg_no = registry::parse(
+            r#"{"version":1,"detectors":[{"id":"bar","adapter":"generic/native"}]}"#,
+            "t",
+        )
+        .unwrap();
+        assert_eq!(headless_alternative(&reg_no, &found(&["cursor-agent", "bar"]), "cursor-agent"), None);
+    }
+
+    // registry で足した runtime を AUTO で起こそうとしても bare spawn にはならない(not_headless。
+    // PBI-0240 で dedicated_unsupported から改名 —— entry が起こし方を持たない事が伝わる語に)
     #[test]
     fn launch_session_refuses_runtime_without_dedicated_argv() {
         let tmp = std::env::temp_dir().join(format!("openroly-broker-ded-{}", std::process::id()));
         let result = launch_session_scoped_in(&tmp, &reg_with_ollama(), &[], "superagent", "instr", "req-ded", None, &test_env(), &test_isolation());
-        assert_eq!(result.err(), Some("dedicated_unsupported".to_string()));
+        assert_eq!(result.err(), Some("not_headless".to_string()));
         let _ = fs::remove_dir_all(&tmp);
     }
 

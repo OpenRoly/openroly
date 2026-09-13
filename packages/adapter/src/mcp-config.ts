@@ -10,7 +10,7 @@ import {
   type ExtensionListing,
   type Finding,
   type RegisterInput,
-  type RuntimeAdapter,
+  type ExtensionAdapter,
 } from "./contract.ts";
 import { STAGE0_CAPABILITIES } from "./contract.ts";
 import { exportMcpFromConfig, readConfigNames } from "./native.ts";
@@ -106,8 +106,8 @@ function configLocation(spec: McpConfigSpec, ctx: AdapterContext) {
   return { path: spec.configPath(ctx), format: spec.format, key: spec.serversKey, shape: "map" } as const;
 }
 
-/** MCP 対応 CLI の RuntimeAdapter を spec から生やす。skill 等の runtime 固有 op は呼び出し側で上書きする */
-export function createMcpConfigAdapter(spec: McpConfigSpec): RuntimeAdapter {
+/** MCP 対応 CLI の ExtensionAdapter を spec から生やす。skill 等の runtime 固有 op は呼び出し側で上書きする */
+export function createMcpConfigAdapter(spec: McpConfigSpec): ExtensionAdapter {
   const cli = (args: string[]) => [spec.bin, ...args];
 
   /** 「消してから足す」— 再 install(upgrade)で重複しないための既存の手。remove の失敗は無視する

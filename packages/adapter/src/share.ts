@@ -1,6 +1,6 @@
 import { canonicalExtensionKey, validateExtensionSpec, type ExtensionKind } from "@openroly/core";
 import { apiCall } from "./api.ts";
-import type { AdapterContext, ExportedExtension, RuntimeAdapter } from "./contract.ts";
+import type { AdapterContext, ExportedExtension, ExtensionAdapter } from "./contract.ts";
 import { loadShareState, mergeSecrets, saveShareState, type RuntimeCredential } from "./credentials.ts";
 
 // 吸い上げ → 提案(PBI-0212 / 図67)。`openroly share` の本体。
@@ -45,7 +45,7 @@ export interface ShareResult {
 
 export interface ShareOptions {
   /** 対象 adapter(`--runtime` で 1 つに絞れる) */
-  adapters: RuntimeAdapter[];
+  adapters: ExtensionAdapter[];
   ctx: AdapterContext;
   /** credential store の中身(kind → credential)。**接続済みの runtime だけが提案を出せる** */
   credentials: Record<string, RuntimeCredential>;

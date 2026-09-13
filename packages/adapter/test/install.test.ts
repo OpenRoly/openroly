@@ -14,7 +14,7 @@ import {
   STAGE0_CAPABILITIES,
   type AdapterContext,
   type RegisterInput,
-  type RuntimeAdapter,
+  type ExtensionAdapter,
 } from "../src/contract.ts";
 
 // AC-13: 診断(diagnostics)。credential が revoke 済み(401)なら「再 pair せよ」を出す。
@@ -33,7 +33,7 @@ afterAll(() => stub.stop(true));
 
 const calls: string[] = [];
 const registered: RegisterInput[] = [];
-const fakeAdapter: RuntimeAdapter = {
+const fakeAdapter: ExtensionAdapter = {
   id: "claude",
   displayName: "Claude Code",
   capabilities: STAGE0_CAPABILITIES,
@@ -196,7 +196,7 @@ describe("install の base URL 解決", () => {
 
 describe("uninstall の失敗理由", () => {
   test("AC-12: unregister の失敗を握り潰さず detail に載せる", async () => {
-    const broken: RuntimeAdapter = {
+    const broken: ExtensionAdapter = {
       ...fakeAdapter,
       unregister: async () => {
         throw new Error("claude mcp remove failed: command not found");

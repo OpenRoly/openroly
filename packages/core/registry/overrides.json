@@ -38,6 +38,11 @@
         "files"
       ],
       "adapter": "official/claude",
+      "egress": {
+        "hosts": [
+          "api.anthropic.com"
+        ]
+      },
       "sources": [
         "https://code.claude.com/docs/en/skills"
       ],
@@ -83,6 +88,12 @@
         "files"
       ],
       "adapter": "official/codex",
+      "egress": {
+        "hosts": [
+          "chatgpt.com",
+          "api.openai.com"
+        ]
+      },
       "sources": [
         "https://developers.openai.com/codex/skills/"
       ],
@@ -126,6 +137,12 @@
         "files"
       ],
       "adapter": "official/gemini",
+      "egress": {
+        "hosts": [
+          "generativelanguage.googleapis.com",
+          "oauth2.googleapis.com"
+        ]
+      },
       "sources": [
         "https://github.com/google-gemini/gemini-cli"
       ],
@@ -160,10 +177,6 @@
           "--version"
         ]
       },
-      "models": {
-        "source": "service",
-        "path": "/api/tags"
-      },
       "capabilities": [
         "local_model"
       ],
@@ -171,7 +184,11 @@
       "sources": [
         "https://ollama.com/"
       ],
-      "verified": "docs"
+      "verified": "docs",
+      "models": {
+        "source": "service",
+        "path": "/api/tags"
+      }
     },
     {
       "id": "lmstudio",
@@ -200,10 +217,6 @@
           "--version"
         ]
       },
-      "models": {
-        "source": "service",
-        "path": "/v1/models"
-      },
       "capabilities": [
         "local_model"
       ],
@@ -211,7 +224,11 @@
       "sources": [
         "https://lmstudio.ai/docs/app/api/endpoints/openai"
       ],
-      "verified": "docs"
+      "verified": "docs",
+      "models": {
+        "source": "service",
+        "path": "/v1/models"
+      }
     },
     {
       "id": "jan",
@@ -233,10 +250,6 @@
           }
         ]
       },
-      "models": {
-        "source": "service",
-        "path": "/v1/models"
-      },
       "capabilities": [
         "local_model"
       ],
@@ -244,7 +257,11 @@
       "sources": [
         "https://jan.ai/docs/local-api"
       ],
-      "verified": "docs"
+      "verified": "docs",
+      "models": {
+        "source": "service",
+        "path": "/v1/models"
+      }
     },
     {
       "id": "aider",
@@ -454,7 +471,13 @@
         "new": [],
         "existing": [
           "--continue"
-        ]
+        ],
+        "headless": {
+          "argv": [
+            "run",
+            "${instruction}"
+          ]
+        }
       },
       "capabilities": [
         "coding",
@@ -491,6 +514,12 @@
           "file": "~/.config/opencode/AGENTS.md"
         }
       },
+      "egress": {
+        "hosts": [
+          "models.opencode.ai"
+        ]
+      },
+      "sandbox_verified": "2026-09-04 opencode 1.18.10",
       "sources": [
         "https://github.com/sst/opencode",
         "https://opencode.ai/docs/skills/"
@@ -576,6 +605,16 @@
           "--version"
         ]
       },
+      "launch": {
+        "headless": {
+          "argv": [
+            "chat",
+            "--no-interactive",
+            "--trust-tools=",
+            "${instruction}"
+          ]
+        }
+      },
       "capabilities": [
         "coding",
         "shell",
@@ -629,6 +668,13 @@
           "filename": "openroly-${name}.md"
         }
       },
+      "egress": {
+        "hosts": [
+          "*.kiro.dev",
+          "*.amazonaws.com"
+        ]
+      },
+      "sandbox_verified": "2026-09-04 kiro 2.21.1",
       "sources": [
         "https://github.com/kirodotdev/Kiro",
         "https://kiro.dev/docs/skills/"

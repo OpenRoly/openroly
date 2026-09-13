@@ -12,7 +12,7 @@ import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, stat, symlink, writeFi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, test } from "bun:test";
-import type { AdapterContext, RuntimeAdapter } from "../src/contract.ts";
+import type { AdapterContext, ExtensionAdapter } from "../src/contract.ts";
 import { createNativeAdapter } from "../src/native.ts";
 
 let home = "";
@@ -21,9 +21,9 @@ beforeEach(async () => {
 });
 const ctx = (): AdapterContext => ({ env: { HOME: home } });
 
-const install = (adapter: RuntimeAdapter, name: string, content: string) =>
+const install = (adapter: ExtensionAdapter, name: string, content: string) =>
   adapter.applyExtension(ctx(), { action: "install", kind: "instructions", name, spec: { content }, env: {} });
-const uninstall = (adapter: RuntimeAdapter, name: string) =>
+const uninstall = (adapter: ExtensionAdapter, name: string) =>
   adapter.applyExtension(ctx(), { action: "uninstall", name });
 const read = (path: string) => readFile(join(home, path), "utf8");
 const seed = async (path: string, text: string) => {
@@ -33,7 +33,7 @@ const seed = async (path: string, text: string) => {
 
 const CLAUDE_MD = ".claude/CLAUDE.md";
 const block = (name: string, body: string) => `<!-- openroly:begin ${name} -->\n${body}\n<!-- openroly:end ${name} -->`;
-const kiro = (): RuntimeAdapter =>
+const kiro = (): ExtensionAdapter =>
   createNativeAdapter("kiro", "Kiro", {
     home: { default: "~/.kiro" },
     bin: null,

@@ -1,21 +1,24 @@
-name: Spec / implementation mismatch
-description: "specs/*.md doesn't match what the reference implementation actually does (either the spec is wrong, or the implementation is)."
+name: Docs / implementation mismatch
+description: "The README, ROADMAP.md, or specs/*.md doesn't match what the code actually does (either the document is wrong, or the code is)."
 labels: ["spec"]
 body:
   - type: dropdown
     id: spec
     attributes:
-      label: Which spec
+      label: Which document
       options:
-        - specs/runtime-adapter-contract.md
+        - README.md
+        - ROADMAP.md
+        - specs/extension-adapter-contract.md
         - specs/e2ee-envelope-format.md
+        - SECURITY.md
         - other
     validations:
       required: true
   - type: textarea
     id: mismatch
     attributes:
-      label: What the spec says vs. what the code does
-      description: Quote the relevant line(s) from the spec and point to the code that disagrees.
+      label: What the document says vs. what the code does
+      description: Quote the relevant line(s) and point to the code that disagrees.
     validations:
       required: true

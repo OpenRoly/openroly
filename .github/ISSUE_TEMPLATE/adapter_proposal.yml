@@ -1,13 +1,13 @@
 name: Runtime adapter proposal
-description: Propose or start work on a RuntimeAdapter implementation for a runtime that isn't officially supported yet (Hermes, OpenClaw, or another).
+description: Propose or start work on an ExtensionAdapter implementation for a runtime that isn't officially supported yet (Hermes, OpenClaw, or another).
 labels: ["adapter"]
 body:
   - type: markdown
     attributes:
       value: |
-        PAA's value is runtime neutrality, and that only means something if more than two
-        runtimes implement the contract. See `specs/runtime-adapter-contract.md` and the
-        reference implementations in `adapters/official/{claude,codex}` before starting.
+        OpenRoly's value is runtime neutrality, and that only means something if many runtimes
+        implement the contract. See `specs/extension-adapter-contract.md` and the reference
+        implementations in `adapters/official/{claude,codex,gemini,api}` before starting.
   - type: input
     id: runtime
     attributes:
@@ -18,18 +18,17 @@ body:
   - type: textarea
     id: capabilities
     attributes:
-      label: Capabilities this runtime supports
+      label: What this runtime can do
       description: |
-        Which parts of `AdapterCapabilities` can this runtime actually do —
-        pair / status / notify / wake / createSession / sendInstruction — and how
-        (e.g. does it have an MCP-server-equivalent config, a CLI you can shell out to)?
+        Does it have an MCP config you can write, a CLI you can shell out to, a skills directory,
+        a headless mode the broker could launch, and hooks that can stop a tool call?
     validations:
       required: true
   - type: textarea
     id: gaps
     attributes:
       label: Contract gaps or open questions
-      description: Anything in `specs/runtime-adapter-contract.md` that doesn't map cleanly onto this runtime.
+      description: Anything in `specs/extension-adapter-contract.md` that doesn't map cleanly onto this runtime.
     validations:
       required: false
   - type: checkboxes

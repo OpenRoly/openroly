@@ -5,7 +5,7 @@ import {
   withInstructions,
   withSkills,
   type AdapterContext,
-  type RuntimeAdapter,
+  type ExtensionAdapter,
 } from "@openroly/adapter";
 
 // Codex 用 official adapter。登録先は $CODEX_HOME/config.toml の [mcp_servers.<name>]。
@@ -32,7 +32,7 @@ const skillsDir = (ctx: AdapterContext): string => join(codexHome(ctx), "skills"
 // kind = "instructions" の書き先(PBI-0214)。codex の global 指示は $CODEX_HOME/AGENTS.md
 const instructionsFile = (ctx: AdapterContext): { file: string } => ({ file: join(codexHome(ctx), "AGENTS.md") });
 
-export const codexAdapter: RuntimeAdapter = withInstructions(
+export const codexAdapter: ExtensionAdapter = withInstructions(
   withSkills(
     createMcpConfigAdapter({
       id: "codex",

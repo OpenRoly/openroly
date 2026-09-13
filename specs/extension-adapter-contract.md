@@ -1,25 +1,26 @@
-# Runtime Adapter Contract (draft)
+# Extension Adapter Contract (draft)
 
 Status: **draft** — derived from `packages/adapter/src/contract.ts`.
-This file lives in the main repository as of 2026-09-11 (PBI-0422): the commit that changes the
-contract and the document that describes it are now in the same tree.
+The commit that changes the contract and this document live in the same tree, and
+`packages/adapter/test/contract-spec.test.ts` fails if the interface below is missing an operation
+the code defines. Treat field and method names as the current reference implementation, not a
+frozen wire format.
+
 This document describes the boundary a runtime integration must implement to attach an
-Agent Account to a runtime (Claude Code, Codex, and future runtimes). It is not a promise
-of API stability yet; treat field/method names as the current reference implementation,
-not a frozen wire format.
+Agent Account to a runtime (Claude Code, Codex, Gemini CLI, API-key models, and future runtimes).
 
 ## Why this boundary exists
 
 OpenRoly is runtime-neutral: the Account (identity, mailbox, delegation policy) is owned by the
-Account layer, not by any single runtime. A `RuntimeAdapter` is the only place that knows
-how to talk to one specific runtime's CLI/config. Everything else (pairing engine,
-credential store, extension reconciliation) is runtime-agnostic and lives outside the
-adapter.
+Account layer, not by any single runtime. An `ExtensionAdapter` is the only place that knows
+how to talk to one specific runtime's CLI and config. Everything else (pairing engine,
+credential store, extension reconciliation, waking a runtime) is runtime-agnostic and lives outside
+the adapter.
 
-## The `RuntimeAdapter` interface
+## The `ExtensionAdapter` interface
 
 ```ts
-interface RuntimeAdapter {
+interface ExtensionAdapter {
   id: string;              // credential store key, also the CLI arg (e.g. "claude", "codex")
   displayName: string;     // human-facing name (e.g. "Claude Code")
   capabilities: AdapterCapabilities;
@@ -32,10 +33,13 @@ interface RuntimeAdapter {
   extensionKinds: ExtensionKind[];
   listExtensions(ctx: AdapterContext): Promise<ExtensionListing[]>;
   applyExtension(ctx: AdapterContext, action: ExtensionApplyAction): Promise<void>;
+  exportExtensions(ctx: AdapterContext): Promise<ExportedExtension[]>;
+  watchPaths(ctx: AdapterContext): string[];
 }
 ```
 
-Full type definitions: `packages/adapter/src/contract.ts`.
+Full type definitions: `packages/adapter/src/contract.ts`. Official implementations:
+`adapters/official/{claude,codex,gemini,api}`.
 
 ### `AdapterContext`
 
@@ -46,7 +50,7 @@ interface AdapterContext {
 ```
 
 The adapter never reads process-global env directly — every runtime CLI invocation goes
-through `ctx.env`, so tests (and future sandboxed callers) can redirect `HOME` /
+through `ctx.env`, so tests (and sandboxed callers) can redirect `HOME` /
 `CODEX_HOME` / `PATH` without touching the real environment.
 
 ### `AdapterCapabilities`
@@ -55,16 +59,20 @@ through `ctx.env`, so tests (and future sandboxed callers) can redirect `HOME` /
 interface AdapterCapabilities {
   pair: boolean;
   status: boolean;
-  notify: boolean;          // requires a Device Broker push channel — not built yet
-  wake: boolean;             // requires a Device Broker wake channel — not built yet
+  notify: boolean;
+  wake: boolean;
   createSession: boolean;
   sendInstruction: boolean;
 }
 ```
 
-An adapter declares what it can do rather than the caller assuming. The current official
-adapters (Claude, Codex) both report `{ pair: true, status: true, notify: false, wake: false,
-createSession: false, sendInstruction: false }` — pairing and read-only status only.
+An adapter declares what it can do rather than the caller assuming. The official adapters
+declare `{ pair: true, status: true }` and `false` for the other four.
+
+Those four `false`s do not mean a runtime can't be woken. Waking a runtime and starting a
+dedicated session are done by the Device Broker (`broker/`), which launches the runtime's own CLI
+inside the OS sandbox and egress proxy — not through adapter methods. The four flags are reserved
+for adapters that can drive a runtime directly.
 
 ### `register` / `unregister` — pairing an MCP server into the runtime
 
@@ -102,17 +110,35 @@ config) removing/disabling an extension, `applyExtension` must reject — the ca
 Uninstalling something that was never registered natively is idempotent success, not an
 error.
 
+### `exportExtensions` — what the person installed by hand
+
+Returns the extensions a person added to this runtime themselves, shaped as proposals the Account
+can approve and hand to the other runtimes. It must leave out what OpenRoly installed (the
+`openroly` MCP server and skills carrying `.openroly-managed`), or every approval would propose
+the same thing again.
+
+Every `env` value is removed from `spec` and returned separately as `secretEnv`. The Account only
+ever receives the variable name (`env:NAME`); the value stays in `~/.openroly/secrets.json` on the
+device.
+
+### `watchPaths` — where native changes show up
+
+Returns the paths whose changes mean this runtime's native config changed (its MCP config file
+and skills directory). The broker watches them so a hand-installed extension is proposed without
+anyone running `openroly share`. Return paths that don't exist yet too, and don't probe the runtime
+binary to compute them — this is called often.
+
 ## What this contract deliberately does not cover
 
 - Credential storage and resolution (`credential_ref` → secret) — that boundary is the
   credential store, not the adapter.
-- Device pairing protocol / device keys — separate spec (E2EE envelope format covers the
+- Waking runtimes and sandboxing them — the Device Broker (`broker/`).
+- Device pairing protocol / device keys — separate spec (`specs/e2ee-envelope-format.md` covers the
   crypto half; the pairing handshake itself is not yet split into its own draft).
 - Extension Sync's desired-state reconciliation algorithm (`packages/core/src/extension.ts`,
   `planReconciliation`) — kind-agnostic and lives outside any adapter.
 
 ## Status / stability
 
-This is a **Stage 1A / experimental** draft published alongside the reference
-implementation (`adapters/official/claude`, `adapters/official/codex`). Expect breaking
-changes as `notify` / `wake` (Device Broker) and additional extension kinds land.
+Public Alpha. Expect breaking changes to names and shapes while more runtimes are added; changes
+land in this file in the same commit as the code.

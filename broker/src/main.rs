@@ -667,10 +667,24 @@ async fn run_once(
                 } else {
                     match instruction {
                         Some(instr) => {
+                            // catalog の `egress.hosts`(署名検証済み entry の通信先。PBI-0240)
+                            let catalog_hosts: &[String] = state
+                                .registry
+                                .detector(runtime)
+                                .and_then(|d| d.egress.as_ref())
+                                .map(|e| e.hosts.as_slice())
+                                .unwrap_or(&[]);
                             let isolation = launch::Isolation {
                                 sandbox: state.sandbox.as_ref(),
                                 egress: egress::EgressConfig {
-                                    allow: egress::hosts_for(runtime, &state.server_host),
+                                    // allowlist = 内蔵表 ∪ catalog の egress.hosts ∪ server host ∪
+                                    // claude の ANTHROPIC_BASE_URL(PBI-0240 / PBI-0388)
+                                    allow: egress::hosts_for(
+                                        catalog_hosts,
+                                        runtime,
+                                        &state.server_host,
+                                        std::env::var("ANTHROPIC_BASE_URL").ok().as_deref(),
+                                    ),
                                     events: Some(results_tx.clone()),
                                     upstream_override: None,
                                     observe: None,
@@ -712,12 +726,21 @@ async fn run_once(
                         });
                         json!({ "type": "wake_result", "requestId": request_id, "ok": true })
                     }
-                    Err(reason) => json!({
-                        "type": "wake_result",
-                        "requestId": request_id,
-                        "ok": false,
-                        "reason": reason,
-                    }),
+                    Err(reason) => {
+                        // PBI-0240 AC-2: 起こし方が無い runtime には代替を 1 つ添えて返す
+                        // (hello で見つかった headless 可の別 runtime。web の 1 tap がこれで組める)
+                        let alternative = (reason == "not_headless")
+                            .then(|| launch::headless_alternative(&state.registry, &known_runtimes, runtime))
+                            .flatten()
+                            .map(|kind| json!({ "kind": kind }));
+                        json!({
+                            "type": "wake_result",
+                            "requestId": request_id,
+                            "ok": false,
+                            "reason": reason,
+                            "alternative": alternative,
+                        })
+                    }
                 };
                 write
                     .send(Message::Text(response.to_string().into()))

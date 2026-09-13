@@ -62,7 +62,7 @@ async fn attacker_written_body_cannot_run_shell_in_any_runtime() {
     let reg = registry::builtin();
     let env = launch::containment_env();
     // PBI-0238: 実 runtime は実 seatbelt の中で起こす(閉じ込めの土台。model host だけ許す)
-    let egress_allow = |runtime: &str| egress::hosts_for(runtime, "");
+    let egress_allow = |runtime: &str| egress::hosts_for(&[], runtime, "", None);
 
     for runtime in wanted {
         let marker = home.join(format!("pwned-{runtime}"));

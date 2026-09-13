@@ -9,7 +9,7 @@ import {
   type RuntimeCredential,
 } from "./credentials.ts";
 import { pairRuntime, type PairPrompt } from "./pairing.ts";
-import type { AdapterContext, Finding, RuntimeAdapter } from "./contract.ts";
+import type { AdapterContext, Finding, ExtensionAdapter } from "./contract.ts";
 
 // Common Installation Engine(配布戦略 §7.2)。
 // UX は plugin-first でも、pairing / config detection / credential registration /
@@ -54,7 +54,7 @@ export async function accountBaseUrl(
 type Env = Record<string, string | undefined>;
 
 export interface EngineOptions {
-  adapter: RuntimeAdapter;
+  adapter: ExtensionAdapter;
   ctx: AdapterContext;
   baseUrl?: string;
   /** credential store 用の環境(OPENROLY_HOME)。既定は process.env */

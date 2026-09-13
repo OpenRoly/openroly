@@ -7,7 +7,7 @@ import {
   type ExtensionApplyAction,
   type ExtensionListing,
   type Finding,
-  type RuntimeAdapter,
+  type ExtensionAdapter,
 } from "@openroly/adapter";
 import { API_PROVIDERS, apiProviderKind } from "@openroly/core";
 
@@ -22,7 +22,7 @@ import { API_PROVIDERS, apiProviderKind } from "@openroly/core";
 // provider は同じ手順で、違うのは id と表示名だけ —— factory 1 つで全部作る(部品を N 枚書かない)。
 // **一覧は `@openroly/core` の `API_PROVIDERS` から導出する**(PBI-0210。cli / server / web / registry と同じ正本)。
 
-export function apiProviderAdapter(provider: string, displayName: string): RuntimeAdapter {
+export function apiProviderAdapter(provider: string, displayName: string): ExtensionAdapter {
   const id = apiProviderKind(provider);
   return {
     id,
@@ -69,6 +69,6 @@ export function apiProviderAdapter(provider: string, displayName: string): Runti
   };
 }
 
-export const apiAdapters: RuntimeAdapter[] = API_PROVIDERS.map((p) =>
+export const apiAdapters: ExtensionAdapter[] = API_PROVIDERS.map((p) =>
   apiProviderAdapter(p.id, `${p.label} (API)`),
 );

@@ -4,7 +4,7 @@ import {
   AdapterError,
   type AdapterContext,
   type ExtensionApplyAction,
-  type RuntimeAdapter,
+  type ExtensionAdapter,
 } from "./contract.ts";
 import { withFileLock, writeFileAtomic } from "./credentials.ts";
 
@@ -318,7 +318,7 @@ async function listInstructions(target: InstructionsTarget): Promise<string[]> {
  * runtime 固有なのは `target(ctx)` の解決だけ —— official は adapter が直に、registry entry を
  * 持つ runtime は `native.instructions` が決める。
  */
-export function withInstructions(base: RuntimeAdapter, target: InstructionsTargetFn): RuntimeAdapter {
+export function withInstructions(base: ExtensionAdapter, target: InstructionsTargetFn): ExtensionAdapter {
   return {
     ...base,
     extensionKinds: [...base.extensionKinds.filter((k) => k !== "instructions"), "instructions"],

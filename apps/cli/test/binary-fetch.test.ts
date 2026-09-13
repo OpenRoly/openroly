@@ -12,7 +12,7 @@ import {
   STAGE0_CAPABILITIES,
   type AdapterContext,
   type RegisterInput,
-  type RuntimeAdapter,
+  type ExtensionAdapter,
 } from "@openroly/adapter";
 
 // PBI-0137 AC-2〜7 / X1〜X3: 公開 Release から binary を取ってきて `~/.openroly/bin` に置く。
@@ -194,7 +194,7 @@ describe("ensureBinary — 取得と検証 (PBI-0137)", () => {
 // ---- install 経路(AC-2/3/5 を engine 越しに) ----
 
 const registered: RegisterInput[] = [];
-const fakeAdapter: RuntimeAdapter = {
+const fakeAdapter: ExtensionAdapter = {
   id: "claude",
   displayName: "Claude Code",
   capabilities: STAGE0_CAPABILITIES,

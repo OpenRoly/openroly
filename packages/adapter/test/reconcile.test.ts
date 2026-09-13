@@ -8,7 +8,7 @@ import {
   type AdapterContext,
   type ExtensionApplyAction,
   type ExtensionListing,
-  type RuntimeAdapter,
+  type ExtensionAdapter,
 } from "../src/contract.ts";
 
 // AC-8(未管理を触らない、実 adapter 経路)/ AC-13(credential_ref 未解決)/
@@ -67,7 +67,7 @@ interface FakeAdapterState {
   throwOn?: string;
 }
 
-function makeFakeAdapter(state: FakeAdapterState): RuntimeAdapter {
+function makeFakeAdapter(state: FakeAdapterState): ExtensionAdapter {
   return {
     id: "claude",
     displayName: "Claude Code",

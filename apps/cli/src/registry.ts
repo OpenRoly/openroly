@@ -1,4 +1,4 @@
-import { createNativeAdapter, type RuntimeAdapter } from "@openroly/adapter";
+import { createNativeAdapter, type ExtensionAdapter } from "@openroly/adapter";
 import { apiAdapters } from "@openroly/adapter-api";
 import { claudeAdapter } from "@openroly/adapter-claude";
 import { codexAdapter } from "@openroly/adapter-codex";
@@ -15,14 +15,14 @@ import catalog from "@openroly/core/registry/detectors.v1.json" with { type: "js
 //      (PBI-0303)。
 // community adapter = catalog に 1 entry(`native` + `sources`)を足すこと。TS を書かない。
 
-const OFFICIAL: RuntimeAdapter[] = [claudeAdapter, codexAdapter, geminiAdapter, ...apiAdapters];
+const OFFICIAL: ExtensionAdapter[] = [claudeAdapter, codexAdapter, geminiAdapter, ...apiAdapters];
 
 export const GENERIC_ADAPTER = "generic/native";
 
 type CatalogEntry = { id: string; display_name?: string; adapter: string | null; native?: unknown };
 
 /** bundled catalog の generic entry から組んだ adapter(壊れた entry は落として続ける = 1 つの誤りで CLI が起動不能にならない) */
-const CATALOG: RuntimeAdapter[] = (catalog.detectors as CatalogEntry[])
+const CATALOG: ExtensionAdapter[] = (catalog.detectors as CatalogEntry[])
   .filter((d) => d.adapter === GENERIC_ADAPTER && d.native != null)
   .flatMap((d) => {
     try {
@@ -33,13 +33,13 @@ const CATALOG: RuntimeAdapter[] = (catalog.detectors as CatalogEntry[])
     }
   });
 
-export const ADAPTERS: RuntimeAdapter[] = [...OFFICIAL, ...CATALOG];
+export const ADAPTERS: ExtensionAdapter[] = [...OFFICIAL, ...CATALOG];
 
 /**
  * `native` を渡された時はそれで組む(署名検証済み registry が bundled catalog より新しい = rebuild 無しで
  * 新 runtime。壊れていれば throw → adopt は exit 2)。無ければ official → bundled catalog の順。
  */
-export function findAdapter(id: string, native?: unknown): RuntimeAdapter | undefined {
+export function findAdapter(id: string, native?: unknown): ExtensionAdapter | undefined {
   const kind = id.toLowerCase();
   const official = OFFICIAL.find((a) => a.id === kind);
   if (official) return official;

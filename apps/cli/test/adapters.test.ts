@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { ADAPTERS, findAdapter, SUPPORTED_IDS } from "../src/registry.ts";
 import { ADAPTER_OPS } from "@openroly/adapter";
 
-// AC-14 / AC-15 / AC-16: Runtime Adapter Contract(配布戦略 §8)の conformance。
+// AC-14 / AC-15 / AC-16: Extension Adapter Contract(配布戦略 §8)の conformance。
 // community adapter が増えてもこの検査に通ることを条件にする。
 
 const repo = (path: string) => fileURLToPath(new URL(`../../../${path}`, import.meta.url));

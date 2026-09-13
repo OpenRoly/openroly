@@ -1,7 +1,7 @@
 import type { ExtensionKind } from "@openroly/core";
 import { accessSync, constants as fsConstants } from "node:fs";
 
-// Runtime Adapter Contract(配布戦略 §8)。
+// Extension Adapter Contract(配布戦略 §8)。
 // 「Runtime ごとに Account pairing logic を再発明しない」(§7.2 Invariant)ため、
 // runtime 固有なのは "その runtime へ MCP server をどう登録するか" だけに絞る。
 // pairing / credential / 診断の本体は packages/adapter の engine 側にある。
@@ -116,7 +116,7 @@ export type ExtensionApplyAction =
   | { action: "disable"; name: string }
   | { action: "uninstall"; name: string };
 
-export interface RuntimeAdapter {
+export interface ExtensionAdapter {
   /** credential store の key 兼 CLI 引数(例: "claude") */
   id: string;
   /** §32.4 Connected runtimes の表示名(例: "Claude Code") */

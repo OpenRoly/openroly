@@ -5,7 +5,7 @@ import {
   type PlanAction,
 } from "@openroly/core";
 import { apiCall } from "./api.ts";
-import type { AdapterContext, RuntimeAdapter } from "./contract.ts";
+import type { AdapterContext, ExtensionAdapter } from "./contract.ts";
 import { loadSecrets } from "./credentials.ts";
 
 // Reconcile engine(PBI-0005)。Common Installation Engine(install.ts)と同じ場所に置く:
@@ -19,7 +19,7 @@ import { loadSecrets } from "./credentials.ts";
 type Env = Record<string, string | undefined>;
 
 export interface ReconcileOptions {
-  adapter: RuntimeAdapter;
+  adapter: ExtensionAdapter;
   ctx: AdapterContext;
   baseUrl: string;
   /** 対象 runtime の credential token */

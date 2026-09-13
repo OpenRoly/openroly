@@ -29,7 +29,7 @@ import {
   type AdapterContext,
   type Finding,
   type PairPrompt,
-  type RuntimeAdapter,
+  type ExtensionAdapter,
   type RuntimeCredential,
 } from "@openroly/adapter";
 import { resolveContextEntries, type ContextIndexRow } from "@openroly/adapter";
@@ -1362,7 +1362,7 @@ switch (command) {
     // registry に entry があっても adapter 実装が無い runtime はここで落ちる(exit 2)。
     // Cloud 側も adapter:null は登録対象から外すので、ここに来るのは配布のずれ。
     // `native` が壊れていても exit 2(1 行目が detail になる) —— 推測で書き換えない
-    let adapter: RuntimeAdapter | undefined;
+    let adapter: ExtensionAdapter | undefined;
     try {
       adapter = findAdapter(kind, native);
     } catch (e) {
@@ -1689,7 +1689,7 @@ switch (command) {
   case "sync": {
     const dryRun = args.includes("--dry-run");
     const credentials = (await loadCredentials()).runtimes;
-    const targets: RuntimeAdapter[] = target
+    const targets: ExtensionAdapter[] = target
       ? [requireAdapter(target)]
       : ADAPTERS.filter((a) => credentials[a.id]);
     if (targets.length === 0) {

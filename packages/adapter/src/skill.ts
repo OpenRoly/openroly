@@ -7,7 +7,7 @@ import {
   type AdapterContext,
   type ExportedExtension,
   type ExtensionApplyAction,
-  type RuntimeAdapter,
+  type ExtensionAdapter,
 } from "./contract.ts";
 
 // kind = "skill" の materialize(W20 / PBI-0091 に claude から共通化。図 14 の正本はここ)。
@@ -252,7 +252,7 @@ async function exportSkills(ctx: AdapterContext, skillsDir: SkillsDirFn): Promis
  * extensionKinds は base に "skill" を追記し、listExtensions は mcp server 名に
  * skills/ 直下 directory を合算、applyExtension は skill を分岐して disable/uninstall は
  * 両経路(skill → mcp)を見る(kind を持たない action の既存規約)。 */
-export function withSkills(base: RuntimeAdapter, skillsDir: SkillsDirFn): RuntimeAdapter {
+export function withSkills(base: ExtensionAdapter, skillsDir: SkillsDirFn): ExtensionAdapter {
   return {
     ...base,
     extensionKinds: [...base.extensionKinds.filter((k) => k !== "skill"), "skill"],

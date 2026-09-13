@@ -69,6 +69,35 @@ from that one entry (see `docs/diagrams.md` figure 66).
 - Formats that cannot round-trip comments (TOML) should declare `"comments_preserved": false` so
   `openroly doctor` warns instead of silently dropping a user's comments.
 
+## Headless wake and egress (PBI-0240)
+
+The containment wall is runtime-independent (broker OS sandbox + egress proxy, PBI-0238), so wiring
+up a new runtime's dedicated wake is one entry:
+
+```jsonc
+{
+  "launch": {
+    "existing": ["--continue"],
+    "headless": { "argv": ["run", "${instruction}"] }   // no program name — detect.binaries is used
+  },
+  "egress": { "hosts": ["models.opencode.ai"] },        // union with the broker's built-in table
+  "sandbox_verified": "2026-09-04 opencode 1.18.10"     // maintainer-measured; without it the
+                                                         // generic path stays closed (not_verified)
+}
+```
+
+- `launch.headless.argv` is substituted element-wise: `${instruction}` (exactly once — the build
+  fails otherwise), `${folder}`, `${session_dir}`. No shell is involved; one element stays one
+  argument. The official trio (claude / codex / gemini) keeps its measured argv in the broker and
+  does **not** set `launch.headless`.
+- `egress.hosts` entries are hostnames: a leading `*.` wildcard is the only wildcard allowed; URLs
+  and mid-label wildcards fail the build (and the broker's `validate` rejects them even in a signed
+  catalog).
+- `sandbox_verified` records the date + CLI + version of the sandbox measurement. A maintainer adds
+  it after running the runtime inside the broker sandbox; an entry with `launch.headless` but no
+  `sandbox_verified` reports `not_verified` instead of starting.
+
+
 ## Refreshing the upstream lists
 
 The CSVs come from the `site-api` recipes in `~/.claude/skills/site-api/recipes/agent-catalog/`

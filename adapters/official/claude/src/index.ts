@@ -5,7 +5,7 @@ import {
   withInstructions,
   withSkills,
   type AdapterContext,
-  type RuntimeAdapter,
+  type ExtensionAdapter,
 } from "@openroly/adapter";
 
 // Claude Code 用 official adapter。runtime 固有なのは「MCP server をどう登録するか」と
@@ -62,4 +62,4 @@ const base = createMcpConfigAdapter({
 });
 
 // skill を materialize できるのは PBI-0008 時点では claude だけだった → W20(PBI-0091)で codex も加わる
-export const claudeAdapter: RuntimeAdapter = withInstructions(withSkills(base, skillsDir), instructionsFile);
+export const claudeAdapter: ExtensionAdapter = withInstructions(withSkills(base, skillsDir), instructionsFile);

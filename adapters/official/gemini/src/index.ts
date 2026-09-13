@@ -4,7 +4,7 @@ import {
   createMcpConfigAdapter,
   withInstructions,
   type AdapterContext,
-  type RuntimeAdapter,
+  type ExtensionAdapter,
 } from "@openroly/adapter";
 
 // Gemini CLI 用 official adapter(PBI-0061 / W9c)。generic MCP-config adapter(PBI-0060)の
@@ -34,7 +34,7 @@ const instructionsFile = (ctx: AdapterContext): { file: string } => ({
   file: join(ctx.env.GEMINI_CLI_HOME ?? ctx.env.HOME ?? homedir(), ".gemini", "GEMINI.md"),
 });
 
-export const geminiAdapter: RuntimeAdapter = withInstructions(
+export const geminiAdapter: ExtensionAdapter = withInstructions(
   createMcpConfigAdapter({
     id: "gemini",
     displayName: "Gemini CLI",

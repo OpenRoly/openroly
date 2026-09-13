@@ -18,8 +18,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::UnboundedSender;
 
-/// runtime → model host(PBI-0240 で catalog の `egress.hosts` に移す。それまでの内蔵表)。
-/// 実測 2026-09-04: codex は起動時に chatgpt.com の cloud config bundle が取れないと起動を拒む。
+/// runtime → model host(PBI-0240 以降は catalog の `egress.hosts` が正本で、これは offline /
+/// cache 腐りでも claude が api host を失わない為の内蔵 fallback。撤去しない = registry.rs の
+/// built-in と同じ不変条件)。実測 2026-09-04: codex は起動時に chatgpt.com の cloud config bundle
+/// が取れないと起動を拒む。
 pub fn builtin_hosts(runtime: &str) -> &'static [&'static str] {
     match runtime {
         "claude" => &["api.anthropic.com"],
@@ -31,13 +33,49 @@ pub fn builtin_hosts(runtime: &str) -> &'static [&'static str] {
     }
 }
 
-/// 1 session の allowlist = 内蔵表 + OpenRoly server の host(MCP が Cloud に繋ぐ先)。
-pub fn hosts_for(runtime: &str, server_host: &str) -> Vec<String> {
+/// 1 session の allowlist = 内蔵表 ∪ catalog の `egress.hosts`(`catalog_hosts`。呼び出し側が
+/// 署名検証済み registry から引き出す)∪ OpenRoly server の host(MCP が Cloud に繋ぐ先)。
+/// runtime が claude の時は `ANTHROPIC_BASE_URL`(`base_url_env`)の host も足す —— PBI-0388 の実測:
+/// 内蔵表が陳腐化すると api.z.ai 経由の機の claude が proxy 403 で落ちる。実機の設定に追随する
+/// (無い時は従来どおり内蔵表のみ)。
+pub fn hosts_for(
+    catalog_hosts: &[String],
+    runtime: &str,
+    server_host: &str,
+    base_url_env: Option<&str>,
+) -> Vec<String> {
     let mut hosts: Vec<String> = builtin_hosts(runtime).iter().map(|s| s.to_string()).collect();
-    if !server_host.is_empty() {
+    for h in catalog_hosts {
+        if !hosts.iter().any(|x| x == h) {
+            hosts.push(h.clone());
+        }
+    }
+    if runtime == "claude" {
+        if let Some(host) = base_url_env.and_then(base_url_host) {
+            if !hosts.iter().any(|x| x == &host) {
+                hosts.push(host);
+            }
+        }
+    }
+    if !server_host.is_empty() && !hosts.iter().any(|x| x == server_host) {
         hosts.push(server_host.to_string());
     }
     hosts
+}
+
+/// `https://api.z.ai/api/anthropic` → `api.z.ai`。scheme が無い / host が空なら None。
+/// port は剥がす(allowlist は host 単位。CONNECT の port は対象側で決まる)。
+/// userinfo(`user:pass@`)は先に剥がす(review 実測: `:` で split すると `user` が host として
+/// 足る = single-label が allowlist に載る)。`*` / bracket / `_` 等の文字は CONNECT 先の host
+/// 文字種(`parse_connect` と同じ)に絞って落とす —— wildcard が env から allowlist に広がらない。
+fn base_url_host(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
+    let authority = rest.split(['/', '?']).next()?;
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = host.split(':').next().unwrap_or_default().to_ascii_lowercase();
+    (!host.is_empty()
+        && host.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'-'))
+        .then_some(host)
 }
 
 /// `*.example.com` は subdomain だけ(`example.com` 自身と `evil-example.com` には当たらない)。
@@ -240,10 +278,53 @@ mod tests {
         assert_eq!(builtin_hosts("claude"), &["api.anthropic.com"]);
         assert!(builtin_hosts("codex").contains(&"chatgpt.com"));
         assert!(builtin_hosts("unknown-runtime").is_empty());
-        let hosts = hosts_for("gemini", "openroly.example");
+        let hosts = hosts_for(&[], "gemini", "openroly.example", None);
         assert!(hosts.contains(&"generativelanguage.googleapis.com".to_string()));
         assert!(hosts.contains(&"openroly.example".to_string()));
-        assert!(!hosts_for("claude", "").contains(&"".to_string()));
+        assert!(!hosts_for(&[], "claude", "", None).contains(&"".to_string()));
+    }
+
+    // PBI-0240 AC-1: catalog の `egress.hosts` は内蔵表と union する(重複しない・catalog が
+    // 無くても内蔵が効く)。registry から hosts を引き出す所(main.rs)はここでは測らず slice で受ける
+    #[test]
+    fn hosts_for_unions_catalog_egress_with_builtin() {
+        let hosts = hosts_for(&v(&["api.foo.example"]), "foo", "openroly.example", None);
+        assert!(hosts.contains(&"api.foo.example".to_string()));
+        assert!(hosts.contains(&"openroly.example".to_string()));
+        // 内蔵表を持つ runtime の catalog 側の追加 host も入る(union・重複しない)
+        let hosts2 = hosts_for(&v(&["api.anthropic.com", "stats.anthropic.com"]), "claude", "", None);
+        assert_eq!(
+            hosts2.iter().filter(|h| *h == "api.anthropic.com").count(),
+            1,
+            "重複して入る: {hosts2:?}"
+        );
+        assert!(hosts2.contains(&"stats.anthropic.com".to_string()));
+        // catalog に hosts が無い runtime は従来どおり内蔵表だけ
+        assert!(hosts_for(&[], "codex", "", None).iter().all(|h| h != "api.foo.example"));
+    }
+
+    // PBI-0240 AC-6 / PBI-0388 の機序: 端末の ANTHROPIC_BASE_URL(api.z.ai 等の中継)の host を
+    // claude の allowlist に足す。codex 等の別 runtime には影響しない
+    #[test]
+    fn base_url_env_extends_claude_allowlist_only() {
+        let hosts = hosts_for(&[], "claude", "", Some("https://api.z.ai/api/anthropic"));
+        assert!(hosts.contains(&"api.z.ai".to_string()), "api.z.ai が入っていない: {hosts:?}");
+        assert!(hosts.contains(&"api.anthropic.com".to_string()), "内蔵表が消えた: {hosts:?}");
+        // codex には載らない(ANTHROPIC_BASE_URL は claude の env)
+        let codex = hosts_for(&[], "codex", "", Some("https://api.z.ai/api/anthropic"));
+        assert!(!codex.contains(&"api.z.ai".to_string()));
+        // 形式: path/query は落ちる・port は剥がす・scheme 無し・空は無視
+        assert_eq!(base_url_host("https://api.example.com/v1?x=1"), Some("api.example.com".to_string()));
+        assert_eq!(base_url_host("http://API.Example.COM/"), Some("api.example.com".to_string()));
+        assert_eq!(base_url_host("https://host:8443/x"), Some("host".to_string()));
+        assert_eq!(base_url_host("api.example.com"), None);
+        assert_eq!(base_url_host("https://"), None);
+        assert_eq!(base_url_host(""), None);
+        // review fix: userinfo は剥がして実 host を足す(`user` は足さない)・wildcard / bracket は無視
+        assert_eq!(base_url_host("https://user:secret@api.example.com/v1"), Some("api.example.com".to_string()));
+        assert_eq!(base_url_host("https://*.example.com/x"), None);
+        assert_eq!(base_url_host("http://[::1]:8080/v1"), None);
+        assert_eq!(base_url_host("http://localhost:11434/v1"), Some("localhost".to_string()));
     }
 
     #[test]

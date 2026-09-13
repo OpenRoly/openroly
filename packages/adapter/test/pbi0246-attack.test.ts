@@ -14,7 +14,7 @@ import {
   STAGE0_CAPABILITIES,
   type AdapterContext,
   type RegisterInput,
-  type RuntimeAdapter,
+  type ExtensionAdapter,
 } from "../src/contract.ts";
 
 // PBI-0246 レビュー(有界)の攻撃 test。
@@ -68,7 +68,7 @@ afterAll(() => {
 });
 
 const registered: RegisterInput[] = [];
-const fakeAdapter: RuntimeAdapter = {
+const fakeAdapter: ExtensionAdapter = {
   id: "claude",
   displayName: "Claude Code",
   capabilities: STAGE0_CAPABILITIES,

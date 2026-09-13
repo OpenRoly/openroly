@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { MCP_SERVER_ENTRY, run, type AdapterContext, type RuntimeAdapter } from "@openroly/adapter";
+import { MCP_SERVER_ENTRY, run, type AdapterContext, type ExtensionAdapter } from "@openroly/adapter";
 import { claudeAdapter } from "@openroly/adapter-claude";
 import { codexAdapter } from "@openroly/adapter-codex";
 
@@ -83,7 +83,7 @@ async function untouched(path: string, fn: () => Promise<void>): Promise<void> {
   expect(await openrolyEntry(path)).toBe(before);
 }
 
-const registerInput = (adapter: RuntimeAdapter) => ({
+const registerInput = (adapter: ExtensionAdapter) => ({
   serverEntry: MCP_SERVER_ENTRY,
   runtimeKind: adapter.id,
   baseUrl: "http://localhost:8787",

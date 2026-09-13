@@ -1,25 +1,30 @@
 name: Bug report
-description: Something in the SDK, CLI, an adapter, or the E2EE envelope doesn't behave as documented.
+description: Something in the CLI, an adapter, the MCP server, the broker, or the encryption envelope doesn't behave as documented.
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        This repo is Public Alpha — breaking changes are expected, but unexpected behavior
-        vs. what `specs/*.md` or the code comments describe is still worth reporting.
+        This repo is Public Alpha — breaking changes are expected, but behavior that differs from
+        the README, `specs/*.md`, or the code comments is still worth reporting.
   - type: dropdown
     id: area
     attributes:
       label: Area
       options:
+        - apps/cli
+        - broker (background service, sandbox, egress proxy)
         - packages/core
         - packages/crypto-envelope
         - packages/adapter
         - packages/mcp
+        - packages/mcp-mask
         - adapters/official/claude
         - adapters/official/codex
-        - apps/cli
+        - adapters/official/gemini
+        - adapters/official/api
         - specs/ (documentation mismatch)
+        - README / install steps
         - other / not sure
     validations:
       required: true
@@ -34,13 +39,13 @@ body:
     id: repro
     attributes:
       label: Steps to reproduce
-      description: Minimal repro — commands run, relevant `bun test` output, etc.
+      description: Minimal repro — commands run, `openroly status` / `openroly doctor` output, relevant `bun test` output.
     validations:
       required: true
   - type: input
     id: version
     attributes:
-      label: Commit / version
-      description: "`git rev-parse HEAD` or the version you're on"
+      label: Version and platform
+      description: "The release tag you downloaded (e.g. v0.2.4) or `git rev-parse HEAD`, plus macOS / Linux and CPU"
     validations:
       required: false

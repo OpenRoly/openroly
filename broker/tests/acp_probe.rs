@@ -395,7 +395,9 @@ async fn run_probe(spec: ProbeSpec, adapter_bin: PathBuf) -> ProbeReport {
         let _ = std::fs::create_dir_all(d);
     }
 
-    let prod_allow = egress::hosts_for(spec.runtime, "");
+    // catalog の egress.hosts 分は main.rs が registry から足す(この test binary は registry module
+        // を持たない)。ここでは内蔵表 + server host の面を測る
+        let prod_allow = egress::hosts_for(&[], spec.runtime, "", None);
     let attempt1 = run_one_attempt(&adapter_bin, &folder, &session_dir, prod_allow.clone(), Duration::from_secs(55)).await;
     let success1 = attempt1.error.is_none() && attempt1.response_text.trim() == "OK";
 
@@ -813,7 +815,7 @@ async fn acp_probe_prod_allowlist_retries_on_denied_telemetry_host() {
     // (spawn_contained が載せる `HTTPS_PROXY` は URL 形なので、この script には直値の env を渡す)。
     // egress の port は spawn の前に確定させる必要があるため、`spawn_contained` を使わず
     // sandbox::backend() → self_test → egress::start → backend.wrap() → spawn をここで直に組む。
-    let allow = egress::hosts_for("claude", "");
+    let allow = egress::hosts_for(&[], "claude", "", None);
     let session_dir = base.join("session");
     std::fs::create_dir_all(&session_dir).unwrap();
     let backend = sandbox::backend();

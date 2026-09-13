@@ -1,42 +1,47 @@
-# Contributing to All Together Now
+# Contributing to OpenRoly
 
-This repository is Public Alpha / experimental (Stage 1A) — expect breaking changes
-while `RuntimeAdapter` and the E2EE envelope format stabilize. Discussion before a large
-change is worth more than the PR itself at this stage.
+OpenRoly is Public Alpha — expect breaking changes while the runtime adapter contract and the
+encryption envelope format settle. For a large change, a discussion first is worth more than the
+pull request itself.
 
-## Ways to contribute
+## Where help matters most
 
-- **Runtime adapters**: implement `RuntimeAdapter` (see `specs/runtime-adapter-contract.md`
-  and the reference implementations in `adapters/official/{claude,codex}`) for a runtime
-  that isn't officially supported yet. This is the highest-leverage contribution — the project's
-  value is runtime neutrality, and that only means something if more than two runtimes
-  implement the contract.
-- **Bug reports / spec gaps**: if `specs/*.md` doesn't match what the reference
-  implementation actually does, that's a bug in the spec (or in the implementation) —
-  please open an issue either way.
-- **Tests**: `bun test` coverage for `packages/*` and the adapters.
+- **Runtime adapters.** Implement `ExtensionAdapter` for a runtime that isn't officially supported yet
+  (Hermes, OpenClaw, or another). Start with [`specs/extension-adapter-contract.md`](specs/extension-adapter-contract.md)
+  and the reference implementations in `adapters/official/{claude,codex,gemini,api}`. Runtime
+  neutrality only means something if many runtimes implement the contract.
+- **Linux.** The Linux sandbox is being built (see [ROADMAP.md](ROADMAP.md)). Running the broker on
+  real distributions and kernels, and reporting what the sandbox could or couldn't enforce, helps a lot.
+- **Documents that don't match the code.** If the README, the roadmap, or `specs/*.md` says one thing
+  and the code does another, that's a bug either way — please open an issue.
+- **Tests** for `packages/*`, the adapters, and `broker/`.
 
 ## Development setup
 
-```
-bun install
+You need [Bun](https://bun.sh) 1.3.14 and a stable Rust toolchain.
+
+```bash
+bun install --frozen-lockfile
 bun run typecheck
-bun test
+bun test apps/cli packages
+cargo test --manifest-path broker/Cargo.toml
 ```
 
-This repository does not include an All Together Now account server — the adapters, CLI, and MCP server
-here need a running account backend to actually pair/sync against. During Stage 1A
-that's an invite-only hosted instance; there is no self-host path documented yet.
+These are the same commands the repository's CI runs on every push and pull request
+(`.github/workflows/public-ci.yml`). `bun.lock` in this repository matches this repository's
+workspaces exactly, so `--frozen-lockfile` gives you the same dependency versions a release is built with.
 
-## Boundary this repo maintains
+## The account server
 
-`apps/server` / `apps/web` (the Hosted Account Network implementation) live in a separate
-private repository and are intentionally not here — see the README's "Why this split"
-section. PRs that add server-side/hosted-account code to this repo will be redirected, not
-merged.
+The CLI, adapters, MCP server, and broker pair against an account server. Today that is the hosted
+service at [atn.shibubu.ai](https://atn.shibubu.ai), free during the alpha. The server's source is
+not in this repository yet, so changes to it can't land here; self-hosting is on the
+[roadmap](ROADMAP.md).
 
 ## Commit / PR conventions
 
 - Keep PRs scoped to one change; explain *why*, not just *what*, in the description.
+- If your change alters behavior described in the README, `ROADMAP.md`, or `specs/*.md`, update
+  that text in the same PR.
 - Sign off that your contribution is your own work and you're licensing it under this
   repository's Apache-2.0 license (see [LICENSE](./LICENSE)).

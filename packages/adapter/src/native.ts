@@ -18,7 +18,7 @@ import {
   type ExtensionListing,
   type Finding,
   type RegisterInput,
-  type RuntimeAdapter,
+  type ExtensionAdapter,
 } from "./contract.ts";
 import { withFileLock, writeFileAtomic } from "./credentials.ts";
 import { MCP_SERVER_NAME } from "./install.ts";
@@ -614,10 +614,10 @@ async function editConfig(
 // ---------- adapter ----------
 
 /**
- * `native` から RuntimeAdapter を組む。`nativeRaw` は registry / broker(`--spec-stdin`)/ bundled catalog
+ * `native` から ExtensionAdapter を組む。`nativeRaw` は registry / broker(`--spec-stdin`)/ bundled catalog
  * から来た生の JSON —— ここで `parseNativeSpec` を通す(壊れていれば throw。adopt は exit 2)。
  */
-export function createNativeAdapter(id: string, displayName: string, nativeRaw: unknown): RuntimeAdapter {
+export function createNativeAdapter(id: string, displayName: string, nativeRaw: unknown): ExtensionAdapter {
   const spec = parseNativeSpec(nativeRaw, id);
   const bin = spec.bin === null ? null : (spec.bin ?? id);
   const installHint = spec.install ?? `${displayName} was not found on this machine. Install it and run 'openroly install ${id}' again`;
@@ -667,7 +667,7 @@ export function createNativeAdapter(id: string, displayName: string, nativeRaw: 
     await editConfig(mcp, path, (doc) => doc.remove(name));
   };
 
-  const base: RuntimeAdapter = {
+  const base: ExtensionAdapter = {
     id,
     displayName,
     capabilities: STAGE0_CAPABILITIES,
