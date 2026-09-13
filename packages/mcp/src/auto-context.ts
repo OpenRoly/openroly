@@ -94,12 +94,17 @@ function insideCwd(cwd: string, p: string): string | null {
 
 /**
  * transcript(JSONL)から事実だけを取り出す。**cwd が一致しない行は数えない**(同じ dir に別の worktree の
- * session が混ざる事がある)。新しい順に上限まで。
+ * session が混ざる事がある)。新しい順に上限まで。`cwd_rows` = cwd が一致した行数(0 = この transcript は
+ * この cwd の session の物では無い。Claude Code は全行に cwd を書くので、0 行なら採ってはいけない)。
  */
-export function readTranscriptFacts(text: string, cwd: string): { files_touched: FileTouched[]; tests: TestRun[] } {
+export function readTranscriptFacts(
+  text: string,
+  cwd: string,
+): { files_touched: FileTouched[]; tests: TestRun[]; cwd_rows: number } {
   const files = new Map<string, FileTouched>(); // path → 最新(delete + set で末尾に回す)
   const pending = new Map<string, { command: string; at: string | null }>(); // tool_use_id → テスト command
   const tests: TestRun[] = [];
+  let cwdRows = 0;
   for (const line of text.split("\n")) {
     if (!line.trim()) continue;
     let row: any;
@@ -109,6 +114,7 @@ export function readTranscriptFacts(text: string, cwd: string): { files_touched:
       continue; // 書きかけの末尾行など
     }
     if (row?.cwd !== cwd) continue;
+    cwdRows++;
     const at = typeof row.timestamp === "string" ? row.timestamp : null;
     const content = row.message?.content;
     if (!Array.isArray(content)) continue;
@@ -141,6 +147,7 @@ export function readTranscriptFacts(text: string, cwd: string): { files_touched:
   return {
     files_touched: [...files.values()].reverse().slice(0, AUTO_FILES_MAX),
     tests: tests.slice(0, AUTO_TESTS_MAX),
+    cwd_rows: cwdRows,
   };
 }
 
@@ -183,7 +190,8 @@ export interface AutoContextResult {
 
 /**
  * 1 回分の自動 context。git が読めなければ何も返さない(空 object)。transcript を決められなければ
- * `auto/git` だけ(transcript 由来の 2 key を**推測で**埋めない)。
+ * `auto/git` だけ(transcript 由来の 2 key を**推測で**埋めない)。掴んだ transcript に 1 行も
+ * cwd が一致する行が無ければ、その file はこの cwd の session の物では無いので同じく `auto/git` だけ。
  */
 export function buildAutoContext(cwd: string, opts: { env?: Env; home?: string; now?: number } = {}): AutoContextResult {
   const git = readGitFacts(cwd);
@@ -192,6 +200,7 @@ export function buildAutoContext(cwd: string, opts: { env?: Env; home?: string; 
   const pick = pickTranscript(cwd, opts);
   if (pick.path === null) return { context, transcript: pick.reason };
   const facts = readTranscriptFacts(readFileSync(pick.path, "utf8"), cwd);
+  if (facts.cwd_rows === 0) return { context, transcript: "no_cwd_rows" };
   context[AUTO_KEYS.filesTouched] = facts.files_touched;
   context[AUTO_KEYS.tests] = facts.tests;
   return { context, transcript: pick.by };

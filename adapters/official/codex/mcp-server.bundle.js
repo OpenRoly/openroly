@@ -30953,6 +30953,7 @@ function readTranscriptFacts(text, cwd) {
   const files = new Map;
   const pending = new Map;
   const tests = [];
+  let cwdRows = 0;
   for (const line of text.split(`
 `)) {
     if (!line.trim())
@@ -30965,6 +30966,7 @@ function readTranscriptFacts(text, cwd) {
     }
     if (row?.cwd !== cwd)
       continue;
+    cwdRows++;
     const at = typeof row.timestamp === "string" ? row.timestamp : null;
     const content2 = row.message?.content;
     if (!Array.isArray(content2))
@@ -30997,7 +30999,8 @@ function readTranscriptFacts(text, cwd) {
   tests.sort((a, b) => (b.at ?? "").localeCompare(a.at ?? ""));
   return {
     files_touched: [...files.values()].reverse().slice(0, AUTO_FILES_MAX),
-    tests: tests.slice(0, AUTO_TESTS_MAX)
+    tests: tests.slice(0, AUTO_TESTS_MAX),
+    cwd_rows: cwdRows
   };
 }
 function readGitFacts(cwd) {
@@ -31032,6 +31035,8 @@ function buildAutoContext(cwd, opts = {}) {
   if (pick2.path === null)
     return { context: context2, transcript: pick2.reason };
   const facts = readTranscriptFacts(readFileSync2(pick2.path, "utf8"), cwd);
+  if (facts.cwd_rows === 0)
+    return { context: context2, transcript: "no_cwd_rows" };
   context2[AUTO_KEYS.filesTouched] = facts.files_touched;
   context2[AUTO_KEYS.tests] = facts.tests;
   return { context: context2, transcript: pick2.by };

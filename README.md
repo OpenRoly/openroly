@@ -1,68 +1,47 @@
-# OpenRoly
+<p align="center">
+  <img src="docs/logo/mascot-cutout-280.png" width="140" alt="OpenRoly mascot">
+</p>
 
-*Your work outlives the context.*
+<h1 align="center">OpenRoly</h1>
 
-One account — `@you` — that Claude Code, Codex, and Gemini CLI attach to. Swap the runtime and
-the identity, the inbox, the permissions, and the work in progress stay where they are.
+<p align="center"><em>Your work outlives the context.</em></p>
 
-**Status: Public Alpha / experimental.** APIs, wire formats, and adapter contracts here are
-expected to change. This repository is the SDK / CLI / runtime-adapter / device-broker side of
-OpenRoly; the Hosted Account Network (identity registry, encrypted mailbox storage, abuse/ops)
-is not part of this repository and is not open source.
+<p align="center">
+  <a href="https://github.com/OpenRoly/openroly/releases/latest"><img src="https://img.shields.io/github/v/release/OpenRoly/openroly" alt="Latest release"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License: Apache 2.0"></a>
+  <img src="https://img.shields.io/badge/status-public%20alpha-FCBDD0" alt="Status: Public Alpha">
+</p>
+
+<p align="center">
+  <a href="https://atn.shibubu.ai">Website</a> ·
+  <a href="#what-you-can-do-today">What works</a> ·
+  <a href="#get-started">Get started</a> ·
+  <a href="#coming-next">Roadmap</a> ·
+  <a href="#privacy">Privacy</a>
+</p>
+
+Use Claude Code today, Codex tomorrow — your AI assistant keeps the same address, the same inbox,
+and the same unfinished work. You never have to explain things again from the start.
+
+Free during the alpha. Expect things to change.
 
 ![Your Mac is asleep and mail still lands at your agent's address; Claude attaches and triages, the bank mail stays sealed; you say "handle this"; the runtime switches to Codex mid-task and the agent doesn't change](docs/hero.gif)
 
-## One agent. Any runtime. Always reachable.
+## What you can do today
 
-Your agent is an account, not a process. Three things follow from that:
+- ✅ **One address for all your AIs.** Claude Code, Codex, and Gemini CLI all sign in as the same `@you`.
+- ✅ **Messages arrive while you're away.** Mail, GitHub, and webhooks reach your agent even while your computer sleeps.
+- ✅ **We can't read your mail.** Messages are locked the moment they arrive. Private ones (like bank mail) stay hidden from every AI.
+- ✅ **Pass work to another AI without re-explaining.** The next AI starts with the goal, the next step, the decisions made, and what already failed.
+- ✅ **Split a project across several AIs.** Each gets its own task, and they can message each other.
+- ✅ **Progress is saved on its own.** Your code changes are checkpointed every 30 seconds, without making commits for you.
+- ✅ **Big moves need your OK.** An AI can't stop or take over work on its own.
+- ✅ **Mail can't hijack your AI.** The AI that reads incoming mail runs in a locked-down sandbox.
+- ✅ **Hide secrets from any AI — no account needed.** [`openroly-mask`](packages/mcp-mask/README.md) blanks out passwords, card numbers, and addresses before a model sees them.
 
-1. **Neutral** — switch the runtime and the agent doesn't change. Claude Code and Codex attach
-   to the same `@handle`, the same inbox, the same contacts and permissions. Each runtime keeps
-   its own context and memory, but the work carries over: hand a chat to Codex mid-task and it
-   reads the thread and continues in the same place.
-2. **Sealed across vendors** — the server stores envelopes it can't open, and private items
-   (a bank mail, say) stay sealed from every cloud AI, whichever one you attach. Masking is a
-   property of the account, not a setting in each app.
-3. **Reachable while you're off** — mail, GitHub, and webhooks land at your agent's address
-   even while your Mac sleeps; the policy follows the agent, not the runtime. When a machine
-   wakes, the paired runtime picks the item up in a sandboxed session.
+## Get started
 
-Works from any OS (macOS / Linux / Windows / iPhone / Android) because the address is mail and
-webhooks, not an OS notification hook. The hosted instance is
-**[https://atn.shibubu.ai](https://atn.shibubu.ai)** — signup is open and everything is $0
-during the alpha.
-
-## What's proven so far
-
-Claims are cheap; this is what has tests or a live round-trip behind it:
-
-- **Two independent runtimes, same identity, same inbox.** Claude Code and Codex attach to the
-  same `@handle` via the adapters in this repo and read/write the same mailbox
-  (`adapters/official/claude`, `adapters/official/codex`; Gemini CLI and generic API-key
-  providers ship in the same tree).
-- **Mail round-trip, sealed on arrival.** A mail sent to `you@atn.shibubu.ai` from an ordinary
-  mail app is sealed to your device keys the moment it arrives; the server keeps the sender, the
-  time, and the source kind in the clear and nothing of the subject or body.
-- **GitHub as a source.** `POST /v1/inbound/github/:source` verifies `X-Hub-Signature-256`
-  (HMAC-SHA256, constant-time) and turns `issues`, `issue_comment`, `pull_request`,
-  `pull_request_review`, failed `check_run` / `workflow_run`, and `release` into items. Green CI
-  is deliberately not an item. Redeliveries dedupe on `X-GitHub-Delivery`.
-- **The runtime that reads an item is contained.** A mail body is attacker input. The dedicated
-  session that handles an incoming item gets a scoped token and no shell it didn't ask for, on
-  all three official runtimes; the broker's tests include the prompt-injection cases that used
-  to work.
-- **Masking works in front of any MCP server, with no account at all.**
-  `packages/mcp-mask` is a standalone stdio proxy that masks credentials, addresses, phone and
-  card numbers before they reach the model, and restores them only when the model echoes the
-  placeholder back into a tool call.
-
-## Quickstart
-
-No JavaScript runtime, no Rust toolchain, no repo clone required — the CLI and the background
-broker it installs are both prebuilt binaries from this repo's
-[Releases](https://github.com/OpenRoly/openroly/releases). Everything `openroly` fetches
-afterwards (the broker, the MCP server) is checked against the Release's `SHA256SUMS` before it
-is placed or run:
+Create an account at **[atn.shibubu.ai](https://atn.shibubu.ai)**, then on a Mac or Linux machine:
 
 ```bash
 TARGET="$(uname -s | tr A-Z a-z)-$(uname -m | sed 's/x86_64/x64/')"
@@ -73,17 +52,10 @@ chmod +x openroly
 ./openroly status
 ```
 
-`TARGET` resolves to `darwin-arm64` (Apple Silicon), `darwin-x64` (Intel Mac), or `linux-x64`.
-`login` connects this machine: it fetches the broker binary, checks it against the Release's
-`SHA256SUMS`, starts it, and on macOS registers a launchd agent so it survives reboots.
-`pair` attaches a runtime — the same line works for `codex` and `gemini` — and `status` prints
-who is attached and how much is unread, never the message bodies.
+Use `codex` or `gemini` instead of `claude` to connect those. Everything downloaded is checked
+against the release's `SHA256SUMS` first.
 
-Every block here is deliberately comment-free: `zsh` does not treat `#` as a comment in an
-interactive shell, so a pasted `# …` line fails with `parse error`.
-
-Already inside Claude Code or Codex? Install the adapter as a runtime plugin instead —
-pairing (`openroly login` / `openroly pair` above) is still required afterward:
+Already inside Claude Code or Codex? Add the plugin (you still need `login` and `pair` above):
 
 ```bash
 claude plugin marketplace add OpenRoly/openroly
@@ -93,142 +65,51 @@ claude plugin marketplace add OpenRoly/openroly
 codex plugin marketplace add OpenRoly/openroly
 ```
 
-**Windows / iPhone / Android:** the inbox, the sources, and the "handle this" loop work from the
-PWA at [atn.shibubu.ai](https://atn.shibubu.ai) on any OS. What needs macOS or Linux today is
-the machine you *attach a runtime on* — the `openroly` CLI and the broker aren't built for
-Windows yet. Android additionally gets an optional notification collector
-(`apps/android-collector`, build from source). iOS has no public API for that, which is why
-nothing here promises it.
+**Windows / iPhone / Android:** use the web app at [atn.shibubu.ai](https://atn.shibubu.ai).
+Connecting an AI still needs a Mac or Linux machine.
 
-### Getting an account
+## Coming next
 
-Signup is open — create an account at **[https://atn.shibubu.ai](https://atn.shibubu.ai)**, then
-run `openroly login --url https://atn.shibubu.ai` as above (`--url` points at whichever OpenRoly
-server issued your account).
+In order. Each step counts as done only when you can actually see it working.
 
-What the operator can and cannot read is written down, not implied:
-**[https://atn.shibubu.ai/privacy](https://atn.shibubu.ai/privacy)**. The short version: for a
-sealed item the server holds the source kind, the app, the sender, the arrival time, and whether
-you've dealt with it — never the subject or body. The key that unlocks your messages lives in
-your browser / device and is never sent anywhere.
-
-## Sources — how things reach your agent
-
-| Source | How | Arrives |
+| | Step | What you'll be able to do |
 |---|---|---|
-| Mail | Anyone mails `you@atn.shibubu.ai`; or forward the notification mail Slack / X / your bank already send you | Sealed on arrival |
-| GitHub | Repo → Settings → Webhooks → Payload URL and Secret from *Settings › Sources* (JSON, HMAC-SHA256) | Issues opened, PR opened / review requested, reviews submitted, failed checks, releases |
-| Any script / Zapier / IFTTT | `curl -X POST …/v1/inbound/notification -H "Authorization: Bearer <source token>" -d '{"app_id":"my.app","title":"Hello"}'` | Sealed on arrival |
-| Android | `apps/android-collector` — per-app capture (off / title only / full text), encrypted on the device, queued while offline | Sealed on the device |
+| 🚧 | Reliable releases | Every update goes live safely with one click |
+| 🚧 | Pick up where you left off | Hit a usage limit and keep going without explaining again |
+| ⏳ | Switch AI mid-task | Start in Claude, continue in Codex, in one step |
+| ⏳ | Second opinion | A different AI reviews the work without seeing the first AI's opinion |
+| ⏳ | Many AIs, one job | Claude, Codex, and Hermes working on the same account |
+| ⏳ | Dashboard | See in one screen what's waiting for you |
+| ⏳ | Shared memory and skills | What Claude learned today, Codex can use tomorrow |
+| ⏳ | One set of rules | The same permissions for every AI; "ask me first" really waits for you |
+| ⏳ | Public Beta | Your `@handle` is reserved for you |
+| ⏳ | Schedules | Recurring jobs that pick the right AI when they run |
+| ⏳ | Requests from services | Apps and machines can ask your agent for things, with approval that expires |
 
-Every source is created and revoked in *Settings › Sources*; each has its own token, and each
-recipe card shows the exact command for that source.
+✅ works now · 🚧 in progress · ⏳ planned
 
-## `openroly-mask` — the masking half, on its own
+## Privacy
 
-If you only want the "sealed across vendors" part, `packages/mcp-mask` needs no account. Wrap any
-MCP server's command with `openroly-mask --` in `.mcp.json` / `.codex/config.toml` /
-`.gemini/settings.json`, put the strings you never want a model to see in
-`~/.openroly/secrets.json` (`chmod 600`), and every tool result is masked before it reaches the
-model — the same way in every client. Emails, phone numbers, card numbers (Luhn-checked), and
-key-shaped strings are masked with no dictionary at all. See
-[`packages/mcp-mask/README.md`](packages/mcp-mask/README.md). (Not yet on npm; until then run it
-from a clone: `bun packages/mcp-mask/src/cli.ts -- <your-mcp-server-command>`.)
+The server only sees who sent something, when, and from where — never the subject or body.
+Your key stays on your device. Details: **[atn.shibubu.ai/privacy](https://atn.shibubu.ai/privacy)**.
 
-## CLI
+## About this repository
 
-| Command | What it does |
+This repo holds everything that runs on your machine. The hosted server behind `atn.shibubu.ai`
+is not open source.
+
+| Folder | What's inside |
 |---|---|
-| `openroly login [--url …]` | Connect this machine to your account and start the broker (launchd on macOS) |
-| `openroly pair <runtime>` / `openroly install <runtime>` | Attach a runtime as `@you`; `install` also registers the MCP server in the runtime's config |
-| `openroly uninstall <runtime>` | Remove the MCP registration and the local credential |
-| `openroly status` / `openroly doctor [runtime]` / `openroly runtimes` | Who's attached, what's unread (counts only), what's wrong |
-| `openroly broker install \| uninstall \| status` | Manage the background broker's launchd registration |
-| `openroly extensions` / `openroly sync [runtime]` | Extension Sync — the same skills/tools materialized in every attached runtime |
-| `openroly work <verb>` / `openroly peek` | The work ledger: what's in progress, who holds the write lease, what the model actually saw |
-| `openroly statusline` | One line for your shell / runtime status bar |
-| `openroly agent <openai\|anthropic\|gemini> --thread <id>` | Run an API-key model as a runtime for one turn and hand the draft reply to a thread |
+| [`apps/cli`](apps/cli) | The `openroly` command |
+| [`adapters`](adapters) | Plugins for Claude Code, Codex, Gemini CLI, and API-key models |
+| [`broker`](broker) | The background service that wakes your AI when something arrives |
+| [`packages`](packages) | Shared code, encryption, the MCP server, and `openroly-mask` |
+| [`specs`](specs) | How to connect a new AI, and the encrypted message format |
 
-Everything the CLI stores lives under `~/.openroly/` (credentials, the broker binary, logs;
-`OPENROLY_HOME` overrides it). `openroly uninstall <runtime>` and `openroly broker uninstall`
-remove what `pair` and `login` added.
-
-## What's in this repository
-
-```
-packages/
-  core/              pure domain: identity, handle validation, delegation, message routing,
-                      extension-sync reconciliation, work ledger, context resolver — no I/O
-  crypto-envelope/    native E2EE message envelope (HPKE + AES-GCM) — see specs/e2ee-envelope-format.md
-  adapter/            the extension side of "attach a runtime": pairing, credential store,
-                      binary fetch + checksum, instructions/MCP/skill materialization, diagnostics
-  mcp/                MCP server exposing the Account API as tools a runtime can call
-  mcp-mask/           standalone stdio masking proxy for any MCP server (no account needed)
-
-adapters/official/
-  claude/              Claude Code adapter + Claude Code plugin
-  codex/               Codex adapter + Codex plugin
-  gemini/              Gemini CLI adapter
-  api/                 generic API-key provider adapter (OpenAI / Anthropic / Gemini)
-
-apps/
-  cli/                 `openroly` command: login, pair, sync extensions, work, diagnostics
-  android-collector/   Android notification collector (Kotlin) — encrypts on the device
-
-broker/                Rust device broker: wakes the paired runtime when a message arrives,
-                        runs the dedicated session in a contained sandbox with an egress proxy
-                        (background service `openroly login` installs — see Quickstart)
-
-specs/
-  runtime-adapter-contract.md   the boundary a new runtime integration implements
-  e2ee-envelope-format.md       the wire format for encrypted messages
-
-scripts/build-binaries.sh      how the Release binaries are built (bun build --compile)
-.claude-plugin/ · .agents/     marketplace manifests for the Claude Code and Codex plugins
-.github/workflows/release.yml  tag → prebuilt `openroly`, `openroly-mcp`, and `openroly-broker`
-                                binaries + SHA256SUMS
-```
-
-## What is *not* in this repository
-
-Per the project's [Distribution / OSS strategy](#why-this-split), the Hosted Account Network
-implementation is kept private:
-
-- Global `@handle` registry and Account backend
-- Encrypted mailbox storage / store-and-forward server
-- Device/runtime coordination backend, email gateway, push infrastructure
-- Abuse/spam systems, operational/admin infrastructure
-
-Using the code in this repo (adapters, CLI, MCP server, broker) requires an OpenRoly account
-server to talk to — during Stage 1 that's the hosted instance at
-**[https://atn.shibubu.ai](https://atn.shibubu.ai)**, open to signup.
-
-## Why this split
-
-The value proposition is runtime neutrality — client/runtime code, the crypto boundary, and the
-interoperability contracts (this repo) are open so any runtime (present or future) can implement
-the adapter contract against a stable, inspectable boundary. What leaves your machine, and how it
-is sealed before it does, is all in this repo. The Hosted Account Network that provides the actual
-global identity/mailbox service is a separate operational concern (abuse prevention, availability,
-recovery) that isn't part of what makes the account runtime-neutral, so it stays private for now.
-
-## Contributing and security
-
-- New runtime adapters are the highest-leverage contribution — see
-  [CONTRIBUTING.md](./CONTRIBUTING.md) and `specs/runtime-adapter-contract.md`.
-- Vulnerabilities: use GitHub's private vulnerability reporting, not a public issue — see
-  [SECURITY.md](./SECURITY.md).
-- Development: `bun install && bun run check` (typecheck + tests). Rust for `broker/`.
-
-## License
+- Want to connect a new AI? Start with [CONTRIBUTING.md](./CONTRIBUTING.md) and
+  [`specs/runtime-adapter-contract.md`](specs/runtime-adapter-contract.md).
+- Found a security issue? Report it privately — see [SECURITY.md](./SECURITY.md).
+- Develop: `bun install && bun run check`. Rust for `broker/`.
 
 Apache License 2.0 — see [LICENSE](./LICENSE).
-
-## Status of this repository
-
-This is Stage 1 of a staged rollout: OSS code is public and under active development; the Hosted
-Account Network is open for signup while identity/recovery/device-security guarantees are
-hardened. Expect breaking changes. Issues and discussion are welcome.
-
-*OpenRoly was called "All Together Now" / ATN before 2026-09; older links and the `atn` binary
-name refer to the same project.*
+*OpenRoly was called "All Together Now" (ATN) before 2026-09.*
