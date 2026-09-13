@@ -14,6 +14,8 @@
 //! attack 1・2 は **fix 前の tree で赤く始まる**(破れの実測)。fix を外せば赤に戻る =
 //! 負の対照を兼ねる(armed-tests §2)。
 
+#[path = "../src/c1.rs"]
+mod c1;
 #[path = "../src/egress.rs"]
 mod egress;
 #[path = "../src/procgroup.rs"]

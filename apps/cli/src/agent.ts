@@ -69,7 +69,7 @@ const APPROVAL_POLL_INTERVAL_MS = 2_000;
  * 202 pending_approval を受け取り、human が承認するまで `approval_get` を polling する。
  * **key は返り値としてだけ扱い、ファイルにも log にも書かない**(要件 §40.3)。
  */
-async function resolveApiKey(
+export async function resolveApiKey(
   baseUrl: string,
   token: string,
   provider: AgentProvider,

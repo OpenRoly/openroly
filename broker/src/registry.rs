@@ -85,6 +85,17 @@ pub struct Detector {
     /// generic 経路に入らない(`not_verified` = fail-closed。起こさない)。
     #[serde(default)]
     pub sandbox_verified: Option<String>,
+    /// runtime profile の class(PBI-0211)。`adapter: "variant"` の entry だけが持つ —— 同じ binary
+    /// (`of`)を provider 違いの env で起こす。単独では見つからない(`detect` は空)。端末の
+    /// `profiles.json` に在り親が Found の時だけ hello に載る(profiles.rs)。
+    #[serde(default)]
+    pub variant: Option<VariantSpec>,
+}
+
+/// `variant`(PBI-0211)。broker が読むのは親だけ(`match` / `provider` は CLI の import と run が読む)。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct VariantSpec {
+    pub of: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
@@ -253,6 +264,12 @@ fn validate(d: &Detector) -> Result<(), String> {
     {
         if a == "-c" || a == "-e" || a == "--eval" || a.starts_with("--eval=") {
             return Err(format!("registry: forbidden launch arg {a:?} (id {})", d.id));
+        }
+    }
+    // variant の親は id と同じ門(PBI-0211。親は resolve_program の bare name になる)
+    if let Some(v) = &d.variant {
+        if !is_safe_id(&v.of) || is_forbidden_program(&v.of) || v.of == d.id {
+            return Err(format!("registry: bad variant.of {:?} (id {})", v.of, d.id));
         }
     }
     // egress.hosts の形式(PBI-0240)。catalog-build と同じ規則で、署名済みでも壊れた形は弾く

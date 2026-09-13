@@ -427,6 +427,78 @@ describe("PBI-0334 --json: runtimes / doctor", () => {
     await rm(home, { recursive: true, force: true });
   }, 60_000);
 
+  // PBI-0441 AC-1 / AC-X2: broker が status file に書いた egress_enforcement を名乗る。
+  // 名乗らない旧 broker は unknown(NG)—— host-scoped と推測して出さない
+  test("PBI-0441 AC-1/AC-X2: egress scope は broker の値を名乗り、欠落は unknown", async () => {
+    const home = await isolatedHome();
+    await seedCredential(home);
+    const brokerHome = join(home, "broker");
+    await mkdir(brokerHome, { recursive: true });
+    const writeStatus = (status: Record<string, unknown>) =>
+      writeFile(join(brokerHome, "sandbox-status.json"), JSON.stringify(status));
+    const scopeOf = async () => {
+      const res = await openroly(["doctor", "claude", "--json"], home, { OPENROLY_BROKER_HOME: brokerHome });
+      const broker = parseDoc(res.stdout).data.targets.find((t: any) => t.runtime === "broker");
+      return broker.findings.find((f: any) => f.label === "egress scope");
+    };
+    await writeStatus({ sandbox: "seatbelt ok", egress: "ok", egress_enforcement: "port_scoped" });
+    const port = await scopeOf();
+    expect(port).toMatchObject({ ok: true, detail: "port-scoped (a process inside can reach any host on the proxy's port)" });
+    // 人間向けの 1 行も同じ語
+    const human = await openroly(["doctor", "claude"], home, { OPENROLY_BROKER_HOME: brokerHome });
+    expect(human.stdout).toContain("egress scope: port-scoped (a process inside can reach any host on the proxy's port)");
+    // AC-X2: 旧 broker(key 無し)
+    await writeStatus({ sandbox: "seatbelt ok", egress: "ok" });
+    const old = await scopeOf();
+    expect(old.ok).toBe(false);
+    expect(old.detail).toMatch(/^unknown/);
+    // PBI-0441 ③: C1 で claude だけ閉じた端末は、**床の文に claude を名指しで添える** ——
+    // 床だけ言うと閉じている事を黙り、床を上げて言うと codex について嘘になる
+    await writeStatus({
+      sandbox: "seatbelt ok",
+      egress: "ok",
+      egress_enforcement: "port_scoped",
+      egress_enforcement_by_runtime: { claude: "host_scoped" },
+    });
+    const c1 = await scopeOf();
+    expect(c1.detail).toBe(
+      "port-scoped (a process inside can reach any host on the proxy's port) — host-scoped for: claude",
+    );
+    // OK/NG は **床**で決める(claude だけ閉じても「閉じた」とは言わせない)
+    expect(c1.ok).toBe(true);
+    await rm(home, { recursive: true, force: true });
+  }, 90_000);
+
+  // PBI-0331 AC-X3: 同じ「landlock ok」でも kernel ごとに掛かる壁が違うので、broker が名乗った強さを出す。
+  // 名乗らない broker(seatbelt = 機械ごとの差が無い)には行ごと出さない(macOS の doctor は変わらない)
+  test("PBI-0331 AC-X3: sandbox strength は broker の 1 行を名乗り、名乗らなければ出さない", async () => {
+    const home = await isolatedHome();
+    await seedCredential(home);
+    const brokerHome = join(home, "broker");
+    await mkdir(brokerHome, { recursive: true });
+    const writeStatus = (status: Record<string, unknown>) =>
+      writeFile(join(brokerHome, "sandbox-status.json"), JSON.stringify(status));
+    const labelsAndStrength = async () => {
+      const res = await openroly(["doctor", "claude", "--json"], home, { OPENROLY_BROKER_HOME: brokerHome });
+      const broker = parseDoc(res.stdout).data.targets.find((t: any) => t.runtime === "broker");
+      return {
+        labels: broker.findings.map((f: any) => f.label),
+        strength: broker.findings.find((f: any) => f.label === "sandbox strength"),
+      };
+    };
+    const strength =
+      "landlock ABI 4 + seccomp: files, TCP connect by port, TCP sockets only; not confined: device ioctl (needs ABI 5 = Linux 6.10), signals to your other processes (needs ABI 6 = Linux 6.12)";
+    await writeStatus({ sandbox: "landlock ok", egress: "ok", egress_enforcement: "port_scoped", sandbox_strength: strength });
+    const linux = await labelsAndStrength();
+    expect(linux.strength).toMatchObject({ ok: true, detail: strength });
+    const human = await openroly(["doctor", "claude"], home, { OPENROLY_BROKER_HOME: brokerHome });
+    expect(human.stdout).toContain(`sandbox strength: ${strength}`);
+    // seatbelt の broker は名乗らない = 行が無い(推測で埋めない)
+    await writeStatus({ sandbox: "seatbelt ok", egress: "ok", egress_enforcement: "port_scoped" });
+    expect((await labelsAndStrength()).labels).toEqual(["sandbox", "egress", "egress scope"]);
+    await rm(home, { recursive: true, force: true });
+  }, 90_000);
+
   test("AC-2: doctor の人間向け出力は変わらない(Broker 節・sandbox 行)", async () => {
     const home = await isolatedHome();
     await seedCredential(home);

@@ -49,6 +49,12 @@ pub trait SandboxBackend: Send + Sync {
     /// `port_scoped` = proxy の port 番号でしか絞れず、同じ番号で listen する外部 host へは直接届く /
     /// `host_scoped` = loopback の proxy 以外へ出られない / `none` = 閉じ込め無し(dedicated は起こさない)
     fn egress_enforcement(&self) -> &'static str;
+    /// 閉じ込めの強さの 1 行(PBI-0331 AC-X3)。**同じ backend 名でも機械ごとに掛かる壁が違う物だけ**が名乗り、
+    /// status file の `sandbox_strength` → doctor の `sandbox strength` 行になる。
+    /// `None` = 機械ごとの差が無い(seatbelt)/ 閉じ込め無し
+    fn strength(&self) -> Option<String> {
+        None
+    }
 }
 
 /// macOS seatbelt。profile は session_dir に書き、`sandbox-exec -f` で読ませる。
@@ -190,11 +196,16 @@ pub const STATUS_FILE: &str = "sandbox-status.json";
 
 /// 起動時の判定を doctor 用に書く。`sandbox` = self_test の結果(Ok は backend 名)。
 /// `egress_enforcement` = 実際に使う backend(self_test 落ちなら NoSandbox)が名乗る値(PBI-0441)。
+/// `egress_by_runtime` = 床より上げた runtime だけの表(C1。PBI-0441 ③)。空なら key ごと出さない ——
+/// doctor は「表に在ればそれ・無ければ床」で読む。
 pub fn write_status(
     dir: &Path,
     sandbox: &Result<&str, String>,
     egress: &Result<(), String>,
     egress_enforcement: &str,
+    egress_by_runtime: &[(&str, &str)],
+    // `SandboxBackend::strength`。None なら key ごと出さない(doctor は行ごと出さない)
+    strength: Option<&str>,
 ) {
     let sandbox_line = match sandbox {
         Ok(name) => format!("{name} ok"),
@@ -204,7 +215,7 @@ pub fn write_status(
         Ok(()) => "ok".to_string(),
         Err(reason) => format!("unavailable({reason})"),
     };
-    let status = serde_json::json!({
+    let mut status = serde_json::json!({
         "sandbox": sandbox_line,
         "egress": egress_line,
         "egress_enforcement": egress_enforcement,
@@ -213,9 +224,40 @@ pub fn write_status(
             .map(|d| d.as_secs())
             .unwrap_or(0),
     });
+    if !egress_by_runtime.is_empty() {
+        status["egress_enforcement_by_runtime"] = serde_json::Value::Object(
+            egress_by_runtime
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), serde_json::Value::String((*v).to_string())))
+                .collect(),
+        );
+    }
+    if let Some(s) = strength {
+        status["sandbox_strength"] = serde_json::Value::String(s.to_string());
+    }
     let _ = fs::create_dir_all(dir);
     if let Err(e) = fs::write(dir.join(STATUS_FILE), status.to_string()) {
         eprintln!("broker: could not write {STATUS_FILE}: {e}");
+    }
+}
+
+/// Landlock の ABI ごとの強さの 1 行(PBI-0331 AC-X3)。**掛からない壁を名指しする** —— 「landlock ok」だけだと、
+/// 6.7 の kernel(他の process へ signal を送れる)と 6.12 の kernel の違いに誰も気づけない。
+/// ABI 4 未満は `Prepared::build` が断る(NoSandbox)ので、ここには来ない。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn landlock_strength(abi: i64) -> String {
+    let mut missing = Vec::new();
+    if abi < 5 {
+        missing.push("device ioctl (needs ABI 5 = Linux 6.10)");
+    }
+    if abi < 6 {
+        missing.push("signals to your other processes (needs ABI 6 = Linux 6.12)");
+    }
+    let base = format!("landlock ABI {abi} + seccomp: files, TCP connect by port, TCP sockets only");
+    if missing.is_empty() {
+        base
+    } else {
+        format!("{base}; not confined: {}", missing.join(", "))
     }
 }
 
@@ -677,6 +719,11 @@ mod linux {
         fn egress_enforcement(&self) -> &'static str {
             "port_scoped"
         }
+
+        /// 掛かる壁が kernel の ABI で変わる(PBI-0331 AC-X3)。ABI が読めない機は self_test が既に落ちている
+        fn strength(&self) -> Option<String> {
+            abi().ok().map(super::landlock_strength)
+        }
     }
 
     impl Landlock {
@@ -835,12 +882,47 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("openroly-sb-status-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let backend = NoSandbox { reason: "test".into() };
-        write_status(&dir, &Err("test".into()), &Ok(()), backend.egress_enforcement());
+        write_status(&dir, &Err("test".into()), &Ok(()), backend.egress_enforcement(), &[], backend.strength().as_deref());
         let status: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(dir.join(STATUS_FILE)).unwrap()).unwrap();
         assert_eq!(status["egress_enforcement"], "none");
         assert_eq!(status["sandbox"], "unavailable(test)");
+        // 閉じ込めの無い backend は強さを名乗らない(doctor に行が出ない)
+        assert!(status.get("sandbox_strength").is_none(), "{status}");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    // PBI-0331 AC-X3: doctor の `sandbox strength` 行の正本。**掛からない壁を ABI ごとに名指しし**、status file に載る
+    #[test]
+    fn landlock_strength_names_the_walls_this_kernel_cannot_raise() {
+        let abi4 = landlock_strength(4);
+        assert!(abi4.starts_with("landlock ABI 4 + seccomp:"), "{abi4}");
+        assert!(abi4.contains("device ioctl") && abi4.contains("signals to your other processes"), "{abi4}");
+        let abi5 = landlock_strength(5);
+        assert!(!abi5.contains("device ioctl") && abi5.contains("signals to your other processes"), "{abi5}");
+        let abi6 = landlock_strength(6);
+        assert!(!abi6.contains("not confined"), "ABI 6 は名指しする穴が無い: {abi6}");
+        // CLI の detail は 200 文字で切る(apps/cli の brokerSandboxFindings)ので、一番長い文がそこに収まる
+        assert!(abi4.chars().count() <= 200, "{}", abi4.chars().count());
+
+        let dir = std::env::temp_dir().join(format!("openroly-sb-strength-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        write_status(&dir, &Ok("landlock"), &Ok(()), "port_scoped", &[], Some(&abi4));
+        let status: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.join(STATUS_FILE)).unwrap()).unwrap();
+        assert_eq!(status["sandbox"], "landlock ok");
+        assert_eq!(status["sandbox_strength"], abi4.as_str());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // PBI-0331 AC-X2 / AC-X3: Linux の backend は Landlock で、kernel の ABI を名乗る(CI の ubuntu が正本)
+    #[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+    #[test]
+    fn linux_backend_is_landlock_and_names_its_strength() {
+        let b = backend();
+        assert_eq!(b.name(), "landlock");
+        let strength = b.strength();
+        assert!(strength.as_deref().is_some_and(|s| s.starts_with("landlock ABI ")), "{strength:?}");
     }
 
     #[test]
@@ -900,5 +982,43 @@ mod tests {
     #[test]
     fn seatbelt_self_test_passes_on_this_mac() {
         assert_eq!(Seatbelt.self_test(), Ok(()));
+    }
+
+    // PBI-0440 AC-4: reviewer の枝の session(folder = fork folder)から fork 元 A の tree へは書けない
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_denies_writing_the_source_tree_from_a_fork_folder() {
+        // temp_dir(/private/var/folders)は profile が全 session に write を許す場所なので、そこに A を置くと
+        // 門を測れない(実測: a=ok になった)。A は profile が開けていない /private/tmp の下に置く
+        let dir = PathBuf::from("/private/tmp").join(format!("openroly-sb-fork-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let a = dir.join("A");
+        let fork = dir.join("openroly").join("worktrees").join("f1");
+        let session = dir.join("session");
+        for d in [&a, &fork, &session] {
+            fs::create_dir_all(d).unwrap();
+        }
+        fs::write(a.join("a.txt"), "base\n").unwrap();
+        let spec = SandboxSpec {
+            folder: fork.clone(),
+            session_dir: session.clone(),
+            writable_extra: vec![],
+            deny_read: vec![],
+            proxy_port: 1,
+        };
+        let script = format!(
+            "echo x > \"{f}/b.txt\" 2>/dev/null && echo fork=ok || echo fork=deny\n\
+             echo tampered > \"{a}/a.txt\" 2>/dev/null && echo a=ok || echo a=deny\n",
+            f = fork.display(),
+            a = a.display(),
+        );
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c").arg(&script);
+        let out = Seatbelt.wrap(cmd, &spec).unwrap().into_std().output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.lines().any(|l| l == "fork=ok"), "{stdout}");
+        assert!(stdout.lines().any(|l| l == "a=deny"), "{stdout}");
+        assert_eq!(fs::read_to_string(a.join("a.txt")).unwrap(), "base\n");
+        let _ = fs::remove_dir_all(&dir);
     }
 }

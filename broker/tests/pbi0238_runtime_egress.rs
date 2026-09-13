@@ -22,6 +22,11 @@ mod discovery;
 mod openroly_cli;
 #[path = "../src/launch.rs"]
 mod launch;
+#[path = "../src/c1.rs"]
+mod c1;
+
+/// PBI-0441 ③: test では C1 を掛けない(pane / CI は root op を打てない)。C1 の形は c1.rs の test が fake で武装する
+static C1_OFF: c1::C1Status = c1::C1Status { available: false, reason: String::new() };
 #[path = "../src/egress.rs"]
 mod egress;
 #[path = "../src/sandbox.rs"]
@@ -52,15 +57,22 @@ async fn every_named_runtime_reaches_its_model_host_through_the_proxy() {
     let reg = registry::builtin();
     let env = launch::containment_env();
     let user_home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".to_string()));
+    // PBI-0331 AC-1: 製品と同じ backend(macOS = seatbelt / Linux = Landlock + seccomp)を main.rs と同じ順で
+    // 決める。self_test に落ちた機で「起きなかった」を runtime の所為にしない —— 最初に赤くする
+    // (Linux の backend 選択から Landlock を外すとここで赤 = AC-X2 の振る舞い側)
+    let backend = sandbox::backend();
+    assert_eq!(backend.self_test(), Ok(()), "{} の self_test が落ちた", backend.name());
 
     for runtime in wanted {
         let (tx, mut rx) = unbounded_channel();
         let iso = launch::Isolation {
-            sandbox: &sandbox::Seatbelt,
+            sandbox: backend.as_ref(),
             // allowlist 空 = 全部 403。token 消費 0 で「どこへ出ようとしたか」だけを見る
             egress: egress::EgressConfig { allow: vec![], events: Some(tx), upstream_override: None, observe: None },
             folder: None,
+            lane: "manual",
             user_home: user_home.clone(),
+            c1: &C1_OFF,
         };
         let request_id = format!("req-0238-{runtime}");
         let result = launch::launch_session_scoped_in(
@@ -74,19 +86,24 @@ async fn every_named_runtime_reaches_its_model_host_through_the_proxy() {
             &env,
             &iso,
         );
-        let (mut child, egress) = match result {
-            Ok(v) => v,
-            Err(reason) => {
-                println!("· {runtime}: 起こさなかった({reason})");
-                continue;
-            }
-        };
-        // model に届かない runtime は自分で諦めるまで待つ。上限を置く(retry し続ける client も在る)
+        // 名指しした runtime が起きないのは失敗(PBI-0331 AC-1)。`continue` で飛ばすと、Linux で
+        // `sandbox_unavailable` / `containment_unavailable` になっても 1 本も assert せず緑になる
+        let (mut child, egress) = result.unwrap_or_else(|reason| panic!("{runtime}: 起こせなかった({reason})"));
+        // model に届かない runtime は自分で諦めるまで待つ。上限を置く(retry を続ける client が在る)
         let status = tokio::time::timeout(Duration::from_secs(180), child.wait()).await;
         if status.is_err() {
             let _ = child.kill().await;
         }
         drop(egress);
+        let session_dir = home.join("sessions").join(&request_id);
+        let stderr = fs::read_to_string(session_dir.join("stderr.log")).unwrap_or_default();
+        let tail: Vec<&str> = stderr.lines().rev().take(15).collect();
+        println!("· {runtime}: exit = {status:?} / stderr の末尾(新しい順) = {tail:?}");
+        // seccomp の filter に殺された(SIGSYS)なら、CONNECT が届いていても「起きた」とは言わない
+        if let Ok(Ok(st)) = &status {
+            use std::os::unix::process::ExitStatusExt;
+            assert_ne!(st.signal(), Some(libc::SIGSYS), "{runtime}: sandbox の seccomp に殺された");
+        }
         let mut hosts = BTreeSet::new();
         while let Ok(ev) = rx.try_recv() {
             if let Some(h) = ev["host"].as_str() {

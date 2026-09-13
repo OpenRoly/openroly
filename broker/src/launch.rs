@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use tokio::process::{Child, Command};
 
+use crate::c1;
 use crate::discovery::Found;
 use crate::egress::{self, Egress, EgressConfig};
 use crate::openroly_cli::cli_argv;
@@ -494,6 +495,30 @@ pub fn resolve_program(found: &[Found], runtime: &str) -> String {
         .unwrap_or_else(|| runtime.to_string())
 }
 
+/// runtime profile の class(PBI-0211)なら親 runtime。registry の `adapter: "variant"` と `variant.of` の両方が要る
+pub fn variant_of<'a>(registry: &'a Registry, runtime: &str) -> Option<&'a str> {
+    let d = registry.detector(runtime)?;
+    (d.adapter.as_deref() == Some("variant")).then_some(d.variant.as_ref()?.of.as_str())
+}
+
+/// variant の wake を `openroly run <class> --bin <親 path> -- <親の argv>` に包む(PBI-0211)。親の argv は
+/// 呼び出し側が親 runtime として組んだ物を **そのまま** 渡す(hardening flag を 1 つも変えない)。
+pub fn variant_argv(
+    found: &[Found],
+    class: &str,
+    parent: &str,
+    cli: &[String],
+    parent_args: Vec<String>,
+) -> Result<(String, Vec<String>), String> {
+    let Some((program, leading)) = cli.split_first() else {
+        return Err("openroly_cli_not_found".to_string());
+    };
+    let mut args = leading.to_vec();
+    args.extend(["run".to_string(), class.to_string(), "--bin".to_string(), resolve_program(found, parent), "--".to_string()]);
+    args.extend(parent_args);
+    Ok((program.clone(), args))
+}
+
 /// registry に照らした起動可否。判定順序(図18): registry に無い → `unknown_runtime`、
 /// 有るが `adapter: null`(Ollama 等 — 検出・表示のみ)→ `not_launchable`。
 fn check_launchable(registry: &Registry, runtime: &str) -> Result<(), String> {
@@ -564,7 +589,7 @@ pub fn launch_with_scope(
     session_id: Option<&str>,
 ) -> Result<Child, String> {
     check_program(program)?;
-    launch_in(runtime, program, args, allowlist, session_dir, scope, session_id, None)
+    launch_in(runtime, program, args, allowlist, session_dir, scope, session_id, None, None)
 }
 
 /// PBI-0244 の二重の 2 本目。**registry 由来の program**(id の bare name / scan で見つけた path)は
@@ -596,6 +621,8 @@ fn launch_in(
     // dedicated session の request_id(PBI-0224 peek)。`Some` の時だけ子 env に載る
     session_id: Option<&str>,
     contained: Option<(&dyn SandboxBackend, &SandboxSpec)>,
+    // C1(PBI-0441 ③)の専用 uid。`Some` の時だけ `sudo -n -u <uid>` で包む(sandbox の **外側**)
+    as_user: Option<&str>,
 ) -> Result<Child, String> {
     if !allowlist.contains(&runtime.to_string()) {
         return Err("unknown_runtime".to_string());
@@ -628,6 +655,13 @@ fn launch_in(
     } else if let Some(dir) = session_dir {
         // 閉じ込め無しで session_dir を渡す経路(test の cwd / env probe)。cwd は session_dir。
         cmd.current_dir(dir);
+    }
+    // C1(PBI-0441 ③): 専用 uid で起こす。**`sandbox.wrap` の後 = sudo が一番外側** ——
+    // 逆にすると sandbox の中から setuid を叩く形になり、profile が deny して session が起きない。
+    // stdio / process_group はこの後に付ける(wrap と同じ理由 —— 包み直しは program / args / env / cwd
+    // しか写せないので、先に付けると sudo 経路でだけ消える)。
+    if let Some(user) = as_user {
+        cmd = c1::wrap_as_user(cmd, user);
     }
     // **止める単位を process group にする**(PBI-0403)。起こす子は `claude` / `codex` の CLI で、
     // その下に tool 実行 / MCP server / node が付く —— 直の子だけに signal を送ると孫が孤児で
@@ -675,6 +709,13 @@ pub fn launch(
     session_mode: &str,
 ) -> Result<Child, String> {
     check_launchable(registry, runtime)?;
+    // variant(PBI-0211): 親の起動引数を `openroly run <class>` に包む。deny は親 program に掛ける
+    if let Some(parent) = variant_of(registry, runtime) {
+        check_program(&resolve_program(found, parent))?;
+        let (program, args) =
+            variant_argv(found, runtime, parent, &cli_argv(), registry.session_args(parent, session_mode))?;
+        return launch_in(runtime, &program, &args, &registry.allowlist(), None, None, None, None, None);
+    }
     let args = registry.session_args(runtime, session_mode);
     let program = resolve_program(found, runtime);
     launch_with_allowlist(runtime, &program, &args, &registry.allowlist(), None)
@@ -723,7 +764,7 @@ pub fn launch_api(
         registry.allowlist()
     };
     // `check_program` を通す `launch_with_allowlist` ではなく launch_in を直に呼ぶ(理由は check_program の doc)。
-    launch_in(runtime, program, &args, &allowlist, None, None, None, None)
+    launch_in(runtime, program, &args, &allowlist, None, None, None, None, None)
 }
 
 /// 持ち込みの endpoint(PBI-0276)の runtime か。名前は account ごとに決まるので**署名済み
@@ -793,18 +834,27 @@ pub struct Isolation<'a> {
     /// wake payload の `folder`(owner / work lane。server が rule から解決する = PBI-0239)。
     /// None = `session_dir/scratch`(triage / AUTO / draft)。
     pub folder: Option<&'a str>,
+    /// wake payload の `lane`(PBI-0229)。scope token 付きの session に folder を渡してよいかを lane で決める
+    /// (work lane の reviewer の枝だけ = PBI-0440)。
+    pub lane: &'a str,
     /// user の HOME。`deny_read` / `writable_extra` の既定を組む(env は呼び出し口で 1 回だけ読む)。
     pub user_home: PathBuf,
+    /// C1(PBI-0441 ③)の在り無し。`available` かつ `C1_RUNTIMES` の runtime なら、この session を
+    /// 専用 uid + pf anchor で loopback egress だけに閉じる(= `host_scoped`)。
+    /// setup していない機(既定の全端末・この pane)では常に `available: false` = 床のまま。
+    pub c1: &'a c1::C1Status,
 }
 
 /// lane の作業 folder を決める(AC-4)。`folder` 無し = `session_dir/scratch`(空で作る)。
 /// 有りは **rule に照らす前の最低限の門**(PBI-0239 が server 側の rule を持ち込むまでの土台):
 /// 絶対 path・実在する dir・`/` や HOME そのものでない・`deny_read` / `~/Library` / `~/.openroly` /
-/// broker home の下でない。triage(scope 有り)は folder を持たない —— 通知本文を読む lane に
-/// owner の folder を渡す理由が無いので、来たら `folder_not_allowed`。
+/// broker home の下でない(**`~/.openroly/worktrees` の 1 段下 = fork の枝の folder だけは通す**・PBI-0440)。
+/// scope token 付きの session が folder を持てるのは lane work だけ(reviewer の枝)—— triage は持たない
+/// (通知本文を読む lane に owner の folder を渡す理由が無い)。どれかに当たれば `folder_not_allowed`。
 fn resolve_folder(
     folder: Option<&str>,
     scope: Option<&str>,
+    lane: &str,
     session_dir: &Path,
     broker_home: &Path,
     user_home: &Path,
@@ -821,8 +871,8 @@ fn resolve_folder(
         eprintln!("broker: folder {folder:?} is not allowed for a dedicated session: {why}");
         "folder_not_allowed".to_string()
     };
-    if scope.is_some() {
-        return Err(refuse("triage sessions never get a folder"));
+    if scope.is_some() && lane != "work" {
+        return Err(refuse("a scoped session gets a folder only in the work lane"));
     }
     if !folder.starts_with('/') {
         return Err(refuse("not an absolute path"));
@@ -841,7 +891,13 @@ fn resolve_folder(
     // 旧 state dir も丸ごと読ませない(PBI-0344 AC-3。改名後も secrets はこちらに在る)
     fenced.push(home.join(".atn"));
     fenced.push(fs::canonicalize(broker_home).unwrap_or_else(|_| broker_home.to_path_buf()));
-    if fenced.iter().any(|f| real.starts_with(f)) {
+    // fork の枝(PBI-0440)は `<state dir>/worktrees/<id>` に作られる。**その 1 段下の dir そのものだけ**を通す ——
+    // worktrees 自身も、その奥も通さない(sandbox の write は folder の subpath なので兄弟の枝にも書けない)。
+    // state dir は MCP の openrolyHome と同じ 2 つ: `~/.atn` だけが在る端末では枝も `~/.atn/worktrees` に立つ(PBI-0344)
+    let is_fork_folder = [".openroly", ".atn"]
+        .iter()
+        .any(|state| real.parent() == Some(home.join(state).join("worktrees").as_path()));
+    if !is_fork_folder && fenced.iter().any(|f| real.starts_with(f)) {
         return Err(refuse("inside a protected directory"));
     }
     Ok(real)
@@ -883,15 +939,23 @@ pub fn launch_session_scoped_in(
         "session_dir_failed".to_string()
     })?;
     check_launchable(registry, runtime)?;
+    // variant(PBI-0211)は親として argv と閉じ込め file を組み、最後に `openroly run <class>` で包む
+    let parent = variant_of(registry, runtime);
+    let base = parent.unwrap_or(runtime);
     // PBI-0244: dedicated 経路は launch_in を直に呼ぶので、ここで deny を見る(spawn 直前の 2 本目)
-    let program = resolve_program(found, runtime);
+    let program = resolve_program(found, base);
     check_program(&program).inspect_err(|_| discard_session_dir(&session_dir))?;
     // lane の folder(AC-4)。rule に無い path は起こさない(半端な session_dir も残さない)。
-    let folder = resolve_folder(isolation.folder, scope, &session_dir, home, &isolation.user_home)
+    let folder = resolve_folder(isolation.folder, scope, isolation.lane, &session_dir, home, &isolation.user_home)
         .inspect_err(|_| discard_session_dir(&session_dir))?;
     let folder_str = folder.to_string_lossy().to_string();
-    let (args, files) = dedicated_launch(registry, runtime, instruction, &dir_str, &folder_str, env)
+    let (args, files) = dedicated_launch(registry, base, instruction, &dir_str, &folder_str, env)
         .inspect_err(|_| discard_session_dir(&session_dir))?;
+    let (program, args) = match parent {
+        Some(p) => variant_argv(found, runtime, p, &cli_argv(), args)
+            .inspect_err(|_| discard_session_dir(&session_dir))?,
+        None => (program, args),
+    };
     // 閉じ込め用の file(claude の `--mcp-config` / gemini の admin policy)を session_dir に置く。
     // spawn より **前** に全部書く —— 置けなかった runtime を「flag だけ付いた丸腰」で起こさない。
     for (rel, content) in &files {
@@ -910,7 +974,7 @@ pub fn launch_session_scoped_in(
     // 閉じ込めの土台(PBI-0238 / 図72): session の egress proxy を先に立て(port が profile に要る)、
     // その port だけを許す sandbox で包んでから spawn する。proxy が立たない / 包めない(Windows・
     // Landlock ABI 4 未満の Linux・seatbelt が壊れた機)は **何も spawn せず** `sandbox_unavailable`(AC-X2)。
-    let egress = egress::start(isolation.egress.clone(), request_id)
+    let mut egress = egress::start(isolation.egress.clone(), request_id)
         .inspect_err(|_| discard_session_dir(&session_dir))?;
     let spec = SandboxSpec {
         folder,
@@ -919,6 +983,25 @@ pub fn launch_session_scoped_in(
         deny_read: default_deny_read(&isolation.user_home),
         proxy_port: egress.port,
     };
+    // C1(PBI-0441 ③): claude なら専用 uid + pf anchor + 資格情報の file-drop + folder の ACL。
+    // **掛ける条件を満たしたのに失敗したら起こさない**(fail-closed)—— hello は既に
+    // `host_scoped` と名乗っているので、床のまま起こすと表示と実物が食い違う(AC-3 が殺す嘘)。
+    // 掛からない runtime / C1 の無い機は `Ok(None)` = 今までどおり床で起こす。
+    let c1_session = c1::setup_session(
+        runtime,
+        isolation.sandbox.egress_enforcement(),
+        isolation.c1,
+        &session_dir,
+        &spec.folder,
+    )
+    .map_err(|e| {
+        eprintln!("broker: c1 setup failed ({e}); refusing the session instead of running it unconfined");
+        discard_session_dir(&session_dir);
+        "sandbox_unavailable".to_string()
+    })?;
+    let as_user = c1_session.as_ref().map(|s| s.user.clone());
+    // 専用 uid と pf 規則は proxy と同じ寿命で持つ(reaper が drop = 後始末)
+    egress.c1 = c1_session;
     let child = launch_in(
         runtime,
         &program,
@@ -928,6 +1011,7 @@ pub fn launch_session_scoped_in(
         scope,
         Some(request_id),
         Some((isolation.sandbox, &spec)),
+        as_user.as_deref(),
     )
     .inspect_err(|e| {
         if e == "sandbox_unavailable" {
@@ -1721,13 +1805,18 @@ mod tests {
     // ---- PBI-0238: 閉じ込めの土台(図72)—— lane の folder / sandbox_unavailable / proxy env ----
 
     static NO_SANDBOX: crate::sandbox::NoSandbox = crate::sandbox::NoSandbox { reason: String::new() };
+    /// test では C1 を掛けない(root op を打てない)。**掛かっていない事が既定**なので、
+    /// 既存の spawn 検査は 1 本も形が変わらない —— C1 の形は `c1.rs` の test が fake で武装する。
+    static C1_OFF: c1::C1Status = c1::C1Status { available: false, reason: String::new() };
 
     fn test_isolation() -> Isolation<'static> {
         Isolation {
             sandbox: &NO_SANDBOX,
             egress: EgressConfig { allow: vec![], events: None, upstream_override: None, observe: None },
             folder: None,
+            lane: "manual",
             user_home: std::env::temp_dir(),
+            c1: &C1_OFF,
         }
     }
 
@@ -1924,6 +2013,69 @@ mod tests {
             assert!(!dir.join("home").join("sessions").join(&rid).exists(), "case {i}: 半端な session_dir が残った");
         }
         assert!(!marker.exists(), "folder_not_allowed で何かが spawn された");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // PBI-0440: ~/.openroly の下で通るのは fork の枝の folder(worktrees の 1 段下)だけ。scope token 付きで
+    // folder を持てるのは lane work だけ(triage は今まで通り拒む)
+    #[test]
+    fn resolve_folder_passes_only_a_fork_folder_under_openroly_and_scoped_folders_only_in_the_work_lane() {
+        let dir = tmp("fork-folder");
+        let user_home = dir.join("userhome");
+        let worktrees = user_home.join(".openroly").join("worktrees");
+        let fork = worktrees.join("f1");
+        let deeper = fork.join("sub");
+        let checkpoints = user_home.join(".openroly").join("checkpoints");
+        fs::create_dir_all(&deeper).unwrap();
+        fs::create_dir_all(&checkpoints).unwrap();
+        let session = dir.join("session");
+        let home = dir.join("home");
+        let refused = Err("folder_not_allowed".to_string());
+        let resolve = |folder: &Path, scope: Option<&str>, lane: &str| {
+            resolve_folder(Some(&folder.to_string_lossy()), scope, lane, &session, &home, &user_home)
+        };
+        assert_eq!(resolve(&fork, None, "work"), Ok(fs::canonicalize(&fork).unwrap()));
+        assert_eq!(resolve(&fork, Some("pst_review"), "work"), Ok(fs::canonicalize(&fork).unwrap()));
+        assert_eq!(resolve(&fork, Some("pst_triage"), "triage"), refused);
+        assert_eq!(resolve(&fork, Some("pst_x"), "manual"), refused);
+        assert_eq!(resolve(&worktrees, None, "work"), refused);
+        assert_eq!(resolve(&deeper, None, "work"), refused);
+        assert_eq!(resolve(&checkpoints, None, "work"), refused);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // runtime-transfer module review: 柵の例外(worktrees の 1 段下)を symlink で柵の中へ向けても通らない・
+    // `~/.atn` だけの端末(MCP の openrolyHome が旧 state dir を返す)でも枝の folder が通る
+    #[test]
+    fn resolve_folder_fork_exception_does_not_follow_symlinks_into_the_fence_and_covers_the_legacy_state_dir() {
+        use std::os::unix::fs::symlink;
+        let dir = tmp("fork-folder-attack");
+        let user_home = dir.join("userhome");
+        let ssh_keys = user_home.join(".ssh").join("keys");
+        let worktrees = user_home.join(".openroly").join("worktrees");
+        let legacy_worktrees = user_home.join(".atn").join("worktrees");
+        let legacy_fork = legacy_worktrees.join("f2");
+        for d in [&ssh_keys, &worktrees, &legacy_fork, &user_home.join(".atn").join("other")] {
+            fs::create_dir_all(d).unwrap();
+        }
+        // 枝の名を名乗る symlink が柵の中(~/.ssh)を指す
+        symlink(user_home.join(".ssh"), worktrees.join("evil")).unwrap();
+        // worktrees 自身が柵の中を指す別の home
+        let home2 = dir.join("userhome2");
+        fs::create_dir_all(home2.join(".ssh").join("keys")).unwrap();
+        fs::create_dir_all(home2.join(".openroly")).unwrap();
+        symlink(home2.join(".ssh"), home2.join(".openroly").join("worktrees")).unwrap();
+        let session = dir.join("session");
+        let home = dir.join("home");
+        let refused = Err("folder_not_allowed".to_string());
+        let resolve = |folder: &Path, user_home: &Path| {
+            resolve_folder(Some(&folder.to_string_lossy()), None, "work", &session, &home, user_home)
+        };
+        assert_eq!(resolve(&worktrees.join("evil"), &user_home), refused);
+        assert_eq!(resolve(&home2.join(".openroly").join("worktrees").join("keys"), &home2), refused);
+        assert_eq!(resolve(&legacy_fork, &user_home), Ok(fs::canonicalize(&legacy_fork).unwrap()));
+        assert_eq!(resolve(&legacy_worktrees, &user_home), refused);
+        assert_eq!(resolve(&user_home.join(".atn").join("other"), &user_home), refused);
         let _ = fs::remove_dir_all(&dir);
     }
 

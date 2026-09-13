@@ -13,3 +13,5 @@ export * from "./work-context.ts";
 export * from "./context.ts";
 export * from "./native.ts";
 export * from "./env.ts";
+export * from "./egress.ts";
+export * from "./interposition.ts";

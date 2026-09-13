@@ -131,6 +131,14 @@ export const workContextPutInputShape = {
   expected_versions: expectedVersionsShape,
 };
 
+// PBI-0443: task → Work Project の公開。project に出す口はこれだけ
+export const workContextPublishInputShape = {
+  work_id: z.string().describe("your task's work id (wrk_...) — its rows are copied to the task's Work Project"),
+  keys: z.array(z.string()).min(1).describe("keys already written on the task to publish (e.g. [\"decisions\"])"),
+  run_id: z.string().optional().describe("your own run id, recorded as the writer"),
+  expected_versions: expectedVersionsShape,
+};
+
 export const workContextSearchInputShape = {
   work_id: z.string().describe("work id (wrk_...)"),
   keys: z.array(z.string()).optional().describe("exact keys to pull (e.g. [\"A\", \"B\"])"),
@@ -161,6 +169,47 @@ export const workTaskCreateInputShape = {
   context: contextShape,
   sources: sourcesShape,
   run_id: z.string().optional().describe("your own run id, recorded as the writer"),
+};
+
+// runtime transfer(PBI-0439 / CAP-3 V7・図84)。work_transfer は client 3 段を 1 回で回すので capsule の
+// 要素も同じ呼び出しで受ける。git_state は受けない —— この folder の事実を MCP が取る(自己申告にしない)
+export const workTransferInputShape = {
+  work_id: z.string().describe("work id (wrk_...)"),
+  to: z.string().describe("runtime kind to move the work to (e.g. codex)"),
+  run_id: z.string().describe("your own run id — the run that holds the lease now"),
+  intent: z
+    .string()
+    .optional()
+    .describe("one-time token from `openroly work intent <id> --action transfer_primary` (a human issues it; required when a runtime calls this)"),
+  note: z.string().optional().describe("what the next runtime needs to know (kept as the work's handoff note)"),
+  goal: z.unknown().optional(),
+  current_state: z.unknown().optional(),
+  decisions: z.unknown().optional(),
+  unresolved_questions: z.unknown().optional(),
+  relevant_artifacts: z.unknown().optional(),
+  relevant_memory: z.unknown().optional(),
+  capability_requirements: z.unknown().optional(),
+};
+
+export const workAcceptInputShape = {
+  work_id: z.string().describe("work id (wrk_...)"),
+  transfer_id: z
+    .string()
+    .optional()
+    .describe("the transfer id from the instruction that woke you — omit it for a forked work (work_fork)"),
+  run_id: z.string().optional().describe("the run id you will use from now on (one is made for you when omitted)"),
+};
+
+// fork / review(PBI-0440 / CAP-3 V8・図84)。拾う側は work_accept(transfer_id 無し)
+export const workForkInputShape = {
+  work_id: z.string().describe("the work to branch from (wrk_...) — it keeps running untouched"),
+  to: z.string().describe("runtime kind that works on the branch (e.g. codex, claude)"),
+  role: z
+    .enum(["implementer", "reviewer"])
+    .describe(
+      "implementer: the branch gets the whole context and tries another approach. reviewer: a blind review — the branch sees only the goal, artifacts, git state and tests, not the previous agent's decisions or notes",
+    ),
+  note: z.string().optional().describe("what to do on the branch (kept as the branch's handoff note)"),
 };
 
 export const workMessageInputShape = {

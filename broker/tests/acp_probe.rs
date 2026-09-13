@@ -15,6 +15,8 @@
 
 #![cfg(target_os = "macos")]
 
+#[path = "../src/c1.rs"]
+mod c1;
 #[path = "../src/egress.rs"]
 mod egress;
 #[path = "../src/sandbox.rs"]

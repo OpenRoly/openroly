@@ -43,8 +43,7 @@ pub struct Session {
     pub started_at: u64,
     pub child: Option<Child>,
     /// dedicated session の egress proxy(child と同じ寿命)。reap で行ごと drop = 閉じる(PBI-0238)。
-    /// spawn 側での接線は PBI-0388(egress lane)の持ち物なので、この PBI では読み手が無い
-    #[allow(dead_code)]
+    /// C1 の session なら `egress.c1` が pool の uid を持ち、cancel はその uid として signal を打つ(PBI-0441)
     pub egress: Option<crate::egress::Egress>,
     pub last_tool: Option<String>,
     pub tool_count: u32,
@@ -103,8 +102,10 @@ impl Sessions {
     /// 在ればその request_id を返す(manual は常に None = 通す)。「生きている」は
     /// `try_wait`(handle)で見る —— pid ではない。exit 済みの行はここでは消さない
     /// (消すと reaper の session_result が失われる。掃くのは reaper だけ)。
+    /// lane "work"(PBI-0439)も None —— work ごとに別 session が並ぶ lane で、account あたりの本数は
+    /// server が持つ(WORK_LANE_MAX_SESSIONS)。端末全体の上限は capacity_full が今まで通り数える。
     pub fn admission_check(&self, account_id: &str, lane: &str) -> Option<String> {
-        if lane == "manual" {
+        if lane == "manual" || lane == "work" {
             return None;
         }
         let mut inner = self.0.lock().unwrap();
@@ -189,9 +190,23 @@ impl Sessions {
             s.cancel_reason = Some(reason.to_string());
             s.child.as_mut().and_then(|c| c.id())
         };
+        // C1(PBI-0441 ③)の session は root の sudo + pool の uid の下で走り、broker の killpg は
+        // どちらにも届かない(kill(2) の uid 一致)。**pool の uid として**同じ signal を打つ
+        let pool_user = {
+            let inner = self.0.lock().unwrap();
+            inner
+                .sessions
+                .get(request_id)
+                .and_then(|s| s.egress.as_ref())
+                .and_then(|e| e.c1.as_ref())
+                .map(|c| c.user.clone())
+        };
         let Some(pid) = pid else { return true };
         // **SIGTERM が 1 発目**。送り先は直の子ではなく **process group**(PBI-0403)。
         kill_group(pid, libc::SIGTERM);
+        if let Some(user) = &pool_user {
+            crate::c1::signal_pool(user, "TERM");
+        }
         let sessions = self.0.clone();
         let rid = request_id.to_string();
         tokio::spawn(async move {
@@ -206,6 +221,9 @@ impl Sessions {
                         // pid の「他人の group」へ送らない(AC-X2)
                         if let Some(pid) = c.id() {
                             kill_group(pid, libc::SIGKILL);
+                        }
+                        if let Some(user) = &pool_user {
+                            crate::c1::signal_pool(user, "KILL");
                         }
                         // 直の子の handle にも撃つ(tokio に「殺した」を知らせて try_wait で
                         // 回収させる。group へ既に届いているので二重でも害は無い)
@@ -527,6 +545,46 @@ mod tests {
         }
     }
 
+    // PBI-0441 module review: C1 の session は root の sudo + pool の uid の下で走り、broker の killpg は
+    // どちらにも届かない(kill(2) の uid 一致)。cancel は **pool の uid として** TERM を打つ。
+    // sudo は test から叩かない —— `c1::run_as` は test build では argv を記録するだけ。
+    #[tokio::test]
+    async fn cancel_signals_a_c1_session_as_its_pool_uid() {
+        let _ = crate::c1::take_run_as_log();
+        let as_pool = |log: &[Vec<String>], user: &str, sig: &str| {
+            log.iter().any(|a| {
+                a.len() == 8
+                    && a[..5] == ["/usr/bin/sudo", "-n", "-u", user, "--"]
+                    && a[5..] == ["/bin/kill".to_string(), format!("-{sig}"), "-1".to_string()]
+            })
+        };
+        let home = std::env::temp_dir().join(format!("openroly-sessions-c1-{}", std::process::id()));
+        let sessions = Sessions::new(None);
+
+        // C1 の session: pool の uid として TERM
+        let child = sleep_child("30").await;
+        let gpid = child.id().unwrap();
+        let config = crate::egress::EgressConfig { allow: Vec::new(), events: None, upstream_override: None, observe: None };
+        let mut egress = crate::egress::start(config, "rid-c1").unwrap();
+        egress.c1 = Some(crate::c1::fake_session_for_test("_openroly_s577", &home));
+        let mut row = session("rid-c1", "auto", child);
+        row.egress = Some(egress);
+        sessions.insert(row);
+        assert!(sessions.cancel_with_escalate("rid-c1", "test", Duration::from_secs(30)));
+        let log = crate::c1::take_run_as_log();
+        assert!(as_pool(&log, "_openroly_s577", "TERM"), "cancel が pool の uid として TERM を打っていない: {log:?}");
+        cleanup(gpid, &home);
+
+        // C1 でない session: run-as を 1 本も打たない(知らない uid に signal を撒かない)
+        let plain = sleep_child("30").await;
+        let plain_gpid = plain.id().unwrap();
+        sessions.insert(session("rid-plain", "draft", plain));
+        assert!(sessions.cancel_with_escalate("rid-plain", "test", Duration::from_secs(30)));
+        let log = crate::c1::take_run_as_log();
+        assert!(log.is_empty(), "C1 でない session に run-as を打った: {log:?}");
+        cleanup(plain_gpid, &home);
+    }
+
     #[tokio::test]
     async fn admission_rejects_second_same_lane() {
         let c1 = sleep_child("30").await;
@@ -542,6 +600,17 @@ mod tests {
         sessions.insert(session("rid-2", "manual", c2));
         // manual が居ても次の manual は通る
         assert_eq!(sessions.admission_check("acc-1", "manual"), None);
+    }
+
+    #[tokio::test]
+    async fn admission_lets_work_lane_run_side_by_side() {
+        // PBI-0439: lane "work" は work ごとに別 session。本数は server が持つので admission は断らない
+        let c1 = sleep_child("30").await;
+        let sessions = Sessions::new(None);
+        sessions.insert(session("rid-w1", "work", c1));
+        assert_eq!(sessions.admission_check("acc-1", "work"), None);
+        // 端末全体の上限は今まで通り work も数える(免除は admission だけ)
+        assert!(sessions.capacity_full("work", 1));
     }
 
     #[tokio::test]

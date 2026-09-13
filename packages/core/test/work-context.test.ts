@@ -2,8 +2,11 @@
 import { describe, expect, test } from "bun:test";
 import { CapsuleCredentialRefError, hashCapsuleBody } from "../src/capsule.ts";
 import {
+  decideContextWrite,
   findReservedContextKeys,
   summarizeContextIndex,
+  countInbox,
+  inboxDeliveredKeys,
   WORK_CONTEXT_WELL_KNOWN_KEYS,
   buildContextValue,
   ContextValueError,
@@ -139,9 +142,67 @@ describe("summarizeContextIndex — 値を読まずに「何の key が在るか
   });
 });
 
+describe("inbox の既読 — 数え方と、既読にしてよい key(PBI-0444)", () => {
+  const ib = (key: string, read?: boolean) => ({ kind: "context", key, ...(read !== undefined ? { read } : {}) });
+
+  test("countInbox: 未読は read === false の行だけ(read の無い project の inbox は未読に数えない)", () => {
+    const rows = [ib("inbox/a/1", false), ib("inbox/a/2", true), ib("inbox/p/3"), ib("goal"), { kind: "source", key: "inbox/x.md" }];
+    expect(countInbox(rows)).toEqual({ total: 3, unread: 1 });
+    expect(countInbox([])).toEqual({ total: 0, unread: 0 });
+  });
+
+  test("summarizeContextIndex: 未読が在れば `(N unread)`・0 なら件数だけ", () => {
+    expect(summarizeContextIndex([ib("inbox/a/1", false), ib("inbox/a/2", false), ib("inbox/a/3", true)])).toBe("inbox 3 (2 unread)");
+    expect(summarizeContextIndex([ib("inbox/a/1", true), ib("inbox/a/2", true)])).toBe("inbox 2");
+  });
+
+  test("inboxDeliveredKeys: 値が agent に渡った未読の inbox/ だけ", () => {
+    const cases: [string, Record<string, unknown>, boolean][] = [
+      ["値が渡った未読", { ...ib("inbox/a/1", false), value: { text: "hi" } }, true],
+      ["index_only(value を落とした行)", { ...ib("inbox/a/2", false), est_tokens: 5, preview: "hi" }, false],
+      ["この端末に値が無い", { ...ib("inbox/a/3", false), value: null, missing_on_device: true }, false],
+      ["既に既読", { ...ib("inbox/a/4", true), value: "hi" }, false],
+      ["project の inbox(read 無し)", { ...ib("inbox/p/5"), value: "hi" }, false],
+      ["inbox/ でない key", { ...ib("goal", false), value: "x" }, false],
+      ["source", { kind: "source", key: "inbox/x.md", read: false, value: "x" }, false],
+    ];
+    for (const [name, entry, want] of cases) {
+      expect({ name, delivered: inboxDeliveredKeys([entry as never]).length === 1 }).toEqual({ name, delivered: want });
+    }
+  });
+});
+
 describe("findReservedContextKeys — 機械の置き場は agent の手書きで書かない(PBI-0437)", () => {
   test("auto/ と inbox/ だけが予約。名前が似ているだけの key は通る", () => {
     expect(findReservedContextKeys(["auto/git", "inbox/x/1", "goal", "autos", "inbox", "my/auto/x"])).toEqual(["auto/git", "inbox/x/1"]);
   });
 });
 
+
+describe("decideContextWrite — project に出すのは publish だけ(PBI-0443)", () => {
+  type WorkNode = { id: string; parentWorkId: string | null };
+  const P: WorkNode = { id: "P", parentWorkId: null };
+  const P2 = { id: "P2", parentWorkId: null };
+  const T = { id: "T", parentWorkId: "P" };
+  const T2 = { id: "T2", parentWorkId: "P" };
+  const U = { id: "U", parentWorkId: "P2" };
+  const ok = { ok: true } as const;
+  const cases: [string, WorkNode, WorkNode[] | null, string[], ReturnType<typeof decideContextWrite>][] = [
+    ["human は project に書ける", P, null, ["decisions"], ok],
+    ["何も握っていない runtime は今まで通り", P, [], ["decisions"], ok],
+    ["project の holder は書ける(AC-3)", P, [P], ["decisions"], ok],
+    ["task と project を両方握っていれば書ける", P, [T, P], ["decisions"], ok],
+    ["task の holder が自分の project へ = publish_required(AC-2)", P, [T], ["decisions"], { ok: false, reason: "publish_required" }],
+    ["1 つでも inbox/ でない key が混ざれば publish_required", P, [T], ["inbox/T/1", "goal"], { ok: false, reason: "publish_required" }],
+    ["全部 inbox/ なら message なので ok", P, [T], ["inbox/T/1"], ok],
+    ["自分の task", T, [T], ["decisions"], ok],
+    ["兄弟の task(work_message)", T2, [T], ["inbox/T/1"], ok],
+    ["握っている project の task", T, [P], ["decisions"], ok],
+    ["別 project の task の holder → project は not_found(AC-X1)", P, [U], ["decisions"], { ok: false, reason: "not_found" }],
+    ["別 project の task の holder → その task も not_found(AC-X1)", T, [U], ["decisions"], { ok: false, reason: "not_found" }],
+    ["task の holder → 単独の work も not_found", P2, [T], ["decisions"], { ok: false, reason: "not_found" }],
+  ];
+  for (const [name, target, held, keys, want] of cases) {
+    test(name, () => expect(decideContextWrite(target, held, keys)).toEqual(want));
+  }
+});

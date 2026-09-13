@@ -49,6 +49,65 @@
       "verified": "cli:2.0"
     },
     {
+      "id": "claude-zai",
+      "display_name": "Claude Code · Z.AI (GLM)",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "services": []
+      },
+      "capabilities": [
+        "coding",
+        "shell",
+        "files"
+      ],
+      "adapter": "variant",
+      "variant": {
+        "of": "claude",
+        "match": [
+          "api.z.ai"
+        ],
+        "provider": "zhipu"
+      },
+      "egress": {
+        "hosts": [
+          "api.z.ai"
+        ]
+      },
+      "sources": [
+        "https://docs.z.ai/devpack/tool/claude"
+      ],
+      "verified": "docs"
+    },
+    {
+      "id": "claude-proxy",
+      "display_name": "Claude Code · local proxy",
+      "kind": "cli",
+      "detect": {
+        "binaries": [],
+        "apps": [],
+        "services": []
+      },
+      "capabilities": [
+        "coding",
+        "shell",
+        "files"
+      ],
+      "adapter": "variant",
+      "variant": {
+        "of": "claude",
+        "match": [
+          "localhost",
+          "127.0.0.1"
+        ]
+      },
+      "sources": [
+        "https://code.claude.com/docs/en/llm-gateway"
+      ],
+      "verified": "docs"
+    },
+    {
       "id": "codex",
       "display_name": "Codex",
       "kind": "cli",

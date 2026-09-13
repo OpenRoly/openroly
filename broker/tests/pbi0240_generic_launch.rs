@@ -18,6 +18,11 @@ mod discovery;
 mod openroly_cli;
 #[path = "../src/launch.rs"]
 mod launch;
+#[path = "../src/c1.rs"]
+mod c1;
+
+/// PBI-0441 ③: test では C1 を掛けない(pane / CI は root op を打てない)。C1 の形は c1.rs の test が fake で武装する
+static C1_OFF: c1::C1Status = c1::C1Status { available: false, reason: String::new() };
 #[path = "../src/egress.rs"]
 mod egress;
 #[path = "../src/sandbox.rs"]
@@ -65,7 +70,9 @@ async fn generic_path_starts_catalog_runtimes_and_reaches_model_host() {
             // allowlist 空 = 全部 403。token 消費 0 で「どこへ出ようとしたか」だけを見る
             egress: egress::EgressConfig { allow: vec![], events: Some(tx), upstream_override: None, observe: None },
             folder: None,
+            lane: "manual",
             user_home: user_home.clone(),
+            c1: &C1_OFF,
         };
         let request_id = format!("req-0240-{runtime}");
         let result = launch::launch_session_scoped_in(

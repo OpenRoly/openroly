@@ -32,18 +32,19 @@ import {
   type ExtensionAdapter,
   type RuntimeCredential,
 } from "@openroly/adapter";
-import { resolveContextEntries, type ContextIndexRow } from "@openroly/adapter";
-import { adoptLegacyEnv, buildCapsule, buildManifest, CAPSULE_FIELDS, CapsuleConversationError, CapsuleCredentialRefError, CREDENTIAL_CHECK_FAILED, CREDENTIAL_OWNED_BY_HUMAN, legacyDir, LEGACY_STATE_DIR, STATE_DIR } from "@openroly/core";
-import { applyGitCheckpoint, type GitState } from "@openroly/core/node";
+import { countPendingContextValues, e2eeCallFor, resolveContextEntries, type ContextIndexRow } from "@openroly/adapter";
+import { adoptLegacyEnv, buildCapsule, countInbox, buildManifest, CAPSULE_FIELDS, CapsuleConversationError, CapsuleCredentialRefError, CREDENTIAL_CHECK_FAILED, CREDENTIAL_OWNED_BY_HUMAN, egressEnforcementText, egressScopeText, legacyDir, LEGACY_STATE_DIR, parseEgressByRuntime, parseEgressEnforcement, STATE_DIR, TASK_MERGE_PATHS_MAX, type MergeDecision } from "@openroly/core";
+import { applyGitCheckpoint, checkoutForkFolder, mergeTaskFolder, type GitState } from "@openroly/core/node";
 import { existsSync } from "node:fs";
 import { link, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { connect as netConnect } from "node:net";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { AGENT_PROVIDERS, isAgentProvider, runAgent } from "./agent.ts";
+import { AGENT_PROVIDERS, isAgentProvider, resolveApiKey, runAgent } from "./agent.ts";
+import { addLocalRuntime, importShellProfiles, loadProfiles, localCatalogPath, profileProblem, profilesPath, removeProfile } from "@openroly/adapter";
 import { followSession, listSessions, rawPeek, renderList, renderSession, SESSION_ID_RE } from "./peek.ts";
-import { ADAPTERS, findAdapter, SUPPORTED_IDS } from "./registry.ts";
+import { ADAPTERS, findAdapter, SUPPORTED_IDS, VARIANT_CLASSES } from "./registry.ts";
 
 // openroly —— Personal Agent Account の入口(配布戦略 §7.2 Common Installation Engine の CLI 面)。
 // plugin-first UX でもここを通るので、pairing / install / 診断のロジックは 1 系統。
@@ -69,6 +70,13 @@ Usage: openroly <command>
   statusline [--refresh] One line for a status bar (--refresh re-fetches and writes the cache)
   doctor [runtime]      Diagnose the connection
   runtimes              Supported runtimes and their connection state
+  runtimes add <name> --binary <command> --mcp-file <path> [--format json] [--key mcpServers]
+                        Add an AI that is not in the catalog (this machine only; listed as local-<name>)
+  profiles import [--shell <rc>] | list | remove <class>
+                        Turn shell wrappers like claude-zai() (same binary, another provider) into
+                        runtime profiles. Only URLs and model names are stored; keys come from Connections
+  run <class> [--bin <path>] -- <args>
+                        Start a profile's binary with its env (what the broker runs on wake)
   extensions            Desired extensions + per-runtime status
   sync [runtime]        Run Extension Sync (all attached runtimes when omitted)
   share [runtime]       Offer what you already installed in your AIs (MCP servers / skills) to the
@@ -1019,23 +1027,44 @@ function printFindings(findings: Finding[]): boolean {
  * doctor が言う理由がずれると人が迷う)。 */
 async function brokerSandboxFindings(): Promise<Finding[]> {
   const path = join(brokerHome(), "sandbox-status.json");
-  let status: { sandbox?: unknown; egress?: unknown };
+  let status: {
+    sandbox?: unknown;
+    egress?: unknown;
+    egress_enforcement?: unknown;
+    egress_enforcement_by_runtime?: unknown;
+    sandbox_strength?: unknown;
+  };
   try {
-    status = JSON.parse(await readFile(path, "utf8")) as { sandbox?: unknown; egress?: unknown };
+    status = JSON.parse(await readFile(path, "utf8")) as typeof status;
   } catch {
     const detail = "unknown (the broker has not started yet; dedicated sessions need it — run 'openroly login')";
     return [
       { ok: false, label: "sandbox", detail },
       { ok: false, label: "egress", detail },
+      { ok: false, label: "egress scope", detail },
     ];
   }
   const line = (v: unknown): string => (typeof v === "string" ? v.slice(0, 200) : "unknown");
   const sandbox = line(status.sandbox);
   const egress = line(status.egress);
-  return [
+  // PBI-0441: port-scoped は壊れているのではなく「閉じていない事を名乗っている」ので OK。
+  // 名乗らない broker(旧版)は unknown で NG —— host-scoped と推測して黙らない(AC-X2)
+  const scope = parseEgressEnforcement(status.egress_enforcement);
+  // C1(PBI-0441 ③)で claude だけ閉じている端末では、床の文に「host-scoped for: claude」を添える。
+  // OK/NG は **床** で決める —— claude だけ閉じても、他の runtime は port-scoped のままなので
+  // 「閉じた」とは言わせない(上げた側を隠さず、床を偽らない)
+  const byRuntime = parseEgressByRuntime(status.egress_enforcement_by_runtime);
+  const findings: Finding[] = [
     { ok: /\bok$/.test(sandbox), label: "sandbox", detail: sandbox },
     { ok: egress === "ok", label: "egress", detail: egress },
+    { ok: scope === "host_scoped" || scope === "port_scoped", label: "egress scope", detail: egressScopeText(scope, byRuntime) },
   ];
+  // PBI-0331 AC-X3: 同じ「landlock ok」でも kernel(Landlock の ABI)ごとに掛かる壁が違う。broker が名乗った
+  // 時だけ出す —— 文は掛からない壁を名指しするので、弱い kernel に落ちた事を人が読める。OK/NG は sandbox 行が持つ
+  if (typeof status.sandbox_strength === "string") {
+    findings.push({ ok: true, label: "sandbox strength", detail: line(status.sandbox_strength) });
+  }
+  return findings;
 }
 
 /**
@@ -1359,6 +1388,20 @@ switch (command) {
       native = spec?.native ?? undefined;
     }
     if (!token) fail("adopt: could not read the token from stdin", 2);
+    // runtime profile(PBI-0211): MCP / skills は親の登録を共有する(session の actor は親 kind)。
+    // 保存するのは credential だけ —— `openroly run` が Connections の参照を解決する時に使う
+    const variant = VARIANT_CLASSES.find((k) => k.id === kind);
+    if (variant) {
+      await saveCredential(kind, {
+        runtime_id: runtimeId,
+        token,
+        base_url: url.replace(/\/$/, ""),
+        name,
+        paired_at: new Date().toISOString(),
+      });
+      console.log(`adopt: connected ${variant.displayName} as ${name} (${runtimeId}); it shares ${variant.of}'s config`);
+      break;
+    }
     // registry に entry があっても adapter 実装が無い runtime はここで落ちる(exit 2)。
     // Cloud 側も adapter:null は登録対象から外すので、ここに来るのは配布のずれ。
     // `native` が壊れていても exit 2(1 行目が detail になる) —— 推測で書き換えない
@@ -1587,6 +1630,8 @@ switch (command) {
   }
 
   case "doctor": {
+    // PBI-0446: account へまだ上がっていない context の値。次の 30 秒 tick が再送するので数を見せるだけで NG にしない
+    const contextSync: Finding = { ok: true, label: "context sync", detail: `${await countPendingContextValues()} pending` };
     if (jsonMode) {
       // NG は findings の ok:false として構造で出る(AC-3)。ok は人間向けの exit code と同じ値
       const targets: { runtime: string; findings: Finding[] }[] = [];
@@ -1594,6 +1639,7 @@ switch (command) {
         targets.push({ runtime: adapter.id, findings: await doctorRuntime({ adapter, ctx, baseUrl }) });
       }
       targets.push({ runtime: "broker", findings: await brokerSandboxFindings() });
+      targets.push({ runtime: "context", findings: [contextSync] });
       const ok = targets.every((t) => t.findings.every((f) => f.ok));
       jsonOut(ok, { targets });
       if (!ok) process.exit(1);
@@ -1613,6 +1659,24 @@ switch (command) {
   }
 
   case "runtimes": {
+    if (target === "add") {
+      // PBI-0211: catalog に無い agent を端末だけに足す。broker の hello → server の自動登録 → adopt が拾う
+      const positional = args.filter((a, i) => !a.startsWith("--") && !args[i - 1]?.startsWith("--"));
+      const name = positional[1];
+      const binary = flagValue("--binary");
+      const mcpFile = flagValue("--mcp-file");
+      if (!name || !binary || !mcpFile) {
+        fail("runtimes add <name> --binary <command> --mcp-file <path> [--format json] [--key mcpServers]");
+      }
+      let entry: Awaited<ReturnType<typeof addLocalRuntime>>;
+      try {
+        entry = await addLocalRuntime({ name, binary, mcpFile, format: flagValue("--format") ?? "json", key: flagValue("--key") ?? "mcpServers" });
+      } catch (e) {
+        fail(`runtimes add: ${(e as Error).message}`);
+      }
+      console.log(`Added ${entry.id} to ${localCatalogPath()}. The broker lists it in Your AI once '${binary}' is on PATH`);
+      break;
+    }
     const credentials = (await loadCredentials()).runtimes;
     if (jsonMode) {
       const runtimes = [];
@@ -1837,6 +1901,109 @@ switch (command) {
     break;
   }
 
+  case "profiles": {
+    // runtime profile(PBI-0211)= 同じ binary の provider 差し替え。正本は端末の profiles.json(account に置かない)
+    if (target === "import") {
+      const shellFlag = flagValue("--shell");
+      const rcPath = shellFlag ?? [join(homedir(), ".zshrc"), join(homedir(), ".bashrc")].find((p) => existsSync(p));
+      let rc: string;
+      try {
+        if (!rcPath) throw new Error("no ~/.zshrc or ~/.bashrc");
+        rc = await readFile(rcPath, "utf8");
+      } catch (e) {
+        // 読めない rc は「取り込む物が 0 件」であって失敗ではない(AC-X2)
+        console.log(`Could not read ${rcPath ?? "a shell rc file"} (${(e as Error).message}). Imported 0 profiles`);
+        break;
+      }
+      let result: Awaited<ReturnType<typeof importShellProfiles>>;
+      try {
+        result = await importShellProfiles(rc, VARIANT_CLASSES);
+      } catch (e) {
+        fail(`profiles import: ${(e as Error).message}. Nothing was written`);
+      }
+      for (const i of result.imported) {
+        console.log(`Imported ${i.name} as ${i.class} (${VARIANT_CLASSES.find((k) => k.id === i.class)?.displayName ?? i.class})`);
+      }
+      for (const d of result.dropped) {
+        console.log(`  ${d.name}: not stored — ${d.vars.join(", ")} (values are never written; keys come from Connections)`);
+      }
+      for (const s of result.skipped) console.log(`Skipped ${s.name}: ${s.reason}`);
+      console.log(`Imported ${result.imported.length} profile(s) into ${profilesPath()}`);
+      break;
+    }
+    if (target === "list") {
+      let file: Awaited<ReturnType<typeof loadProfiles>>;
+      try {
+        file = await loadProfiles();
+      } catch (e) {
+        fail(`profiles list: ${(e as Error).message}`);
+      }
+      const entries = Object.entries(file.profiles);
+      if (entries.length === 0) console.log("No runtime profiles. Import shell wrappers with 'openroly profiles import'");
+      for (const [cls, p] of entries) {
+        const k = VARIANT_CLASSES.find((c) => c.id === cls);
+        const keys = Object.entries(p.secret_env).map(([v, ref]) => `${v} ← ${ref}`).join(", ");
+        console.log(`${cls}  ${k?.displayName ?? "(unknown class)"}  from ${p.name}()  shares ${k?.of ?? "?"}'s config (MCP / skills)${keys ? `  ${keys}` : ""}`);
+      }
+      break;
+    }
+    if (target === "remove") {
+      const cls = args.filter((a) => !a.startsWith("--"))[1];
+      if (!cls) fail("profiles remove <class>");
+      try {
+        console.log((await removeProfile(cls)) ? `Removed ${cls}` : `No profile named ${cls}`);
+      } catch (e) {
+        fail(`profiles remove: ${(e as Error).message}`);
+      }
+      break;
+    }
+    fail("profiles needs import [--shell <rc>] | list | remove <class>");
+  }
+
+  case "run": {
+    // profile の binary を profile の env で起こす(PBI-0211)。broker は variant の wake を
+    // `openroly run <class> --bin <親 path> -- <親の argv>` で起こす。秘密は Connections の参照を
+    // ここで解決し、**解決できなければ親を起こさない**(env 無しの親 = Anthropic 本番へ飛ぶ)
+    const sep = args.indexOf("--");
+    const own = sep >= 0 ? args.slice(0, sep) : args;
+    const passthrough = sep >= 0 ? args.slice(sep + 1) : [];
+    const cls = own.find((a, i) => !a.startsWith("--") && own[i - 1] !== "--bin");
+    if (!cls) fail("run <class> [--bin <path>] -- <args>");
+    const variant = VARIANT_CLASSES.find((k) => k.id === cls);
+    let file: Awaited<ReturnType<typeof loadProfiles>>;
+    try {
+      file = await loadProfiles();
+    } catch (e) {
+      fail(`run: ${(e as Error).message}`);
+    }
+    const profile = file.profiles[cls];
+    if (!variant || !profile) fail(`profile_not_found: ${cls} (import it with 'openroly profiles import')`);
+    const problem = profileProblem(profile, variant);
+    if (problem) fail(`run: ${problem}`);
+    const binIdx = own.indexOf("--bin");
+    const bin = (binIdx >= 0 ? own[binIdx + 1] : undefined) ?? Bun.which(variant.of);
+    if (!bin) fail(`run: ${variant.of} is not installed`);
+    const secrets: Record<string, string> = {};
+    for (const [name, ref] of Object.entries(profile.secret_env)) {
+      // class の provider 以外の参照は解決しない(書き換えた profile で別の鍵を別の host へ運ばせない)
+      const provider = ref.startsWith("connection:") ? ref.slice("connection:".length) : undefined;
+      if (!provider || provider !== variant.provider) fail(`run: ${name} refers to ${ref}, which ${cls} does not use`);
+      const cred = (await getCredential(cls)) ?? (await getCredential(variant.of));
+      if (!cred) fail("connection_unavailable: this machine is not connected (run 'openroly login')");
+      const resolved = await resolveApiKey(cred.base_url, cred.token, provider, 0, (line) => console.error(line));
+      if (!resolved.ok) fail(`run: ${resolved.detail}`);
+      secrets[name] = resolved.key;
+    }
+    const child = Bun.spawn([bin, ...passthrough], {
+      env: { ...process.env, ...profile.env, ...secrets },
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(sig, () => child.kill(sig));
+    process.exit(await child.exited);
+  }
+
   case "agent": {
     // 外部 API provider を端末側 runtime として 1 turn 動かす(EP-0009 B / PBI-0057)。
     // server 側 agent は E2EE(アーキ §9)により作れないので、復号できるこの端末で動かす
@@ -1877,11 +2044,11 @@ switch (command) {
     const sub = args[0];
     const WORK_SUBS = new Set([
       "list", "get", "claim", "freeze", "intent", "events", "proof", "promote", "handoff", "capsule",
-      "capsules", "checkpoint-apply", "context",
+      "capsules", "checkpoint-apply", "context", "transfer", "fork", "task",
     ]);
     if (!WORK_SUBS.has(sub as string)) {
       fail(
-        `Usage: openroly work <list|get|claim|freeze|intent|events|proof|promote|handoff|capsule|capsules|checkpoint-apply|context>\n  work list [--status <s>]\n  work get <id>\n  work intent <id> --action <transfer_primary|stop_primary>  (issues a one-time token — human callers only)\n  work claim <id> --run <runId>\n  work freeze <id> --intent <token>  (stop_primary — requires a token from 'work intent')\n  work events <id> [--after <n>]\n  work proof <id> --status <s> [--passed <n>] [--failed <n>]\n  work promote <threadId>\n  work handoff <id> [--to <runtimeId>] [--note <s>]\n  work capsule <id> --set key=value [--set key2=value2 ...]  (keys: ${CAPSULE_FIELDS.join(", ")})\n  work capsule show <id> [--version <n>]  (reads the payload from this device's local store)\n  work capsules <id>\n  work context <id> [--key <k> ...] [--prefix <p>] [--kind context|source] [--query <q>]  (values come from this device's local store)\n  work checkpoint-apply <id> [--version <n>] [--remote <name>] [--cwd <path>]`,
+        `Usage: openroly work <list|get|claim|freeze|intent|transfer|fork|task|events|proof|promote|handoff|capsule|capsules|checkpoint-apply|context>\n  work list [--status <s>]\n  work get <id>\n  work intent <id> --action <transfer_primary|stop_primary>  (issues a one-time token — human callers only)\n  work claim <id> --run <runId>\n  work freeze <id> --intent <token>  (stop_primary — requires a token from 'work intent')\n  work transfer <id> --to <runtime> [--note <s>] [--set key=value ...]  (a runtime credential also needs --run <runId> --intent <token>)\n  work fork <id> --to <runtime> [--review] [--note <s>]  (branch the work without stopping it; --review = a blind reviewer)\n  work task merge <project> <task>  (apply the task's folder to this working tree — no commit; nothing is applied on a conflict)\n  work events <id> [--after <n>]\n  work proof <id> --status <s> [--passed <n>] [--failed <n>]\n  work promote <threadId>\n  work handoff <id> [--to <runtimeId>] [--note <s>]\n  work capsule <id> --set key=value [--set key2=value2 ...]  (keys: ${CAPSULE_FIELDS.join(", ")})\n  work capsule show <id> [--version <n>]  (reads the payload from this device's local store)\n  work capsules <id>\n  work context <id> [--key <k> ...] [--prefix <p>] [--kind context|source] [--query <q>]  (values come from this device's local store)\n  work context publish <task> --key <k> [--key <k2> ...]  (copy the task's keys to its Work Project)\n  work checkpoint-apply <id> [--version <n>] [--remote <name>] [--cwd <path>]`,
       );
     }
     const creds = await loadCredentials();
@@ -1930,6 +2097,175 @@ switch (command) {
         w.lease_holder_run
           ? `  lease: ${w.lease_holder_run} (epoch ${w.lease_epoch}, acquired ${w.lease_acquired_at})`
           : `  lease: free (epoch ${w.lease_epoch})`,
+      );
+      // PBI-0444: inbox の件数と未読(無ければ出さない)
+      const ib = await apiCall(url, `/v1/works/${encodeURIComponent(id)}/context?prefix=inbox%2F`, { token: cred.token });
+      const inbox = countInbox(ib.status === 200 ? (ib.body as { entries: ContextIndexRow[] }).entries : []);
+      if (inbox.total > 0) console.log(`  inbox: ${inbox.total}${inbox.unread > 0 ? ` (${inbox.unread} unread)` : ""}`);
+      // PBI-0439: 直近の transfer を 1 行(無ければ出さない)
+      const tr = await apiCall(url, `/v1/works/${encodeURIComponent(id)}/transfers`, { token: cred.token });
+      const latest = tr.status === 200 ? (tr.body as Record<string, unknown>[])[0] : undefined;
+      if (latest) {
+        console.log(
+          `  transfer: ${latest.state} → ${latest.to_runtime_kind} (${latest.id})${latest.reason ? ` · ${latest.reason}` : ""}`,
+        );
+      }
+      // PBI-0440: 枝なら fork 元と profile、元なら枝の一覧(1 枝 1 行)
+      if (w.forked_from_work_id) {
+        console.log(`  forked from ${w.forked_from_work_id}@${w.forked_from_capsule_version} · profile ${w.context_profile}`);
+      }
+      const all = await apiCall(url, "/v1/works", { token: cred.token });
+      const forks = all.status === 200 ? (all.body as Record<string, unknown>[]).filter((x) => x.forked_from_work_id === id) : [];
+      for (const f of forks) {
+        console.log(`  fork: ${f.id} · profile ${f.context_profile} · from v${f.forked_from_capsule_version}`);
+      }
+      break;
+    }
+    // PBI-0440: fork / review(図84)。MCP の work_fork と同じ手順 —— 元の最新 capsule の git_state をこの端末の CAS から
+    // 読み、fork folder を checkoutForkFolder で作ってから forks を POST(断られたら folder を消す)。human の credential は許可行が要らない
+    if (sub === "fork") {
+      const id = args[1];
+      const to = flagValue("--to");
+      if (!id || !to) fail("Usage: openroly work fork <id> --to <runtime> [--review] [--note <s>]");
+      const role = args.includes("--review") ? "reviewer" : "implementer";
+      const note = flagValue("--note");
+      const path = `/v1/works/${encodeURIComponent(id)}`;
+      const cres = await apiCall(url, `${path}/capsules`, { token: cred.token });
+      if (cres.status !== 200) fail(worksErr(cres.status, cres.body));
+      const latest = (cres.body as { version: number; body: { payload_hash?: string } | null }[]).at(-1);
+      if (!latest) fail(`NG no_capsule: ${id} has no capsule to fork from`);
+      const payloadHash = latest.body?.payload_hash;
+      const payload = typeof payloadHash === "string" ? await readCasPayload(payloadHash) : null;
+      const gitState = payload?.git_state;
+      if (!gitState || typeof gitState !== "object") {
+        fail(`NG capsule v${latest.version} has no git_state on this device — the fork's folder cannot be built`);
+      }
+      const folder = join(openrolyHome(), "worktrees", crypto.randomUUID());
+      try {
+        checkoutForkFolder(process.cwd(), gitState as GitState, folder);
+      } catch (e) {
+        fail(`NG ${e instanceof Error ? e.message : String(e)}`);
+      }
+      const fres = await apiCall(url, `${path}/forks`, {
+        method: "POST",
+        token: cred.token,
+        body: { to, role, capsuleVersion: latest.version, folder, ...(note ? { note } : {}) },
+      });
+      if (fres.status !== 201) {
+        await rm(folder, { recursive: true, force: true });
+        fail(fres.status === 422 ? `NG ${fres.body?.error?.code ?? "invalid request"}` : worksErr(fres.status, fres.body));
+      }
+      const { work, wake } = fres.body as { work: Record<string, unknown>; wake: { ok: boolean; reason: string | null } };
+      if (jsonMode) {
+        jsonOut(true, { work, folder, wake });
+        break;
+      }
+      console.log(`OK forked ${id}@${latest.version} → ${work.id} (profile ${work.context_profile}) in ${folder}`);
+      if (!wake.ok) console.log(`  not woken: ${wake.reason} — the branch stays ready; work_accept ${work.id} picks it up`);
+      break;
+    }
+    // PBI-0447: task の folder を今の cwd(Work Project の作業ツリー)へ合流(図80c ⑥)。MCP の work_task_merge と同じ門の順 ——
+    // team で project の task か → folder(worktree_missing)→ mergeTaskFolder → applied / conflict を task の events へ
+    if (sub === "task") {
+      const [verb, project, task] = [args[1], args[2], args[3]];
+      if (verb !== "merge" || !project || !task) fail("Usage: openroly work task merge <project> <task>");
+      const tres = await apiCall(url, `/v1/works/${encodeURIComponent(project)}/team`, { token: cred.token });
+      if (tres.status !== 200) fail(worksErr(tres.status, tres.body));
+      const team = tres.body as { project: { id: string }; tasks: { id: string }[] };
+      if (team.project.id !== project || !team.tasks.some((t) => t.id === task)) {
+        fail(`NG not_on_team: ${task} is not a task of Work Project ${project} — nothing was merged`);
+      }
+      let d: MergeDecision;
+      try {
+        d = mergeTaskFolder(join(openrolyHome(), "worktrees", task), process.cwd());
+      } catch (e) {
+        fail(`NG ${e instanceof Error ? e.message : String(e)}`);
+      }
+      if (d.result === "applied" || d.result === "conflict") {
+        const rec = await apiCall(url, `/v1/works/${encodeURIComponent(task)}/merges`, {
+          method: "POST",
+          token: cred.token,
+          body: { projectWorkId: project, merge: d.result, paths: d.paths.slice(0, TASK_MERGE_PATHS_MAX) },
+        });
+        if (rec.status !== 201) {
+          fail(`NG ${d.result} in ${process.cwd()}, but recording it on ${task} failed: ${rec.body?.error?.code ?? `HTTP ${rec.status}`}`);
+        }
+      }
+      if (jsonMode) {
+        jsonOut(d.result === "applied" || d.result === "empty", { task_id: task, project_id: project, ...d });
+        break;
+      }
+      if (d.result === "busy") fail("NG busy: another git operation holds this repo's index.lock — nothing was applied");
+      if (d.result === "conflict") fail(`NG conflict: ${d.paths.join(", ")} — nothing was applied`);
+      console.log(
+        d.result === "empty"
+          ? `OK nothing to merge — ${task} changed no files`
+          : `OK merged ${task} into ${process.cwd()} · ${d.paths.length} file${d.paths.length === 1 ? "" : "s"}: ${d.paths.join(", ")} (not committed)`,
+      );
+      break;
+    }
+    // PBI-0439: runtime transfer(図84)。client 3 段は MCP の work_transfer と同じ手順 —— FREEZE → 予約 id・予約 epoch で
+    // capsule(--set の要素)→ ROUTE(target を今の cwd で起こす)。human の credential なら intent は要らない
+    // ponytail: CLI からの transfer は git_state を載せない(tree を読む computeGitState は packages/mcp に在る)。
+    // CLI からも tree を運ぶ時は computeGitState を @openroly/core/node(applyGitCheckpoint の隣)へ寄せる
+    if (sub === "transfer") {
+      const id = args[1];
+      const to = flagValue("--to");
+      if (!id || !to) {
+        fail("Usage: openroly work transfer <id> --to <runtime> [--note <s>] [--set key=value ...] [--run <runId> --intent <token>]");
+      }
+      const run = flagValue("--run");
+      const intent = flagValue("--intent");
+      const note = flagValue("--note");
+      let built: ReturnType<typeof buildCapsule>;
+      try {
+        built = buildCapsule(collectSetFlags());
+      } catch (e) {
+        if (e instanceof CapsuleConversationError) fail(`NG ${e.code}: ${e.foundKeys.join(", ")}`);
+        if (e instanceof CapsuleCredentialRefError) fail(`NG ${e.code}: ${JSON.stringify(e.value)} (only env:NAME is accepted)`);
+        throw e;
+      }
+      const path = `/v1/works/${encodeURIComponent(id)}`;
+      const wres = await apiCall(url, path, { token: cred.token });
+      if (wres.status !== 200) fail(worksErr(wres.status, wres.body));
+      const w = wres.body as Record<string, unknown>;
+      const tres = await apiCall(url, `${path}/transfers`, {
+        method: "POST",
+        token: cred.token,
+        body: { to, ...(run ? { runId: run, expectedWriteEpoch: w.lease_epoch } : {}), ...(intent ? { intent } : {}) },
+      });
+      if (tres.status !== 201) {
+        fail(tres.status === 422 ? `NG ${tres.body?.error?.code ?? "invalid request"}` : worksErr(tres.status, tres.body));
+      }
+      const frozen = tres.body as { transfer_id: string; reserved_epoch: number; holder_run: string };
+      const stopped = (state: string, detail: string): never =>
+        fail(`NG transfer ${frozen.transfer_id} stopped at ${state}: ${detail}`);
+      if (note) {
+        const h = await apiCall(url, `${path}/handoff`, { method: "POST", token: cred.token, body: { note } });
+        if (h.status !== 200) stopped("frozen", `note: ${h.body?.error?.code ?? `HTTP ${h.status}`}`);
+      }
+      const written = await writeCasPayload(built.body);
+      const manifest = buildManifest(built.body, { hash: written.hash, size: written.size, mode: "0600" });
+      const cres = await apiCall(url, `${path}/capsules`, {
+        method: "POST",
+        token: cred.token,
+        body: { runId: frozen.holder_run, expectedWriteEpoch: frozen.reserved_epoch, ...manifest },
+      });
+      if (cres.status !== 201 && cres.status !== 200) stopped("frozen", `capsule: ${cres.body?.error?.code ?? `HTTP ${cres.status}`}`);
+      const rres = await apiCall(url, `${path}/transfers/${encodeURIComponent(frozen.transfer_id)}/route`, {
+        method: "POST",
+        token: cred.token,
+        body: { capsuleVersion: (cres.body as { capsule: { version: number } }).capsule.version, folder: process.cwd() },
+      });
+      if (rres.status !== 200) stopped("frozen", `route: ${rres.body?.error?.code ?? `HTTP ${rres.status}`}`);
+      const transfer = (rres.body as { transfer: Record<string, unknown> }).transfer;
+      if (transfer.state !== "routed") stopped(String(transfer.state), String(transfer.reason ?? "not routed"));
+      if (jsonMode) {
+        jsonOut(true, { transfer });
+        break;
+      }
+      console.log(
+        `OK transfer ${frozen.transfer_id}: routed → ${to} (lease reserved at epoch ${frozen.reserved_epoch} until ${to} accepts)`,
       );
       break;
     }
@@ -2123,6 +2459,27 @@ switch (command) {
     // こちらは全 8 要素をそのまま見せる汎用の「開く」口)
     // PBI-0433: Work Project の context / source を読む。組み直しは MCP の work_context_search と同じ
     // (@openroly/adapter の resolveContextEntries) —— value は端末の CAS から、source は手元で再 hash
+    // PBI-0443: task の key を Work Project へ公開する(project に出す口はこれだけ)
+    if (sub === "context" && args[1] === "publish") {
+      const id = args[2];
+      const keys = args.flatMap((a, i) => (a === "--key" && args[i + 1] !== undefined ? [args[i + 1]!] : []));
+      if (!id || keys.length === 0) fail("Usage: openroly work context publish <task> --key <k> [--key <k2> ...]");
+      const res = await apiCall(url, `/v1/works/${encodeURIComponent(id)}/context/publish`, {
+        method: "POST",
+        token: cred.token,
+        body: { keys },
+      });
+      if (res.status !== 200) {
+        fail(res.status === 404 ? worksErr(404, res.body) : `NG ${(res.body as any)?.error?.code ?? `HTTP ${res.status}`}${(res.body as any)?.error?.key ? ` (${(res.body as any).error.key})` : ""}`);
+      }
+      const entries = (res.body as { entries: ContextIndexRow[] }).entries;
+      if (jsonMode) {
+        jsonOut(true, { work_id: id, entries });
+        break;
+      }
+      for (const e of entries) console.log(`OK published ${e.key} v${e.version} ← ${e.published_from_work_id}@${e.published_from_version}`);
+      break;
+    }
     if (sub === "context") {
       const id = args[1];
       if (!id) fail("Usage: openroly work context <id> [--key <k> ...] [--prefix <p>] [--kind context|source] [--query <q>] [--index] [--max-tokens <n>]");
@@ -2146,7 +2503,10 @@ switch (command) {
       const maxTokens = flagValue("--max-tokens");
       let resolved: Awaited<ReturnType<typeof resolveContextEntries>>;
       try {
+        // PBI-0446: この端末に無い値は account から開く(MCP と同じ関数)。鍵はこの credential の kind の grant → device 鍵
+        const credKind = Object.keys(creds.runtimes).find((k) => creds.runtimes[k] === cred) ?? "default";
         resolved = await resolveContextEntries((res.body as { entries: ContextIndexRow[] }).entries, {
+          account: { call: e2eeCallFor(url, cred.token, credKind), deviceKind: credKind },
           cwd: process.cwd(),
           query: flagValue("--query"),
           indexOnly: args.includes("--index"),
@@ -2166,7 +2526,7 @@ switch (command) {
         `${id} · ${n} entr${n === 1 ? "y" : "ies"}${resolved.missing_on_device ? ` · ${resolved.missing_on_device} not on this device` : ""}`,
       );
       for (const e of resolved.entries) {
-        const from = e.scope === "project" ? "  (project)" : "";
+        const from = e.scope === "project" ? `  (project${e.published_from ? ` · from ${e.published_from}` : ""})` : "";
         const size = e.est_tokens !== undefined ? `  ~${e.est_tokens} tok` : "";
         if (e.kind === "source") console.log(`  source  ${e.key}  v${e.version}  ${e.source_status}${size}${from}`);
         else if (e.missing_on_device) console.log(`  ${e.key}  v${e.version}${size}  (value not on this device)${from}`);

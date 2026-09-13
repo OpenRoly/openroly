@@ -7,13 +7,32 @@
 // active device を持つ時、自動的に E2EE(HPKE envelope)を使う。片方でも device が
 // 無ければ平文のまま送受信する(server 側の強制拒否はしない設計。backlog/PBI-0006 参照)。
 
-import { buildCapsule, buildManifest, findReservedContextKeys, summarizeContextIndex, type MessageContent } from "@openroly/core";
+import { existsSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import {
+  applyContextProfile,
+  buildCapsule,
+  buildManifest,
+  CHECKPOINT_TICK_INTERVAL_SECS,
+  countInbox,
+  findReservedContextKeys,
+  inboxDeliveredKeys,
+  renderCapsule,
+  summarizeContextIndex,
+  TASK_MERGE_PATHS_MAX,
+  WORK_LIVENESS_TIMEOUT_SECS,
+  type MessageContent,
+} from "@openroly/core";
 import { open, type EncryptedEnvelope } from "@openroly/crypto-envelope";
 import {
+  CONTEXT_SEARCH_DEFAULT_MAX_TOKENS,
   credentialRejectedHint,
+  openrolyHome,
+  readCasPayload,
   readerKeys,
   openIfEnvelope as openEnvelope,
   sealForHandle,
+  syncPendingContextValues,
   writeCasPayload,
   prepareContextValue,
   prepareSource,
@@ -21,6 +40,8 @@ import {
   type ContextIndexEntryInput,
   type ContextIndexRow,
 } from "@openroly/adapter";
+import { checkoutForkFolder, mergeTaskFolder } from "@openroly/core/node";
+import { changedSinceGitState, computeGitState, type GitState } from "./git-state.ts";
 
 export interface OpenRolyClientConfig {
   baseUrl: string;
@@ -105,9 +126,13 @@ interface WorkRow {
   lease_holder_run: string | null;
   lease_acquired_at: string | null;
   lease_expires_at: string | null;
+  /** lease を握った runtime(PBI-0444: 未読 notice を「この runtime が握っている work」に絞る) */
+  owner_runtime_id?: string | null;
   handled_runtime_id: string | null;
   handoff_note?: string | null;
   parent_work_id?: string | null;
+  /** fork の枝(PBI-0440)。枝が何を知ってよいか */
+  context_profile?: string;
 }
 
 /**
@@ -229,6 +254,8 @@ const prepareEntries = async (
   const out: ContextIndexEntryInput[] = [];
   for (const [key, value] of Object.entries(input.context ?? {})) out.push(await prepareContextValue(key, value));
   for (const path of input.sources ?? []) out.push(await prepareSource(cwd, path));
+  // PBI-0446: 新しく CAS に置いた値を account へ seal して上げる。落ちても put は通す(印が残り 30 秒 tick が再送)
+  if (Object.keys(input.context ?? {}).length > 0) await syncPendingContextValues(e2eeCall(config)).catch(() => {});
   const expected = input.expected_versions ?? {};
   return out.map((e) => (expected[e.key] !== undefined ? { ...e, expected_version: expected[e.key] } : e));
 };
@@ -260,6 +287,9 @@ const resolveMe = async (config: OpenRolyClientConfig): Promise<{ runtimeId: str
 const isMine = (handled: string | null | undefined, me: { runtimeId: string | null; kind: string | null }): boolean =>
   handled != null && me.runtimeId != null && (handled === me.runtimeId || handled === me.kind);
 
+/** task の folder(PBI-0447)。path は task id から決まるので server に保存しない */
+const taskFolder = (taskId: string): string => join(openrolyHome(), "worktrees", taskId);
+
 /** Work Project に task を作る時の入力(PBI-0434)。to / note / context / sources を付ければそのまま渡す */
 export type WorkTaskCreateInput = WorkHandoffInput & { title: string };
 
@@ -273,6 +303,8 @@ export function createAccountTools(config: OpenRolyClientConfig) {
       const who = (await call(config, "/v1/whoami")) as { handle: string };
       return who.handle;
     })());
+  // PBI-0444: 未読 notice の cache。server を叩くのは最大 tick の間隔に 1 回。既読にした直後は捨てる
+  let notice: { at: number; text: Promise<string | null> } | null = null;
   return {
     whoami: () => call(config, "/v1/whoami"),
     inbox_list: () => call(config, "/v1/inbox/messages"),
@@ -499,6 +531,21 @@ export function createAccountTools(config: OpenRolyClientConfig) {
       });
     },
     /**
+     * task に書いた key を Work Project へ公開する(PBI-0443)。値は同じ hash を写すだけなので CAS に書き足す物は無い。
+     * 全部か 0 件・project の行に published_from(task@版)が残る
+     */
+    work_context_publish: (
+      workId: string,
+      input: { keys: string[]; run_id?: string; expected_versions?: Record<string, number> },
+    ) =>
+      call(config, `/v1/works/${encodeURIComponent(workId)}/context/publish`, {
+        body: {
+          keys: input.keys,
+          ...(input.expected_versions ? { expected_versions: input.expected_versions } : {}),
+          ...(input.run_id ? { runId: input.run_id } : {}),
+        },
+      }) as Promise<{ entries: ContextIndexRow[] }>,
+    /**
      * 始める前に要る物だけ取る(手描き 1 枚目の Agent B)。server で key / prefix / kind を絞り、
      * value は端末の CAS から開き、source は手元で再 hash する(組み直しは adapter の 1 関数・CLI と共用)
      */
@@ -511,14 +558,28 @@ export function createAccountTools(config: OpenRolyClientConfig) {
       const res = (await call(
         config,
         `/v1/works/${encodeURIComponent(workId)}/context${qs ? `?${qs}` : ""}`,
-      )) as { entries: ContextIndexRow[] };
+      )) as { entries: ContextIndexRow[]; hidden_by_profile?: string[] };
       const resolved = await resolveContextEntries(res.entries, {
         cwd: config.cwd ?? process.cwd(),
         query: input.query,
         indexOnly: input.index_only,
         maxTokens: input.max_tokens,
+        // PBI-0446: この端末に無い値は account から開く(鍵は inbox_read と同じ readerKeys の順)
+        account: { call: e2eeCall(config), deviceKind: deviceKindOf(config) },
       });
-      return { work_id: workId, ...resolved };
+      // PBI-0444: 値が渡った未読の inbox/ だけを既読に。落ちても値は返す —— 読んでいないのに既読にする方向には倒さず、
+      // 次の search でもう一度送る(POST は冪等)
+      const delivered = inboxDeliveredKeys(resolved.entries);
+      if (delivered.length > 0) {
+        await call(config, `/v1/works/${encodeURIComponent(workId)}/context/reads`, { body: { keys: delivered } }).then(
+          () => {
+            notice = null;
+          },
+          () => {},
+        );
+      }
+      // PBI-0440: 枝の Context Profile で server が隠した key(名前だけ)。無い = 絞っていない work
+      return { work_id: workId, ...resolved, ...(res.hidden_by_profile ? { hidden_by_profile: res.hidden_by_profile } : {}) };
     },
     /**
      * 係(handled_runtime_id)がこの runtime の work。**id でも kind でも一致**(handoff の `to` はどちらも受ける)。
@@ -540,11 +601,43 @@ export function createAccountTools(config: OpenRolyClientConfig) {
             handoff_note: w.handoff_note ?? null,
             /** task なら属する Work Project(PBI-0434)。単独の work は null */
             project_id: w.parent_work_id ?? null,
+            /** PBI-0447: この端末に task の folder が在ればその path(そこで書く)。無ければ null */
+            folder: existsSync(taskFolder(w.id)) ? taskFolder(w.id) : null,
             lease_live: isLeaseLive(w, now),
             context_index: summarizeContextIndex(index.entries),
           };
         }),
       );
+    },
+    /**
+     * PBI-0444: この runtime が lease を握っている work に未読の inbox が在れば 1 work 1 行(無ければ null)。MCP server が
+     * 全 tool の応答に足す —— 新しい push 経路を作らず、作業中の agent が次に tool を呼んだ時に見える。server を叩くのは
+     * 最大 CHECKPOINT_TICK_INTERVAL_SECS に 1 回なので、届いてから最大その秒数遅れる。取れなければ null(応答を巻き込まない)
+     */
+    /** PBI-0446: account へまだ上がっていない context の値を再送する(30 秒 tick が呼ぶ。MCP の tool ではない) */
+    context_sync: () => syncPendingContextValues(e2eeCall(config)),
+    inbox_notice: (): Promise<string | null> => {
+      const now = Date.now();
+      if (notice && now - notice.at < CHECKPOINT_TICK_INTERVAL_SECS * 1000) return notice.text;
+      const text = (async () => {
+        const [me, works] = await Promise.all([resolveMe(config), call(config, "/v1/works") as Promise<WorkRow[]>]);
+        if (me.runtimeId == null) return null;
+        const lines: string[] = [];
+        for (const w of works.filter((x) => x.owner_runtime_id === me.runtimeId && isLeaseLive(x, now))) {
+          const index = (await call(config, `/v1/works/${encodeURIComponent(w.id)}/context?prefix=inbox%2F`)) as {
+            entries: ContextIndexRow[];
+          };
+          const { unread } = countInbox(index.entries);
+          if (unread > 0) {
+            lines.push(
+              `notice: ${unread} unread inbox message${unread === 1 ? "" : "s"} on ${w.id} — work_context_search(work_id:${JSON.stringify(w.id)}, prefix:"inbox/")`,
+            );
+          }
+        }
+        return lines.length > 0 ? lines.join("\n") : null;
+      })().catch(() => null);
+      notice = { at: now, text };
+      return text;
     },
     // ---------- Work Project の task と住所(PBI-0434・手描き 2 枚目) ----------
     /**
@@ -556,9 +649,25 @@ export function createAccountTools(config: OpenRolyClientConfig) {
       assertNoReservedKeys(handoff.context);
       const task = (await call(config, "/v1/works", { body: { title, parent_work_id: parentWorkId } })) as WorkRow;
       const wants = handoff.to !== undefined || handoff.note !== undefined || handoff.context !== undefined || handoff.sources !== undefined;
-      if (!wants) return { task_id: task.id, task, handed_off: null };
+      if (!wants) return { task_id: task.id, task, folder: null, handed_off: null };
+      // PBI-0447: runtime に渡す task は自分の folder で書く(この cwd の今の状態から・fork と同じ作り方)。
+      // commit の在る git repo でなければ作らない(今まで通りこの cwd で書く)
+      let folder: string | null = null;
+      const cwd = config.cwd ?? process.cwd();
+      const state = handoff.to !== undefined ? computeGitState(cwd) : null;
+      if (state?.baseCommit) {
+        try {
+          checkoutForkFolder(cwd, state, taskFolder(task.id));
+          folder = taskFolder(task.id);
+        } catch (e) {
+          throw new Error(
+            `task ${task.id} was created under ${parentWorkId}, but its folder could not be built — nothing was handed off: ${e instanceof Error ? e.message : String(e)}`,
+            { cause: e },
+          );
+        }
+      }
       try {
-        return { task_id: task.id, task, handed_off: await handoffCall(config, task.id, handoff) };
+        return { task_id: task.id, task, folder, handed_off: await handoffCall(config, task.id, handoff) };
       } catch (e) {
         throw new Error(
           `task ${task.id} was created under ${parentWorkId}, but handing it off failed — retry work_handoff on ${task.id}: ${e instanceof Error ? e.message : String(e)}`,
@@ -569,7 +678,7 @@ export function createAccountTools(config: OpenRolyClientConfig) {
     /** 同じ Work Project で分担している task と住所(= task の work id)。is_you = 係がこの runtime */
     work_team: async (workId: string) => {
       const [team, me] = await Promise.all([
-        call(config, `/v1/works/${encodeURIComponent(workId)}/team`) as Promise<{ project: WorkRow; tasks: WorkRow[] }>,
+        call(config, `/v1/works/${encodeURIComponent(workId)}/team`) as Promise<{ project: WorkRow; tasks: (WorkRow & { merge?: string | null })[] }>,
         resolveMe(config),
       ]);
       const now = Date.now();
@@ -582,8 +691,36 @@ export function createAccountTools(config: OpenRolyClientConfig) {
           assigned_to: t.handled_runtime_id ?? null,
           is_you: isMine(t.handled_runtime_id, me),
           lease_live: isLeaseLive(t, now),
+          /** PBI-0447: 最新の合流(work_task_merge)の結果 */
+          merge: t.merge ?? "not_started",
         })),
       };
+    },
+    /**
+     * task の folder を呼び手の cwd(= Work Project の作業ツリー)へ合流する(PBI-0447・図80c ⑥)。cwd に触る前に
+     * ① task が projectWorkId の task か(team・not_on_team)② この端末に task の folder が在るか(worktree_missing)を見る。
+     * applied / conflict は task の events に残す(busy / empty は何も起きていないので残さない)
+     */
+    work_task_merge: async (projectWorkId: string, taskId: string) => {
+      const team = (await call(config, `/v1/works/${encodeURIComponent(projectWorkId)}/team`)) as { project: WorkRow; tasks: WorkRow[] };
+      if (team.project.id !== projectWorkId || !team.tasks.some((t) => t.id === taskId)) {
+        throw new Error(`not_on_team: ${taskId} is not a task of Work Project ${projectWorkId} — nothing was merged`);
+      }
+      const cwd = config.cwd ?? process.cwd();
+      const d = mergeTaskFolder(taskFolder(taskId), cwd);
+      if (d.result === "applied" || d.result === "conflict") {
+        try {
+          await call(config, `/v1/works/${encodeURIComponent(taskId)}/merges`, {
+            body: { projectWorkId, merge: d.result, paths: d.paths.slice(0, TASK_MERGE_PATHS_MAX) },
+          });
+        } catch (e) {
+          throw new Error(
+            `${d.result === "applied" ? `merged ${taskId} into ${cwd}` : `${taskId} conflicts with ${cwd} (nothing applied)`}, but recording it on the task failed: ${e instanceof Error ? e.message : String(e)}`,
+            { cause: e },
+          );
+        }
+      }
+      return { task_id: taskId, project_id: projectWorkId, cwd, ...d };
     },
     /**
      * 同じ project の相手に 1 件届ける。**会話ではなく Work State**(think.md) —— 相手の task の context に
@@ -606,6 +743,163 @@ export function createAccountTools(config: OpenRolyClientConfig) {
         body: { entries: [entry] },
       })) as { entries: unknown[] };
       return { to: toWorkId, key, delivered: sent.entries.length === 1 };
+    },
+    // ---------- runtime transfer(PBI-0439 / CAP-3 V7・図84) ----------
+    /**
+     * client 3 段を 1 回で回す: FREEZE(server が lease を予約 id で塞ぐ)→ CHECKPOINT(この folder の git_state)+
+     * BUILD CAPSULE(予約 id・予約 epoch で既存の capsules の口へ)→ ROUTE(server が target をこの folder で起こす)。
+     * 途中で落ちたら transfer id と今の state を名指しして throw する(黙って宙に浮いた予約を残さない)
+     */
+    work_transfer: async (
+      workId: string,
+      input: { to: string; run_id: string; intent?: string; note?: string } & Omit<WorkCapsuleInput, "run_id" | "git_state">,
+    ) => {
+      const { to, run_id, intent, note, ...fields } = input;
+      const path = `/v1/works/${encodeURIComponent(workId)}`;
+      const w = (await call(config, path)) as WorkRow;
+      const frozen = (await call(config, `${path}/transfers`, {
+        body: { to, runId: run_id, expectedWriteEpoch: w.lease_epoch, ...(intent !== undefined ? { intent } : {}) },
+      })) as { transfer_id: string; reserved_epoch: number; holder_run: string };
+      const tid = frozen.transfer_id;
+      const stopped = (state: string, detail: string, next: string, cause?: unknown) =>
+        new Error(`transfer ${tid} of work ${workId} to ${to} stopped at ${state}: ${detail} — ${next}`, { cause });
+      const cwd = config.cwd ?? process.cwd();
+      let routed: { transfer: { state: string; reason: string | null } };
+      let version: number;
+      let droppedKeys: string[];
+      try {
+        if (note !== undefined) await call(config, `${path}/handoff`, { body: { note } });
+        const gitState = computeGitState(cwd);
+        const pushed = await pushCapsule(config, workId, { lease_epoch: frozen.reserved_epoch }, frozen.holder_run, {
+          ...fields,
+          ...(gitState ? { git_state: gitState } : {}),
+        });
+        version = (pushed.capsule as { version: number }).version;
+        droppedKeys = pushed.dropped_keys;
+        routed = (await call(config, `${path}/transfers/${encodeURIComponent(tid)}/route`, {
+          body: { capsuleVersion: version, folder: cwd },
+        })) as typeof routed;
+      } catch (e) {
+        throw stopped(
+          "frozen",
+          e instanceof Error ? e.message : String(e),
+          `the lease stays reserved for this transfer until the server expires it (${WORK_LIVENESS_TIMEOUT_SECS}s); then claim the work again to resume here`,
+          e,
+        );
+      }
+      if (routed.transfer.state !== "routed") {
+        throw stopped(routed.transfer.state, routed.transfer.reason ?? "not routed", "the lease was released; claim the work again to resume here");
+      }
+      return { work_id: workId, transfer_id: tid, state: "routed", to, reserved_epoch: frozen.reserved_epoch, capsule_version: version, dropped_keys: droppedKeys };
+    },
+    /**
+     * REHYDRATE。lease を取り(transfer_id 有り = transfer の COMMIT / 無し = 空いている work の claim = fork の枝・PBI-0440)、
+     * capsule をこの端末の CAS から読み、**その work の Context Profile を通してから** runtime 非依存の文面(renderCapsule)に
+     * する。先頭に tree の変化(capsule の git_state と今の folder)と context 索引の 1 行(索引は server が同じ profile で
+     * 絞った物)。上限は work_context_search と同じ既定 —— 入らない field は receipt.omitted、profile が隠した field は
+     * receipt.hidden に名前だけ(値は出さない)。receipt.enforcement は今は常に cooperative —— scope token は MCP の道で
+     * 他の work を 403 にするが、scope は header で付くので、同じ runtime credential(sandbox は読みを許す)で header を
+     * 外した request は server が見ない。端末の CAS の file も読める。credential 自体が scope に束ねられるまで server と名乗らない
+     */
+    work_accept: async (workId: string, input: { transfer_id?: string; run_id?: string }) => {
+      const path = `/v1/works/${encodeURIComponent(workId)}`;
+      const runId = input.run_id ?? `run-${crypto.randomUUID()}`;
+      let work: WorkRow;
+      let version: number | null = null;
+      if (input.transfer_id !== undefined) {
+        const committed = (await call(config, `${path}/transfers/${encodeURIComponent(input.transfer_id)}/commit`, {
+          body: { runId },
+        })) as { work: WorkRow; transfer: { capsule_version: number | null } };
+        work = committed.work;
+        version = committed.transfer.capsule_version;
+      } else {
+        work = (await call(config, `${path}/claim`, { body: { runId } })) as WorkRow;
+      }
+      const [capsules, index] = await Promise.all([
+        call(config, `${path}/capsules`) as Promise<WorkCapsuleRow[]>,
+        call(config, `${path}/context`) as Promise<{ entries: ContextIndexRow[] }>,
+      ]);
+      // transfer は VALIDATE を通った版、枝(claim)は今の最新版 = fork で copy された v1 か、その後に積まれた版
+      const capsule = version == null ? capsules.at(-1) : capsules.find((c) => c.version === version);
+      version = capsule?.version ?? version;
+      const hash = (capsule?.body as { payload_hash?: unknown } | undefined)?.payload_hash;
+      const body = typeof hash === "string" ? await readCasPayload(hash) : null;
+      const profile = work.context_profile ?? "full";
+      const shown = applyContextProfile(profile, body ?? {});
+      const preamble: string[] = [];
+      const saved = shown.kept.git_state;
+      if (saved != null && typeof saved === "object") {
+        const changed = changedSinceGitState(saved as GitState, config.cwd ?? process.cwd());
+        if (changed && changed.length > 0) preamble.push(`tree changed since capsule: ${changed.join(", ")}`);
+      }
+      if (!capsule) {
+        preamble.push("this work has no capsule yet");
+      } else if (body == null) {
+        preamble.push(`capsule v${version} is not on this device, so its content cannot be shown (pushed from another device or cleaned up)`);
+      }
+      preamble.push(`context index: ${summarizeContextIndex(index.entries)}`);
+      const r = renderCapsule(shown.kept, { maxTokens: CONTEXT_SEARCH_DEFAULT_MAX_TOKENS, preamble });
+      return {
+        work_id: workId,
+        transfer_id: input.transfer_id ?? null,
+        run_id: runId,
+        lease: { epoch: work.lease_epoch, holder_run: work.lease_holder_run },
+        capsule_version: version,
+        rendered: r.rendered,
+        receipt: {
+          omitted: r.omitted,
+          ...(profile !== "full"
+            ? { profile, hidden: shown.hidden, enforcement: "cooperative" }
+            : {}),
+          est_tokens: r.est_tokens,
+          max_tokens: CONTEXT_SEARCH_DEFAULT_MAX_TOKENS,
+        },
+      };
+    },
+    // ---------- fork / review(PBI-0440 / CAP-3 V8・図84) ----------
+    /**
+     * 元の work を止めずに枝を 1 本立てる。端末で ① 元の最新 capsule の git_state をこの端末の CAS から読む
+     * ② fork folder(`$OPENROLY_HOME/worktrees/<uuid>`)を checkoutForkFolder で作る(元の folder と .git に書かない)
+     * ③ server に forks を POST(folder = fork folder)。①② が落ちたら server に何も送らない。③ が断られたら
+     * 作った folder を消してから throw する(枝 0・folder 0)。wake が起きなくても枝は ready で残り wake.reason に理由
+     */
+    work_fork: async (workId: string, input: { to: string; role: "implementer" | "reviewer"; note?: string }) => {
+      const path = `/v1/works/${encodeURIComponent(workId)}`;
+      const capsules = (await call(config, `${path}/capsules`)) as WorkCapsuleRow[];
+      const latest = capsules.at(-1);
+      if (!latest) {
+        throw new Error(`no_capsule: work ${workId} has no capsule to fork from — push one with work_capsule first`);
+      }
+      const hash = (latest.body as { payload_hash?: unknown } | null)?.payload_hash;
+      const body = typeof hash === "string" ? await readCasPayload(hash) : null;
+      const gitState = body?.git_state;
+      if (gitState == null || typeof gitState !== "object") {
+        throw new Error(`capsule v${latest.version} of work ${workId} has no git_state on this device — the fork's folder cannot be built`);
+      }
+      const folder = `${openrolyHome()}/worktrees/${crypto.randomUUID()}`;
+      checkoutForkFolder(config.cwd ?? process.cwd(), gitState as GitState, folder);
+      let forked: { work: WorkRow; wake: { ok: boolean; reason: string | null } };
+      try {
+        forked = (await call(config, `${path}/forks`, {
+          body: {
+            to: input.to,
+            role: input.role,
+            capsuleVersion: latest.version,
+            folder,
+            ...(input.note !== undefined ? { note: input.note } : {}),
+          },
+        })) as typeof forked;
+      } catch (e) {
+        rmSync(folder, { recursive: true, force: true });
+        throw e;
+      }
+      return {
+        work_id: forked.work.id,
+        forked_from: `${workId}@${latest.version}`,
+        profile: forked.work.context_profile ?? "full",
+        folder,
+        wake: forked.wake,
+      };
     },
     /**
      * v0 Authority(PBI-0413 / CAP-3 V10): freeze = stop_primary。**token 無しで呼べば必ず

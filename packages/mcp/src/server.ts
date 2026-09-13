@@ -14,13 +14,17 @@ import {
   replyInputShape,
   rulesPutInputShape,
   sendInputShape,
+  workAcceptInputShape,
   workCapsuleInputShape,
+  workContextPublishInputShape,
   workContextPutInputShape,
   workContextSearchInputShape,
+  workForkInputShape,
   workHandoffInputShape,
   workMessageInputShape,
   workProofInputShape,
   workTaskCreateInputShape,
+  workTransferInputShape,
 } from "./schemas.ts";
 import { openPeek, openSessionUpdate } from "./peek.ts";
 import { createAccountTools } from "./tools.ts";
@@ -71,11 +75,14 @@ const server = new McpServer({ name: "openroly-account", version: "0.2.0" });
 // **全 tool 応答の唯一の出口**(REQ-69)。ここで mask してから model に渡し、渡した text そのものを
 // peek に記録する(model が見た面 = log の面)。input も mask してから記録する —— tool 引数に生の値が
 // 来ても log には出さない。send / reply は restore **前** の input(placeholder 入り)を渡す事
-const json = (tool: string, input: unknown, v: unknown) => {
+// PBI-0444: 握っている work に未読の inbox が在れば 2 つ目の text に notice(1 つ目の JSON はそのまま読める)
+const json = async (tool: string, input: unknown, v: unknown) => {
   const text = JSON.stringify(maskValue(v, secrets), null, 2);
-  peek?.record({ tool, input: maskValue(input, secrets), output: text });
+  const found = await tools.inbox_notice();
+  const notice = found == null ? null : String(maskValue(found, secrets));
+  peek?.record({ tool, input: maskValue(input, secrets), output: notice == null ? text : `${text}\n${notice}` });
   reportTool?.(tool);
-  return { content: [{ type: "text" as const, text }] };
+  return { content: [{ type: "text" as const, text }, ...(notice == null ? [] : [{ type: "text" as const, text: notice }])] };
 };
 
 server.tool(
@@ -185,10 +192,34 @@ server.tool(
 );
 
 // ---------- Work Core の口(PBI-0400 / CAP-3 V9・図79) ----------
-// 裏が実在する動詞だけ。checkpoint(30 秒の定期打ち。V3)/ transfer(V5)/ fork / start_review(V8)は
-// まだ裏が無いので **口も作らない** —— not_implemented を返す死んだ path は「在る」と読まれる
-// 分だけ害になる。work_capsule / work_capsules(PBI-0406・V2)は「1 回打つ口」— checkpoint とは
-// 別の名前(定期 checkpoint が来た時に意味が割れないよう、口の名前を先に分けてある)
+// 裏が実在する動詞だけ(not_implemented を返す死んだ path は「在る」と読まれる分だけ害になる)。
+// work_capsule / work_capsules(PBI-0406・V2)は「1 回打つ口」— 30 秒の定期 checkpoint(V3・下の tick)とは別の名前
+
+// runtime transfer(PBI-0439 / CAP-3 V7・図84)。transfer の口は source 側(work_transfer)と target 側(work_accept)の 2 つ
+server.tool(
+  "work_transfer",
+  "Move the work you hold to another runtime (e.g. codex) without a moment where nobody holds it: the server reserves the lease for the transfer, this call snapshots this folder's git state plus the capsule fields you pass (goal, current_state, decisions, ...) under that reservation, and the server wakes the target runtime in this folder with a fixed instruction to call work_accept. A runtime needs a one-time intent token a human issued (openroly work intent <id> --action transfer_primary). If it stops midway the error names the transfer id and the state; a failed route releases the lease so you can claim the work again",
+  workTransferInputShape,
+  async ({ work_id, ...input }) =>
+    json("work_transfer", { work_id, to: input.to }, await tools.work_transfer(work_id, input)),
+);
+
+server.tool(
+  "work_accept",
+  "Take over a work that was transferred to you (work_id and transfer_id are in the instruction that woke you) or a forked work (work_id only). It gives you the write lease and returns the work's capsule as text (rendered) — the same text whichever runtime you are — starting with a line when this folder's files changed since the capsule, then the work's context key index. Fields that do not fit 2000 tokens are left out whole and named in receipt.omitted. On a reviewer branch the fields the profile keeps from you are named (never shown) in receipt.hidden. Use the returned run_id for work_capsule / work_proof from now on",
+  workAcceptInputShape,
+  async ({ work_id, ...input }) =>
+    json("work_accept", { work_id, transfer_id: input.transfer_id }, await tools.work_accept(work_id, input)),
+);
+
+// fork / review(PBI-0440 / CAP-3 V8・図84)。元の work を止めずに枝を 1 本。拾う側は同じ work_accept(transfer_id 無し)
+server.tool(
+  "work_fork",
+  "Branch a work without stopping it: copies the work's latest capsule into a new work, makes a separate copy of this folder's repo at the capsule's git state (under ~/.openroly/worktrees — this folder and its .git are never written), and wakes the target runtime there. role implementer = try another approach with the full context; role reviewer = a blind review that sees only the goal, artifacts, git state and tests, not the previous agent's decisions or notes. A runtime needs the owner's permission (delegation work_authority fork_work / start_review). If the wake fails the branch stays ready and work_accept can pick it up later",
+  workForkInputShape,
+  async ({ work_id, ...input }) =>
+    json("work_fork", { work_id, to: input.to, role: input.role }, await tools.work_fork(work_id, input)),
+);
 
 server.tool(
   "work_capsule",
@@ -255,14 +286,23 @@ server.tool(
 // Work Project context(PBI-0433・手描き 1 枚目・図80)。handoff が書き、次の agent が search で要る key だけ取る
 server.tool(
   "work_context_put",
-  "Publish key/value context and/or source file paths into this work's Work Project without handing it off (e.g. while working in parallel). Writing a key again with different content makes a new version; pass expected_versions {key: n} to refuse overwriting a newer value (409 stale_version — nothing in the call is written). Values stay on this device; the server only keeps key, hash and writer. Never put conversation/messages/transcript here; reference a secret as {credential_ref: \"env:NAME\"}",
+  "Publish key/value context and/or source file paths into this work's Work Project without handing it off (e.g. while working in parallel). Writing a key again with different content makes a new version; pass expected_versions {key: n} to refuse overwriting a newer value (409 stale_version — nothing in the call is written). Values stay on this device; the server only keeps key, hash and writer. Never put conversation/messages/transcript here; reference a secret as {credential_ref: \"env:NAME\"}. If you hold a task, write to your task: writing to its Work Project directly is refused (409 publish_required) — share with the project through work_context_publish, which is also the only way into a project nobody holds",
   workContextPutInputShape,
   async ({ work_id, ...input }) => json("work_context_put", { work_id, ...input }, await tools.work_context_put(work_id, input)),
 );
 
+// PBI-0443: task → Work Project の公開。project に出す口はこれだけ(図80c ④)
+server.tool(
+  "work_context_publish",
+  "Publish keys you already wrote on your task to the task's Work Project — the only way a task's context reaches the project. All keys land or none do (a key missing on the task fails with unknown_key and nothing is written); each project entry records published_from: <task>@<version>. Pass expected_versions {key: n} with the project's version to refuse overwriting a newer value (409 stale_version). auto/ and inbox/ keys cannot be published",
+  workContextPublishInputShape,
+  async ({ work_id, ...input }) =>
+    json("work_context_publish", { work_id, ...input }, await tools.work_context_publish(work_id, input)),
+);
+
 server.tool(
   "work_context_search",
-  "Pull only what you need from this work's Work Project before you start, in two steps: index_only:true lists every key with est_tokens and a short preview (no values), then pull the keys you chose. Each call returns at most max_tokens (default 2000, up to 20000), highest priority first — goal, next_step, decisions, open_questions, failed_attempts, verified_findings, then other keys, sources, auto/, inbox/ — and entries that do not fit are left out whole and named in budget.omitted. Filter by exact keys, a key prefix or kind (context / source); query matches key and value text on this device. Each context entry comes with its value — or value null + missing_on_device:true when it was written on another device. Each source comes with source_status same / changed / missing (re-hashed against the file here). work_assigned already shows each work's key index — pull goal and next_step first. auto/ keys (git, files_touched, tests) are machine-recorded facts: read them, never write them",
+  "Pull only what you need from this work's Work Project before you start, in two steps: index_only:true lists every key with est_tokens and a short preview (no values), then pull the keys you chose. Each call returns at most max_tokens (default 2000, up to 20000), highest priority first — goal, next_step, decisions, open_questions, failed_attempts, verified_findings, then other keys, sources, auto/, inbox/ — and entries that do not fit are left out whole and named in budget.omitted. Filter by exact keys, a key prefix or kind (context / source); query matches key and value text on this device. Each context entry comes with its value — or value null + missing_on_device:true when it was written on another device. Each source comes with source_status same / changed / missing (re-hashed against the file here). work_assigned already shows each work's key index — pull goal and next_step first. auto/ keys (git, files_touched, tests) are machine-recorded facts: read them, never write them. A Work Project entry that a task published carries published_from: <task>@<version>",
   workContextSearchInputShape,
   async ({ work_id, ...input }) =>
     json("work_context_search", { work_id, ...input }, await tools.work_context_search(work_id, input)),
@@ -270,7 +310,7 @@ server.tool(
 
 server.tool(
   "work_assigned",
-  "Works whose standing owner is this runtime (handed to you by runtime id or by kind) — where to look when you start and nothing is leased yet. Returns work_id, title, status, handoff_note, project_id, lease_live and context_index (which keys exist, without their values). Then pull what you need with work_context_search",
+  "Works whose standing owner is this runtime (handed to you by runtime id or by kind) — where to look when you start and nothing is leased yet. Returns work_id, title, status, handoff_note, project_id, folder, lease_live and context_index (which keys exist, without their values). When folder is not null, the task has its own copy of the project's files there — do all your file work in that folder, not in the project's folder. Then pull what you need with work_context_search",
   {},
   async () => json("work_assigned", {}, await tools.work_assigned()),
 );
@@ -278,22 +318,32 @@ server.tool(
 // Work Project の task と住所(PBI-0434・手描き 2 枚目)。分担した agent が同じ project の context を持って始め、互いに届く
 server.tool(
   "work_task_create",
-  "Split a Work Project: create one task under it (parent_work_id) and, if you pass to/note/context/sources, hand it to a runtime in the same call. A task cannot itself have tasks. If the task is created but handing it off fails, the error names the task id so you can retry work_handoff on it",
+  "Split a Work Project: create one task under it (parent_work_id) and, if you pass to/note/context/sources, hand it to a runtime in the same call. A task cannot itself have tasks. When you hand it to a runtime (to) from inside a git repo with a commit, the task gets its own folder — a copy of this folder's current files under the openroly home's worktrees/<task id> — returned as folder, so parallel tasks never write the same file; bring the result back with work_task_merge. If the task is created but its folder or the handoff fails, the error names the task id so you can retry work_handoff on it",
   workTaskCreateInputShape,
   async ({ parent_work_id, ...input }) =>
     json("work_task_create", { parent_work_id, ...input }, await tools.work_task_create(parent_work_id, input)),
 );
 
 server.tool(
+  "work_task_merge",
+  "Bring a task's work back into this folder (the Work Project's working tree): every change made in the task's folder since it was handed off — edited, added and deleted files — is applied to the files here. Nothing is committed and the git index is not touched, so the result shows up in git diff / git status. If any change collides with what is here, nothing at all is applied and result is conflict with the colliding paths. busy = another git operation holds this repo's index.lock (nothing applied, try again); empty = the task changed nothing. Refused before touching anything when the task is not on this Work Project (not_on_team) or its folder is not on this device (worktree_missing). applied and conflict are recorded on the task and show up as merge in work_team",
+  {
+    work_id: z.string().describe("the Work Project whose working tree is this folder"),
+    task_id: z.string().describe("the task to merge (its address from work_team)"),
+  },
+  async ({ work_id, task_id }) => json("work_task_merge", { work_id, task_id }, await tools.work_task_merge(work_id, task_id)),
+);
+
+server.tool(
   "work_team",
-  "Who else is working on the same Work Project: the project and every task under it, each with its address (the task's work id), who it is assigned to, whether a run is live on it, and is_you. Use an address with work_message to reach that agent",
+  "Who else is working on the same Work Project: the project and every task under it, each with its address (the task's work id), who it is assigned to, whether a run is live on it, is_you, and merge (not_started / applied / conflict — the last work_task_merge of that task). Use an address with work_message to reach that agent",
   { work_id: z.string().describe("any task or the project itself") },
   async ({ work_id }) => json("work_team", { work_id }, await tools.work_team(work_id)),
 );
 
 server.tool(
   "work_message",
-  "Send a note to another agent on the same Work Project (to_work_id = their address from work_team, from_work_id = your own task). It lands in their task's Work Project context under inbox/<your task>/..., which they read with work_context_search prefix \"inbox/\" — agents coordinate through work state, not a chat. The text stays on this device like other context values. Refused (nothing sent) when the address is not on your project",
+  "Send a note to another agent on the same Work Project (to_work_id = their address from work_team, from_work_id = your own task). It lands in their task's Work Project context under inbox/<your task>/..., which they read with work_context_search prefix \"inbox/\" — agents coordinate through work state, not a chat. The text stays on this device like other context values. Refused (nothing sent) when the address is not on your project. While the receiver holds its task, every openroly tool reply it gets carries a second text \"notice: N unread inbox messages on <task> …\" (up to 30 seconds late) until it pulls them with work_context_search — index_only or entries left out by max_tokens stay unread",
   workMessageInputShape,
   async ({ to_work_id, ...input }) =>
     json(

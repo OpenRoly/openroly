@@ -261,7 +261,7 @@ fn absolutize(p: PathBuf) -> PathBuf {
     std::path::absolute(&p).unwrap_or(p)
 }
 
-fn find_binary(names: &[String], env: &ScanEnv) -> Option<(PathBuf, String)> {
+pub fn find_binary(names: &[String], env: &ScanEnv) -> Option<(PathBuf, String)> {
     for name in names {
         for dir in &env.path_dirs {
             let p = dir.join(name);

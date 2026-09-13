@@ -133,9 +133,15 @@ pub struct EgressConfig {
 }
 
 /// 走っている proxy。drop で閉じる。
+///
+/// `c1` は同じ session の **pf による host 絞り込み**(PBI-0441 ③)。proxy と同じ寿命で持つ ——
+/// どちらも「この session の egress をどこに閉じるか」の機構で、reaper が child を wait した後に
+/// この struct を drop すると、proxy の task が止まり `c1::Session` の drop が専用 uid と pf 規則を
+/// 戻す。**別の場所で持つと片方だけ残る**(閉じ込めだけ生きて proxy が死ぬ / uid が端末に溜まる)。
 pub struct Egress {
     pub port: u16,
     task: tokio::task::JoinHandle<()>,
+    pub c1: Option<crate::c1::Session>,
 }
 
 impl Drop for Egress {
@@ -171,7 +177,7 @@ pub fn start(config: EgressConfig, request_id: &str) -> Result<Egress, String> {
             });
         }
     });
-    Ok(Egress { port, task })
+    Ok(Egress { port, task, c1: None })
 }
 
 /// 1 接続。request line + header を `\r\n\r\n` まで読み(上限 8KB)、CONNECT で allowlist なら

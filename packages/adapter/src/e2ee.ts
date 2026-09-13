@@ -254,7 +254,7 @@ async function accountPublicKeyOf(
  * 取れなければ **投げる**(AC-X1)。平文へは落とさない —— downgrade 経路は
  * 「宛先が account 鍵を持たない」1 本だけ(PBI-0023 F4)。
  */
-async function ownAccountPublicKey(call: E2eeCall): Promise<{ keyId: string; publicJwk: JsonWebKey }> {
+export async function ownAccountPublicKey(call: E2eeCall): Promise<{ keyId: string; publicJwk: JsonWebKey }> {
   const me = (await call("/v1/whoami")) as { handle?: unknown };
   if (typeof me?.handle !== "string" || me.handle === "") {
     throw new Error("whoami returned no handle — cannot include the sender's own copy");

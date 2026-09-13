@@ -17,6 +17,8 @@
 // CLI / MCP / adapter / server で、どれも Bun の上で動く(plugin bundle は `--target=bun`、
 // 配布 binary は `bun build --compile`)。web は hash を呼ばない。
 
+import { estimateTokens } from "./context.ts";
+
 export const CAPSULE_FIELDS = [
   "goal",
   "current_state",
@@ -238,4 +240,43 @@ export function validateManifest(input: unknown): ManifestValidation {
     return { ok: false, reason: "invalid_refs" };
   }
   return { ok: true, manifest: { payload_hash: o.payload_hash, size: o.size, mode: o.mode, refs: o.refs as string[] } };
+}
+
+// ---------- REHYDRATE(PBI-0439 / CAP-3 V7・図84) ----------
+
+export interface RenderedCapsule {
+  /** preamble(常に先頭)+ capsule の field を CAPSULE_FIELDS の順の節で */
+  rendered: string;
+  /** 上限に入らず丸ごと外した field(値は出さない) */
+  omitted: CapsuleField[];
+  est_tokens: number;
+}
+
+/**
+ * capsule を次の runtime が読む文面にする。**runtime を引数に取らない** —— Claude に渡しても Codex に渡しても
+ * 同じ byte(runtime ごとに文面を変えると、移した先で「何を知っているか」が変わる)。上限は
+ * PBI-0438 の search と同じ見積もり(estimateTokens)。入らない field は途中で切らず丸ごと外して omitted に残す
+ * (後ろの小さい field は入れば入れる)。preamble(tree の変化・context 索引の 1 行)は必ず載せる。
+ */
+export function renderCapsule(
+  body: CapsuleBody,
+  opts: { maxTokens: number; preamble?: readonly string[] },
+): RenderedCapsule {
+  const forbidden = findConversationKeys(body);
+  if (forbidden.length > 0) throw new CapsuleConversationError(forbidden);
+  const head = (opts.preamble ?? []).filter((l) => l.length > 0).join("\n");
+  let rendered = head;
+  const omitted: CapsuleField[] = [];
+  for (const field of CAPSULE_FIELDS) {
+    const value = body[field];
+    if (value === undefined) continue;
+    const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+    const next = `${rendered}${rendered ? "\n\n" : ""}## ${field}\n${text}`;
+    if (estimateTokens(next) > opts.maxTokens) {
+      omitted.push(field);
+      continue;
+    }
+    rendered = next;
+  }
+  return { rendered, omitted, est_tokens: estimateTokens(rendered) };
 }

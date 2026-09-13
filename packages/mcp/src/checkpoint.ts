@@ -9,12 +9,13 @@
 // dedupe/heartbeat)。この file は「いつ・何を」呼ぶかだけを持ち、壁(hasKeyDeep)や dedupe
 // (content_hash)を作り直さない。
 import { gcCheckpoints } from "@openroly/adapter";
+import { isTransferHolderId } from "@openroly/core";
 import type { AccountTools } from "./tools.ts";
 import { computeGitState } from "./git-state.ts";
 import { runAutoContext } from "./auto-context.ts";
 
 export type CheckpointTickResult =
-  | { pushed: false; reason: "no_active_work" | "not_a_git_worktree" | "ambiguous_work" }
+  | { pushed: false; reason: "no_active_work" | "not_a_git_worktree" | "ambiguous_work" | "transfer_in_progress" }
   | { pushed: true; workId: string };
 
 /**
@@ -37,6 +38,8 @@ export async function runCheckpointTick(tools: AccountTools, cwd: string): Promi
     ambiguous: boolean;
   } | null;
   if (!current || !current.lease.holder_run) return { pushed: false, reason: "no_active_work" };
+  // PBI-0439: transfer の予約中は予約 holder の名で積まない(積むのは work_transfer の 1 回。VALIDATE はその版を名指す)
+  if (isTransferHolderId(current.lease.holder_run)) return { pushed: false, reason: "transfer_in_progress" };
   if (current.ambiguous) return { pushed: false, reason: "ambiguous_work" };
   const gitState = computeGitState(cwd);
   if (!gitState) return { pushed: false, reason: "not_a_git_worktree" };
@@ -109,6 +112,9 @@ export function startCheckpointTicker(
     if (stopped || inFlight) return;
     inFlight = true;
     try {
+      // PBI-0446: put で上げ損ねた context の値を再送する。lease の有無に依らず毎 tick —— 失敗は印が残って次の tick へ
+      // (account 鍵がまだ無い account では毎回落ちるので onError に流さない。残りは `openroly doctor` が数える)
+      await tools.context_sync().catch(() => {});
       const result = await runCheckpointTick(tools, opts.cwd);
       tickCount += 1;
       // PBI-0436: capsule を打てた(= lease があり ambiguous でなく git worktree)時だけ、同じ work の

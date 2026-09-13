@@ -4,18 +4,26 @@
 // ここが持つのは「value を CAS に書く」「source file を hash する」「server の索引を agent に見せる
 // entry へ組み直す」の 3 つで、**MCP(packages/mcp)と CLI(apps/cli)が同じ関数を呼ぶ** ——
 // 組み直しを 2 箇所に書くと、片方だけが missing_on_device を黙って落とす形に割れる。
+// PBI-0446: 値は自分の account 公開鍵へ seal して server に預け、別端末は開いて hash を確かめてから CAS に置く(図80d)。
 import { createHash } from "node:crypto";
-import { readFile, realpath } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
+import { open, seal, type EncryptedEnvelope } from "@openroly/crypto-envelope";
 import {
   buildContextValue,
   estimateTokens,
+  isValidCasHash,
   validateContextKey,
+  verifySealedValue,
+  WORK_CONTEXT_SYNC_MAX_BYTES,
   WORK_CONTEXT_WELL_KNOWN_KEYS,
+  type ContextSyncReason,
   type ContextValuePayload,
   type WorkContextKind,
 } from "@openroly/core";
-import { readCasPayload, writeCasPayload } from "./checkpoint-cas.ts";
+import { checkpointsDir, readCasPayload, writeCasPayload } from "./checkpoint-cas.ts";
+import { openrolyHome } from "./credentials.ts";
+import { ownAccountPublicKey, readerKeys, type E2eeCall } from "./e2ee.ts";
 
 type Env = Record<string, string | undefined>;
 
@@ -39,8 +47,13 @@ export interface ContextIndexRow {
   runtime_id: string | null;
   actor: string;
   updated_at: string;
-  /** PBI-0434: work = この work の行 / project = 親の Work Project の行 */
+  /** PBI-0434: work = この work の行 / project = 親の Work Project の行 / PBI-0440: fork = fork 元の work の行 */
   scope?: string;
+  /** PBI-0443: publish で task から写した行だけが持つ */
+  published_from_work_id?: string | null;
+  published_from_version?: number | null;
+  /** PBI-0444: その work 自身の inbox/ 行だけが持つ(既読か) */
+  read?: boolean;
 }
 
 export type SourceStatus = "same" | "changed" | "missing";
@@ -54,14 +67,28 @@ export interface ResolvedContextEntry {
   updated_at: string;
   /** PBI-0434: task の search では project の行も来る(同じ key が両方に在っても両方返す) */
   scope?: string;
+  /** PBI-0443: task から公開された行の出所 `<task の work id>@<版>` */
+  published_from?: string;
+  /** PBI-0444: その work 自身の inbox/ 行だけ。この search の前に既読だったか */
+  read?: boolean;
   /** context: 値。この端末に無ければ null + missing_on_device */
   value?: unknown;
   missing_on_device?: boolean;
+  /** PBI-0446: この端末に無く、account から開いた値 */
+  fetched_from?: "account";
+  /** PBI-0446: missing_on_device の理由。無い = account にまだ上がっていない */
+  reason?: ContextSyncReason;
   /** source: 手元の file を再 hash した結果 */
   source_status?: SourceStatus;
   /** PBI-0438 index_only: この行を値付きで取ったら何 token か / 値の先頭(端末で読んだ物) */
   est_tokens?: number;
   preview?: string | null;
+}
+
+/** 端末に無い値を account から開く時の材料(開ける鍵は inbox_read と同じ readerKeys の順) */
+export interface ContextAccount {
+  call: E2eeCall;
+  deviceKind: string;
 }
 
 // ---------- 2 段取得と 1 回の上限(PBI-0438・「123やる」の 3) ----------
@@ -95,11 +122,85 @@ const priorityOf = (e: ResolvedContextEntry): [number, number, number] => {
 
 const costOf = (e: ResolvedContextEntry): number => estimateTokens(JSON.stringify(e));
 
+/** account へまだ上がっていない値の印(hash 名の空 file)の置き場 */
+const contextSyncDir = (env: Env): string => join(openrolyHome(env), "context-sync");
+
 /** value を CAS に書き、server に送る索引を返す(壁は core の buildContextValue) */
 export async function prepareContextValue(key: string, value: unknown, env: Env = process.env): Promise<ContextIndexEntryInput> {
   const built = buildContextValue(key, value);
+  const fresh = (await stat(join(checkpointsDir(env), built.hash)).catch(() => null)) == null;
   const written = await writeCasPayload(built.payload, env);
+  // PBI-0446: この端末で新しく置いた値だけに印を付ける(同じ中身の再 put・別端末から開いた値は上げ直さない)。
+  // 上限を超える値は上げない —— 別端末は索引の size で too_large_to_sync と分かる
+  if (fresh && written.size <= WORK_CONTEXT_SYNC_MAX_BYTES) {
+    await mkdir(contextSyncDir(env), { recursive: true, mode: 0o700 });
+    await writeFile(join(contextSyncDir(env), written.hash), "", { mode: 0o600 });
+  }
   return { kind: "context", key, value_hash: written.hash, size: written.size };
+}
+
+/** account へまだ上がっていない値の数(`openroly doctor` の context sync: N pending) */
+export async function countPendingContextValues(env: Env = process.env): Promise<number> {
+  return (await readdir(contextSyncDir(env)).catch(() => [] as string[])).filter(isValidCasHash).length;
+}
+
+/**
+ * 印の付いた値を自分の account 公開鍵へ seal して上げる(PBI-0446・図80d)。put / handoff の直後と 30 秒 tick が呼ぶ。
+ * 印を外すのは上がった物と CAS から消えた物だけ —— 通信断・5xx・account 鍵が無い(throw)は印を残して次の tick で再送する。
+ * **平文を上げる道は無い**(seal できなければ上げない)
+ */
+export async function syncPendingContextValues(call: E2eeCall, env: Env = process.env): Promise<{ synced: number; pending: number }> {
+  const dir = contextSyncDir(env);
+  const hashes = (await readdir(dir).catch(() => [] as string[])).filter(isValidCasHash);
+  if (hashes.length === 0) return { synced: 0, pending: 0 };
+  const target = await ownAccountPublicKey(call);
+  let synced = 0;
+  for (const hash of hashes) {
+    const payload = await readCasPayload(hash, env);
+    if (payload != null) {
+      const envelope = await seal(new TextEncoder().encode(JSON.stringify(payload)), [target]);
+      const ok = await call(`/v1/context-values/${hash}`, { method: "PUT", body: envelope }).then(
+        () => true,
+        () => false,
+      );
+      if (!ok) continue;
+      synced += 1;
+    }
+    await rm(join(dir, hash), { force: true });
+  }
+  return { synced, pending: await countPendingContextValues(env) };
+}
+
+/**
+ * 端末に無い値を account から開く(PBI-0446・図80d)。**開けて hash が合った値だけ**を CAS に置く。
+ * 鍵が無い時に平文を作る道は無い(no_account_key)
+ */
+async function openFromAccount(
+  row: ContextIndexRow,
+  account: ContextAccount | undefined,
+  env: Env | undefined,
+): Promise<{ payload: ContextValuePayload } | { reason?: ContextSyncReason }> {
+  if (row.size > WORK_CONTEXT_SYNC_MAX_BYTES) return { reason: "too_large_to_sync" };
+  if (!account) return {};
+  let envelope: EncryptedEnvelope;
+  try {
+    envelope = (await account.call(`/v1/context-values/${row.value_hash}`)) as EncryptedEnvelope;
+  } catch {
+    return {}; // まだ上がっていない(404)・届かない —— 無い物を無いと言う
+  }
+  // recipients は server から来た値。壊れた entry は宛先に無かった物として扱う(openIfEnvelope と同じ守り)
+  const recipients = (Array.isArray(envelope?.recipients) ? envelope.recipients : []).filter(
+    (r): r is EncryptedEnvelope["recipients"][number] => typeof (r as { device_key_id?: unknown } | null)?.device_key_id === "string",
+  );
+  // 宛先が 1 つも読めない = envelope として壊れている(書き換えられた)。鍵の有無の問題ではない
+  if (recipients.length === 0) return { reason: "sealed_hash_mismatch" };
+  const key = (await readerKeys(account.deviceKind, account.call)).find((k) => recipients.some((r) => r.device_key_id === k.keyId));
+  if (!key) return { reason: "no_account_key" };
+  const plaintext = await open({ ...envelope, recipients }, key).catch(() => null);
+  const verified = plaintext == null ? null : verifySealedValue(row.value_hash, plaintext);
+  if (!verified?.ok || verified.payload.key !== row.key) return { reason: "sealed_hash_mismatch" };
+  await writeCasPayload(verified.payload, env);
+  return { payload: verified.payload };
 }
 
 /**
@@ -145,7 +246,8 @@ export async function prepareSource(cwd: string, path: string): Promise<ContextI
 
 /**
  * server の索引を agent に見せる形にする。**無い物を無いと言う**:
- *  - context の value がこの端末の CAS に無い(別端末で書いた・GC 済み)→ `value: null, missing_on_device: true`
+ *  - context の value がこの端末の CAS に無い(別端末で書いた・GC 済み)→ PBI-0446: `account` が在れば account から開く
+ *    (`fetched_from: "account"`)。開けなければ `value: null, missing_on_device: true` + 分かる時は `reason`
  *  - 索引が別の key の payload を指している → 同じく missing(中身を取り違えて返さない)
  *  - source は手元で再 hash して same / changed / missing
  * `query` は**端末側**で key と value の文字列に部分一致(server は value を持たないので検索できない)。
@@ -153,7 +255,7 @@ export async function prepareSource(cwd: string, path: string): Promise<ContextI
  */
 export async function resolveContextEntries(
   rows: ContextIndexRow[],
-  opts: { cwd: string; query?: string; env?: Env; indexOnly?: boolean; maxTokens?: number },
+  opts: { cwd: string; query?: string; env?: Env; indexOnly?: boolean; maxTokens?: number; account?: ContextAccount },
 ): Promise<{ entries: ResolvedContextEntry[]; missing_on_device: number; budget: ContextSearchBudget }> {
   // 値を読む前に落とす(上限の無い search を黙って通さない)
   const maxTokens = opts.maxTokens ?? CONTEXT_SEARCH_DEFAULT_MAX_TOKENS;
@@ -169,6 +271,8 @@ export async function resolveContextEntries(
       written_by: { actor: r.actor, runtime_id: r.runtime_id, run_id: r.run_id },
       updated_at: String(r.updated_at),
       ...(r.scope ? { scope: r.scope } : {}),
+      ...(r.published_from_work_id ? { published_from: `${r.published_from_work_id}@${r.published_from_version}` } : {}),
+      ...(r.read !== undefined ? { read: r.read } : {}),
     };
     if (r.kind === "source") {
       const hashed = await hashSourceFile(opts.cwd, r.key).catch(() => null);
@@ -178,11 +282,16 @@ export async function resolveContextEntries(
     }
     // value_hash は server から来た値 —— readCasPayload が形を検査してから path を組む(PBI-0414 攻撃②)
     const payload = (await readCasPayload(r.value_hash, opts.env)) as ContextValuePayload | null;
-    if (payload == null || payload.key !== r.key) {
-      entries.push({ ...base, value: null, missing_on_device: true });
+    if (payload != null && payload.key === r.key) {
+      entries.push({ ...base, value: payload.value });
       continue;
     }
-    entries.push({ ...base, value: payload.value });
+    const opened = payload == null ? await openFromAccount(r, opts.account, opts.env) : {};
+    if ("payload" in opened) {
+      entries.push({ ...base, value: opened.payload.value, fetched_from: "account" });
+      continue;
+    }
+    entries.push({ ...base, value: null, missing_on_device: true, ...(opened.reason ? { reason: opened.reason } : {}) });
   }
   const q = opts.query?.toLowerCase();
   const hits = q

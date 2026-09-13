@@ -1,4 +1,4 @@
-import { createNativeAdapter, type ExtensionAdapter } from "@openroly/adapter";
+import { createNativeAdapter, variantClasses, type ExtensionAdapter, type VariantClass } from "@openroly/adapter";
 import { apiAdapters } from "@openroly/adapter-api";
 import { claudeAdapter } from "@openroly/adapter-claude";
 import { codexAdapter } from "@openroly/adapter-codex";
@@ -51,3 +51,6 @@ export function findAdapter(id: string, native?: unknown): ExtensionAdapter | un
 }
 
 export const SUPPORTED_IDS = ADAPTERS.map((a) => a.id);
+
+/** runtime profile の class(PBI-0211。`adapter: "variant"`)。adapter は持たない —— MCP / skills は親の登録を共有する */
+export const VARIANT_CLASSES: VariantClass[] = variantClasses(catalog.detectors as unknown[]);

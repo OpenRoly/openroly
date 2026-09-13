@@ -9,6 +9,8 @@
 
 #![cfg(target_os = "macos")]
 
+#[path = "../src/c1.rs"]
+mod c1;
 #[path = "../src/egress.rs"]
 mod egress;
 #[path = "../src/sandbox.rs"]
@@ -149,8 +151,26 @@ async fn review_attack_same_port_external_host_is_reachable_and_invisible() {
     drop(egress_handle);
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // (1) 口は在る: 同じ port 番号の外部 host には素通りする。
-    assert!(stdout.contains("sameport=ok"), "residual hole が塞がっている/変わっている: {stdout}");
+    // (1) PBI-0441 AC-3: **backend が名乗る値と実物が食い違ったら赤**。`port_scoped` を名乗る間は
+    // 同じ port 番号の外部 host に素通りする事を、`host_scoped` を名乗るなら繋がらない事を期待する
+    // (pf を入れて host_scoped に変えた時、この検査がそのまま「本当に閉じたか」を測る)。
+    let enforcement = sandbox::backend().egress_enforcement();
+    match enforcement {
+        "port_scoped" => assert!(
+            stdout.contains("sameport=ok"),
+            "backend は port_scoped と名乗るのに同じ port の外部 host に繋がらない(表示と実物が食い違い): {stdout}"
+        ),
+        "host_scoped" => assert!(
+            stdout.contains("sameport=deny"),
+            "backend は host_scoped と名乗るのに同じ port の外部 host に繋がった(表示と実物が食い違い): {stdout}"
+        ),
+        other => panic!("seatbelt の端末で想定していない egress_enforcement: {other}"),
+    }
+    if enforcement == "host_scoped" {
+        // 閉じた backend では下の「observe に現れない直接 egress」は起きないので、ここで終わる
+        let _ = std::fs::remove_dir_all(&base);
+        return;
+    }
     // 対照: 同じ IP の別 port は seatbelt が deny する(許可が port 番号で scoped している事の確認)。
     assert!(stdout.contains("otherport=deny"), "別 port への直接接続が許されてしまった — sandbox が port で絞れていない: {stdout}");
 

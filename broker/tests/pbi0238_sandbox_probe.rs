@@ -17,6 +17,11 @@ mod discovery;
 mod openroly_cli;
 #[path = "../src/launch.rs"]
 mod launch;
+#[path = "../src/c1.rs"]
+mod c1;
+
+/// PBI-0441 ③: test では C1 を掛けない(pane / CI は root op を打てない)。C1 の形は c1.rs の test が fake で武装する
+static C1_OFF: c1::C1Status = c1::C1Status { available: false, reason: String::new() };
 #[path = "../src/egress.rs"]
 mod egress;
 #[path = "../src/sandbox.rs"]
@@ -157,7 +162,9 @@ async fn fake_runtime_inside_seatbelt_can_only_write_its_folder_and_talk_to_its_
         sandbox: &Seatbelt,
         egress: EgressConfig { allow: vec!["allowed.example".to_string()], events: Some(tx), upstream_override: Some(up), observe: None },
         folder: Some(&folder_str),
+        lane: "manual",
         user_home: user_home.clone(),
+        c1: &C1_OFF,
     };
     let (mut child, egress) =
         launch_session_scoped_in(&home, &registry::builtin(), &found, "claude", "INSTR", "req-probe", None, &containment(&dir), &iso)
@@ -218,7 +225,9 @@ async fn a_session_cannot_reach_another_sessions_port_or_folder() {
         sandbox: &Seatbelt,
         egress: EgressConfig { allow: vec![], events: None, upstream_override: None, observe: None },
         folder: Some(&folder_b_str),
+        lane: "manual",
         user_home: user_home.clone(),
+        c1: &C1_OFF,
     };
     let (mut child_b, egress_b) =
         launch_session_scoped_in(&home, &registry::builtin(), &found_b, "claude", "B", "req-b", None, &env, &iso_b).expect("spawn B");
@@ -242,7 +251,9 @@ async fn a_session_cannot_reach_another_sessions_port_or_folder() {
         sandbox: &Seatbelt,
         egress: EgressConfig { allow: vec![], events: None, upstream_override: None, observe: None },
         folder: Some(&folder_a_str),
+        lane: "manual",
         user_home: user_home.clone(),
+        c1: &C1_OFF,
     };
     let (mut child_a, egress_a) =
         launch_session_scoped_in(&home, &registry::builtin(), &found_a, "claude", "A", "req-a", None, &env, &iso_a).expect("spawn A");

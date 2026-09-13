@@ -13979,6 +13979,71 @@ var WORKBOARD_STATUSES = [
 // packages/core/src/work.ts
 var WORK_STATUSES = [...WORKBOARD_STATUSES, "needs_user"];
 var CHECKPOINT_TICK_INTERVAL_SECS = 30;
+var WORK_LIVENESS_TIMEOUT_SECS = 90;
+var TRANSFER_HOLDER_PREFIX = "transfer:";
+function isTransferHolderId(runId) {
+  return typeof runId === "string" && runId.startsWith(TRANSFER_HOLDER_PREFIX);
+}
+var CONTEXT_PROFILES = {
+  full: null,
+  reviewer_blind: {
+    capsuleFields: ["goal", "relevant_artifacts", "git_state", "capability_requirements"],
+    contextKeys: ["goal", "auto/git", "auto/files_touched", "auto/tests"],
+    sources: true
+  }
+};
+var TASK_MERGE_PATHS_MAX = 1000;
+var APPLY_CONFLICT_LINE = /^error: (.+): (?:patch does not apply|already exists in working directory|does not exist in working directory|wrong type|has type \d+, expected \d+)$/gm;
+function decideMerge(check) {
+  if (check.changed.length === 0)
+    return { result: "empty" };
+  if (check.busy)
+    return { result: "busy" };
+  if (check.checkError == null)
+    return { result: "applied", paths: check.changed };
+  const hit = [...new Set([...check.checkError.matchAll(APPLY_CONFLICT_LINE)].map((m) => m[1]))].sort();
+  return { result: "conflict", paths: hit.length > 0 ? hit : check.changed };
+}
+function applyContextProfile(profile, input) {
+  const known = Object.hasOwn(CONTEXT_PROFILES, profile);
+  const allow = known ? CONTEXT_PROFILES[profile] : undefined;
+  const hidden = new Set;
+  if (Array.isArray(input)) {
+    const rows = input;
+    if (allow === null)
+      return { kept: [...rows], hidden: [] };
+    const kept2 = rows.filter((e) => {
+      const ok = allow !== undefined && (e.kind === "source" ? allow.sources : e.kind === "context" && allow.contextKeys.includes(e.key));
+      if (!ok)
+        hidden.add(e.key);
+      return ok;
+    });
+    return { kept: kept2, hidden: [...hidden].sort() };
+  }
+  const body = input;
+  if (allow === null)
+    return { kept: { ...body }, hidden: [] };
+  const kept = {};
+  for (const [k, v] of Object.entries(body)) {
+    if (allow !== undefined && allow.capsuleFields.includes(k))
+      kept[k] = v;
+    else
+      hidden.add(k);
+  }
+  return { kept, hidden: [...hidden].sort() };
+}
+// packages/core/src/context.ts
+var CJK = /[\u3000-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF66-\uFF9F]/gu;
+var DENSE_CHARS_PER_TOKEN = 4;
+function estimateTokens(text) {
+  const cjk = text.match(CJK);
+  const cjkCount = cjk === null ? 0 : cjk.length;
+  const words = text.replace(CJK, " ").split(/\s+/).filter((w) => w.length > 0).length;
+  const byWord = Math.ceil(words * 1.3 + cjkCount);
+  const dense = Math.ceil(text.replace(/\s+/gu, "").length / DENSE_CHARS_PER_TOKEN);
+  return Math.max(byWord, dense);
+}
+
 // packages/core/src/capsule.ts
 var CAPSULE_FIELDS = [
   "goal",
@@ -14116,6 +14181,31 @@ function buildManifest(body, payload) {
   collectCredentialRefNames(body, names);
   return { payload_hash: payload.hash, size: payload.size, mode: payload.mode, refs: [...names].sort() };
 }
+function renderCapsule(body, opts) {
+  const forbidden = findConversationKeys(body);
+  if (forbidden.length > 0)
+    throw new CapsuleConversationError(forbidden);
+  const head = (opts.preamble ?? []).filter((l) => l.length > 0).join(`
+`);
+  let rendered = head;
+  const omitted = [];
+  for (const field of CAPSULE_FIELDS) {
+    const value = body[field];
+    if (value === undefined)
+      continue;
+    const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+    const next = `${rendered}${rendered ? `
+
+` : ""}## ${field}
+${text}`;
+    if (estimateTokens(next) > opts.maxTokens) {
+      omitted.push(field);
+      continue;
+    }
+    rendered = next;
+  }
+  return { rendered, omitted, est_tokens: estimateTokens(rendered) };
+}
 // packages/core/src/work-context.ts
 var WORK_CONTEXT_KEY_MAX = 128;
 var WORK_SOURCE_PATH_MAX = 512;
@@ -14166,6 +14256,21 @@ function buildContextValue(key, value) {
   validateCredentialRefs(payload);
   return { payload, hash: hashCapsuleBody(payload) };
 }
+var WORK_CONTEXT_SYNC_MAX_BYTES = 256 * 1024;
+function verifySealedValue(expectedHash, plaintext) {
+  let parsed;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(plaintext));
+  } catch {
+    return { ok: false };
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
+    return { ok: false };
+  const p = parsed;
+  if (typeof p.key !== "string" || Object.keys(p).sort().join(",") !== "key,value")
+    return { ok: false };
+  return hashCapsuleBody(p) === expectedHash ? { ok: true, payload: { key: p.key, value: p.value } } : { ok: false };
+}
 var WORK_CONTEXT_WELL_KNOWN_KEYS = [
   "goal",
   "next_step",
@@ -14178,13 +14283,23 @@ var WORK_CONTEXT_RESERVED_PREFIXES = ["auto/", "inbox/"];
 function findReservedContextKeys(keys) {
   return keys.filter((k) => WORK_CONTEXT_RESERVED_PREFIXES.some((p) => k.startsWith(p)));
 }
+var isInbox = (r) => r.kind === "context" && r.key.startsWith("inbox/");
+function countInbox(rows) {
+  return {
+    total: new Set(rows.filter(isInbox).map((r) => r.key)).size,
+    unread: rows.filter((r) => isInbox(r) && r.read === false).length
+  };
+}
+function inboxDeliveredKeys(entries) {
+  return entries.filter((e) => isInbox(e) && e.read === false && ("value" in e) && e.missing_on_device !== true).map((e) => e.key);
+}
 function summarizeContextIndex(rows) {
   const contextKeys = [...new Set(rows.filter((r) => r.kind === "context").map((r) => r.key))];
   const sources = new Set(rows.filter((r) => r.kind === "source").map((r) => r.key)).size;
   const present = new Set(contextKeys);
   const known = WORK_CONTEXT_WELL_KNOWN_KEYS.filter((k) => present.has(k));
   const auto = contextKeys.filter((k) => k.startsWith("auto/")).map((k) => k.slice("auto/".length)).sort();
-  const inbox = contextKeys.filter((k) => k.startsWith("inbox/")).length;
+  const inbox = countInbox(rows);
   const other = contextKeys.filter((k) => !WORK_CONTEXT_WELL_KNOWN_KEYS.includes(k) && findReservedContextKeys([k]).length === 0).length;
   const parts = [];
   if (known.length > 0)
@@ -14195,20 +14310,9 @@ function summarizeContextIndex(rows) {
     parts.push(`+${other} key${other === 1 ? "" : "s"}`);
   if (sources > 0)
     parts.push(`${sources} source${sources === 1 ? "" : "s"}`);
-  if (inbox > 0)
-    parts.push(`inbox ${inbox}`);
+  if (inbox.total > 0)
+    parts.push(`inbox ${inbox.total}${inbox.unread > 0 ? ` (${inbox.unread} unread)` : ""}`);
   return parts.length > 0 ? parts.join(" \xB7 ") : "context: (empty)";
-}
-// packages/core/src/context.ts
-var CJK = /[\u3000-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF66-\uFF9F]/gu;
-var DENSE_CHARS_PER_TOKEN = 4;
-function estimateTokens(text) {
-  const cjk = text.match(CJK);
-  const cjkCount = cjk === null ? 0 : cjk.length;
-  const words = text.replace(CJK, " ").split(/\s+/).filter((w) => w.length > 0).length;
-  const byWord = Math.ceil(words * 1.3 + cjkCount);
-  const dense = Math.ceil(text.replace(/\s+/gu, "").length / DENSE_CHARS_PER_TOKEN);
-  return Math.max(byWord, dense);
 }
 // packages/core/src/env.ts
 var ENV_PREFIX = "OPENROLY_";
@@ -17127,7 +17231,7 @@ async function gcCheckpoints(opts = {}, env2 = process.env) {
 }
 // packages/adapter/src/work-context.ts
 import { createHash } from "crypto";
-import { readFile as readFile4, realpath } from "fs/promises";
+import { mkdir as mkdir4, readdir as readdir2, readFile as readFile4, realpath, rm as rm4, stat as stat4, writeFile as writeFile3 } from "fs/promises";
 import { join as join4, relative } from "path";
 var CONTEXT_SEARCH_DEFAULT_MAX_TOKENS = 2000;
 var CONTEXT_SEARCH_MAX_TOKENS = 20000;
@@ -17139,10 +17243,63 @@ var priorityOf = (e) => {
   return [e.scope === "project" ? 1 : 0, group, group === 0 ? known : 0];
 };
 var costOf = (e) => estimateTokens(JSON.stringify(e));
+var contextSyncDir = (env2) => join4(openrolyHome(env2), "context-sync");
 async function prepareContextValue(key, value, env2 = process.env) {
   const built = buildContextValue(key, value);
+  const fresh = await stat4(join4(checkpointsDir(env2), built.hash)).catch(() => null) == null;
   const written = await writeCasPayload(built.payload, env2);
+  if (fresh && written.size <= WORK_CONTEXT_SYNC_MAX_BYTES) {
+    await mkdir4(contextSyncDir(env2), { recursive: true, mode: 448 });
+    await writeFile3(join4(contextSyncDir(env2), written.hash), "", { mode: 384 });
+  }
   return { kind: "context", key, value_hash: written.hash, size: written.size };
+}
+async function countPendingContextValues(env2 = process.env) {
+  return (await readdir2(contextSyncDir(env2)).catch(() => [])).filter(isValidCasHash).length;
+}
+async function syncPendingContextValues(call, env2 = process.env) {
+  const dir = contextSyncDir(env2);
+  const hashes = (await readdir2(dir).catch(() => [])).filter(isValidCasHash);
+  if (hashes.length === 0)
+    return { synced: 0, pending: 0 };
+  const target = await ownAccountPublicKey(call);
+  let synced = 0;
+  for (const hash of hashes) {
+    const payload = await readCasPayload(hash, env2);
+    if (payload != null) {
+      const envelope = await seal(new TextEncoder().encode(JSON.stringify(payload)), [target]);
+      const ok = await call(`/v1/context-values/${hash}`, { method: "PUT", body: envelope }).then(() => true, () => false);
+      if (!ok)
+        continue;
+      synced += 1;
+    }
+    await rm4(join4(dir, hash), { force: true });
+  }
+  return { synced, pending: await countPendingContextValues(env2) };
+}
+async function openFromAccount(row, account, env2) {
+  if (row.size > WORK_CONTEXT_SYNC_MAX_BYTES)
+    return { reason: "too_large_to_sync" };
+  if (!account)
+    return {};
+  let envelope;
+  try {
+    envelope = await account.call(`/v1/context-values/${row.value_hash}`);
+  } catch {
+    return {};
+  }
+  const recipients = (Array.isArray(envelope?.recipients) ? envelope.recipients : []).filter((r) => typeof r?.device_key_id === "string");
+  if (recipients.length === 0)
+    return { reason: "sealed_hash_mismatch" };
+  const key = (await readerKeys(account.deviceKind, account.call)).find((k) => recipients.some((r) => r.device_key_id === k.keyId));
+  if (!key)
+    return { reason: "no_account_key" };
+  const plaintext = await open2({ ...envelope, recipients }, key).catch(() => null);
+  const verified = plaintext == null ? null : verifySealedValue(row.value_hash, plaintext);
+  if (!verified?.ok || verified.payload.key !== row.key)
+    return { reason: "sealed_hash_mismatch" };
+  await writeCasPayload(verified.payload, env2);
+  return { payload: verified.payload };
 }
 async function hashSourceFile(cwd, path) {
   const decision = validateContextKey("source", path);
@@ -17193,7 +17350,9 @@ async function resolveContextEntries(rows, opts) {
       version: r.version,
       written_by: { actor: r.actor, runtime_id: r.runtime_id, run_id: r.run_id },
       updated_at: String(r.updated_at),
-      ...r.scope ? { scope: r.scope } : {}
+      ...r.scope ? { scope: r.scope } : {},
+      ...r.published_from_work_id ? { published_from: `${r.published_from_work_id}@${r.published_from_version}` } : {},
+      ...r.read !== undefined ? { read: r.read } : {}
     };
     if (r.kind === "source") {
       const hashed = await hashSourceFile(opts.cwd, r.key).catch(() => null);
@@ -17202,11 +17361,16 @@ async function resolveContextEntries(rows, opts) {
       continue;
     }
     const payload = await readCasPayload(r.value_hash, opts.env);
-    if (payload == null || payload.key !== r.key) {
-      entries.push({ ...base, value: null, missing_on_device: true });
+    if (payload != null && payload.key === r.key) {
+      entries.push({ ...base, value: payload.value });
       continue;
     }
-    entries.push({ ...base, value: payload.value });
+    const opened = payload == null ? await openFromAccount(r, opts.account, opts.env) : {};
+    if ("payload" in opened) {
+      entries.push({ ...base, value: opened.payload.value, fetched_from: "account" });
+      continue;
+    }
+    entries.push({ ...base, value: null, missing_on_device: true, ...opened.reason ? { reason: opened.reason } : {} });
   }
   const q = opts.query?.toLowerCase();
   const hits = q ? entries.filter((e) => e.key.toLowerCase().includes(q) || e.value != null && JSON.stringify(e.value).toLowerCase().includes(q)) : entries;
@@ -30389,6 +30553,12 @@ var workContextPutInputShape = {
   run_id: exports_external.string().optional().describe("your own run id, recorded as the writer"),
   expected_versions: expectedVersionsShape
 };
+var workContextPublishInputShape = {
+  work_id: exports_external.string().describe("your task's work id (wrk_...) \u2014 its rows are copied to the task's Work Project"),
+  keys: exports_external.array(exports_external.string()).min(1).describe('keys already written on the task to publish (e.g. ["decisions"])'),
+  run_id: exports_external.string().optional().describe("your own run id, recorded as the writer"),
+  expected_versions: expectedVersionsShape
+};
 var workContextSearchInputShape = {
   work_id: exports_external.string().describe("work id (wrk_...)"),
   keys: exports_external.array(exports_external.string()).optional().describe('exact keys to pull (e.g. ["A", "B"])'),
@@ -30406,6 +30576,31 @@ var workTaskCreateInputShape = {
   context: contextShape,
   sources: sourcesShape,
   run_id: exports_external.string().optional().describe("your own run id, recorded as the writer")
+};
+var workTransferInputShape = {
+  work_id: exports_external.string().describe("work id (wrk_...)"),
+  to: exports_external.string().describe("runtime kind to move the work to (e.g. codex)"),
+  run_id: exports_external.string().describe("your own run id \u2014 the run that holds the lease now"),
+  intent: exports_external.string().optional().describe("one-time token from `openroly work intent <id> --action transfer_primary` (a human issues it; required when a runtime calls this)"),
+  note: exports_external.string().optional().describe("what the next runtime needs to know (kept as the work's handoff note)"),
+  goal: exports_external.unknown().optional(),
+  current_state: exports_external.unknown().optional(),
+  decisions: exports_external.unknown().optional(),
+  unresolved_questions: exports_external.unknown().optional(),
+  relevant_artifacts: exports_external.unknown().optional(),
+  relevant_memory: exports_external.unknown().optional(),
+  capability_requirements: exports_external.unknown().optional()
+};
+var workAcceptInputShape = {
+  work_id: exports_external.string().describe("work id (wrk_...)"),
+  transfer_id: exports_external.string().optional().describe("the transfer id from the instruction that woke you \u2014 omit it for a forked work (work_fork)"),
+  run_id: exports_external.string().optional().describe("the run id you will use from now on (one is made for you when omitted)")
+};
+var workForkInputShape = {
+  work_id: exports_external.string().describe("the work to branch from (wrk_...) \u2014 it keeps running untouched"),
+  to: exports_external.string().describe("runtime kind that works on the branch (e.g. codex, claude)"),
+  role: exports_external.enum(["implementer", "reviewer"]).describe("implementer: the branch gets the whole context and tries another approach. reviewer: a blind review \u2014 the branch sees only the goal, artifacts, git state and tests, not the previous agent's decisions or notes"),
+  note: exports_external.string().optional().describe("what to do on the branch (kept as the branch's handoff note)")
 };
 var workMessageInputShape = {
   to_work_id: exports_external.string().describe("the other agent's address = their task's work id (from work_team)"),
@@ -30477,6 +30672,345 @@ function openSessionUpdate(env2 = process.env, home = brokerHome(env2)) {
 }
 
 // packages/mcp/src/tools.ts
+import { existsSync as existsSync5, rmSync as rmSync2 } from "fs";
+import { join as join9 } from "path";
+
+// packages/core/src/git-checkpoint.ts
+import { execFileSync, spawnSync } from "child_process";
+import { randomUUID } from "crypto";
+import { chmodSync as chmodSync2, closeSync, existsSync as existsSync4, lstatSync, mkdirSync as mkdirSync2, openSync, readFileSync as readFileSync2, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
+import { basename, dirname as dirname3, join as join7, relative as relative2 } from "path";
+var CHECKPOINT_MAX_UNTRACKED_BYTES = 1024 * 1024;
+var CHECKPOINT_MAX_UNTRACKED_FILES = 64;
+function applyGitCheckpoint(cwd, checkpoint, opts = {}) {
+  if (checkpoint.dirty === 0)
+    return;
+  const remote = opts.remote ?? "origin";
+  if (checkpoint.trackedPatch) {
+    fetchObject(cwd, remote, checkpoint.trackedPatch);
+    execFileSync("git", ["stash", "apply", checkpoint.trackedPatch], { cwd, stdio: ["ignore", "ignore", "pipe"] });
+  }
+  const files = checkpoint.untrackedFiles ?? [];
+  const hashes = checkpoint.hashes ?? [];
+  for (const entry of files) {
+    if (entry)
+      resolveWithinCwd(cwd, entry.path);
+  }
+  for (let i = 0;i < files.length; i++) {
+    const entry = files[i];
+    const hash = hashes[i];
+    if (!entry || !hash)
+      continue;
+    fetchObject(cwd, remote, hash);
+    writeUntrackedFile(cwd, entry, hash);
+  }
+}
+function fetchObject(cwd, remote, sha) {
+  if (hasObject(cwd, sha))
+    return;
+  execFileSync("git", ["fetch", "--no-tags", remote, sha], { cwd, stdio: ["ignore", "ignore", "pipe"] });
+}
+function hasObject(cwd, spec) {
+  try {
+    execFileSync("git", ["cat-file", "-e", spec], { cwd, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+function checkoutForkFolder(repoCwd, checkpoint, dir) {
+  const base = checkpoint.baseCommit;
+  if (!base)
+    throw new Error("fork refused: the capsule's git_state has no baseCommit (the repo had no commit yet)");
+  if (!hasObject(repoCwd, `${base}^{commit}`)) {
+    throw new Error(`fork refused: baseCommit ${base} is not in the repo at ${repoCwd}`);
+  }
+  if (existsSync4(dir))
+    throw new Error(`fork refused: ${dir} already exists`);
+  const top = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: repoCwd, encoding: "utf8" }).trim();
+  mkdirSync2(dirname3(dir), { recursive: true });
+  try {
+    execFileSync("git", ["clone", "--quiet", "--shared", "--no-checkout", top, dir], { stdio: ["ignore", "ignore", "pipe"] });
+    execFileSync("git", ["checkout", "--quiet", "--detach", base], { cwd: dir, stdio: ["ignore", "ignore", "pipe"] });
+    applyGitCheckpoint(dir, checkpoint);
+    const gitDir = gitDirOf(top);
+    const baseFile = mergeBaseFileOf(gitDir, dir);
+    mkdirSync2(dirname3(baseFile), { recursive: true });
+    writeFileSync(baseFile, `${snapshotTree(gitDir, dir, base)}
+`);
+  } catch (e) {
+    rmSync(dir, { recursive: true, force: true });
+    throw e;
+  }
+}
+var mergeBaseFileOf = (gitDir, folder) => join7(gitDir, "openroly-task-base", basename(folder));
+var OBJECT_ID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+var GIT_OUTPUT_MAX_BYTES = 512 * 1024 * 1024;
+function gitDirOf(cwd) {
+  return execFileSync("git", ["rev-parse", "--absolute-git-dir"], { cwd, encoding: "utf8" }).trim();
+}
+function snapshotTree(gitDir, workTree, seed) {
+  const index = join7(gitDir, `openroly-snapshot-${randomUUID()}`);
+  const opts = { cwd: workTree, env: { ...process.env, GIT_DIR: gitDir, GIT_WORK_TREE: workTree, GIT_INDEX_FILE: index }, maxBuffer: GIT_OUTPUT_MAX_BYTES };
+  try {
+    execFileSync("git", ["read-tree", seed], { ...opts, stdio: ["ignore", "ignore", "pipe"] });
+    execFileSync("git", ["add", "-u"], { ...opts, stdio: ["ignore", "ignore", "pipe"] });
+    const files = execFileSync("git", ["ls-files", "-z", "--others", "--exclude-standard"], opts);
+    execFileSync("git", ["update-index", "-z", "--add", "--stdin"], { ...opts, input: files, stdio: ["pipe", "ignore", "pipe"] });
+    return execFileSync("git", ["write-tree"], { ...opts, encoding: "utf8" }).trim();
+  } finally {
+    rmSync(index, { force: true });
+  }
+}
+function mergeTaskFolder(folder, projectCwd) {
+  const missing = `worktree_missing: ${folder} is not a task folder of this repo on this device \u2014 nothing was merged`;
+  const top = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: projectCwd, encoding: "utf8" }).trim();
+  const gitDir = gitDirOf(top);
+  const baseFile = mergeBaseFileOf(gitDir, folder);
+  if (!existsSync4(folder) || !existsSync4(baseFile))
+    throw new Error(missing);
+  const base = readFileSync2(baseFile, "utf8").trim();
+  if (!OBJECT_ID_RE.test(base))
+    throw new Error(missing);
+  const now = snapshotTree(gitDir, folder, base);
+  const git = { cwd: top, maxBuffer: GIT_OUTPUT_MAX_BYTES };
+  const changed = execFileSync("git", ["diff", "--name-only", "-z", base, now], { ...git, encoding: "utf8" }).split("\x00").filter(Boolean);
+  if (changed.length === 0)
+    return decideMerge({ changed, busy: false, checkError: null });
+  const lockPath = join7(gitDir, "index.lock");
+  let lock;
+  try {
+    lock = openSync(lockPath, "wx");
+  } catch (e) {
+    if (e.code === "EEXIST")
+      return decideMerge({ changed, busy: true, checkError: null });
+    throw e;
+  }
+  try {
+    const patch = execFileSync("git", ["diff", "--binary", base, now], git);
+    const check2 = spawnSync("git", ["apply", "--check"], { ...git, input: patch });
+    const d = decideMerge({ changed, busy: false, checkError: check2.status === 0 ? null : String(check2.stderr ?? "") });
+    if (d.result !== "applied")
+      return d;
+    const before = changed.map((p) => savePath(join7(top, p)));
+    const applied = spawnSync("git", ["apply"], { ...git, input: patch });
+    if (applied.status !== 0) {
+      for (const s of before)
+        restorePath(s);
+      throw new Error(`merge_failed: git apply stopped part way (${String(applied.stderr ?? "").trim()}) \u2014 every file was put back, nothing was merged`);
+    }
+    return d;
+  } finally {
+    closeSync(lock);
+    rmSync(lockPath, { force: true });
+  }
+}
+function savePath(abs) {
+  const st = lstatSync(abs, { throwIfNoEntry: false });
+  if (!st)
+    return { abs, kind: "absent" };
+  if (st.isSymbolicLink())
+    return { abs, kind: "link", target: readlinkSync(abs) };
+  if (st.isFile())
+    return { abs, kind: "file", data: readFileSync2(abs), mode: st.mode & 4095 };
+  return { abs, kind: "other" };
+}
+function restorePath(s) {
+  const st = lstatSync(s.abs, { throwIfNoEntry: false });
+  if (s.kind === "other")
+    return;
+  if (s.kind === "absent") {
+    if (st)
+      rmSync(s.abs, { force: true });
+    return;
+  }
+  if (s.kind === "file" && st?.isFile() && (st.mode & 4095) === s.mode && readFileSync2(s.abs).equals(s.data))
+    return;
+  if (s.kind === "link" && st?.isSymbolicLink() && readlinkSync(s.abs) === s.target)
+    return;
+  if (st)
+    rmSync(s.abs, { force: true });
+  mkdirSync2(dirname3(s.abs), { recursive: true });
+  if (s.kind === "link")
+    symlinkSync(s.target, s.abs);
+  else {
+    writeFileSync(s.abs, s.data);
+    chmodSync2(s.abs, s.mode);
+  }
+}
+function resolveWithinCwd(cwd, entryPath) {
+  const abs = join7(cwd, entryPath);
+  const rel = relative2(cwd, abs);
+  if (rel === ".." || rel.startsWith(".." + "/")) {
+    throw new Error(`checkpoint apply refused: path escapes working tree: ${entryPath}`);
+  }
+  return abs;
+}
+function writeUntrackedFile(cwd, entry, hash) {
+  const abs = resolveWithinCwd(cwd, entry.path);
+  mkdirSync2(dirname3(abs), { recursive: true });
+  if (entry.mode === "120000") {
+    const target = execFileSync("git", ["cat-file", "-p", hash], { cwd, encoding: "utf8" });
+    try {
+      unlinkSync(abs);
+    } catch {}
+    symlinkSync(target, abs);
+    return;
+  }
+  const content2 = execFileSync("git", ["cat-file", "-p", hash], { cwd });
+  writeFileSync(abs, content2);
+  if (entry.mode === "100755")
+    chmodSync2(abs, 493);
+}
+// packages/mcp/src/git-state.ts
+import { execFileSync as execFileSync2 } from "child_process";
+import { lstatSync as lstatSync2, readlinkSync as readlinkSync2, statSync as statSync2 } from "fs";
+import { join as join8 } from "path";
+function parsePorcelainZ(output) {
+  const tokens = output.split("\x00");
+  const entries = [];
+  let i = 0;
+  while (i < tokens.length) {
+    const tok = tokens[i];
+    if (tok === undefined || tok === "") {
+      i++;
+      continue;
+    }
+    const code = tok.slice(0, 2);
+    entries.push({ code, path: tok.slice(3) });
+    i += code[0] === "R" || code[0] === "C" || code[1] === "R" || code[1] === "C" ? 2 : 1;
+  }
+  return entries;
+}
+function computeGitState(cwd) {
+  try {
+    execFileSync2("git", ["rev-parse", "--is-inside-work-tree"], { cwd, stdio: ["ignore", "ignore", "ignore"] });
+  } catch {
+    return null;
+  }
+  let baseCommit;
+  try {
+    baseCommit = execFileSync2("git", ["rev-parse", "HEAD"], { cwd, stdio: ["pipe", "pipe", "ignore"] }).toString("utf8").trim();
+  } catch {
+    baseCommit = null;
+  }
+  const porcelain = execFileSync2("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
+    cwd,
+    encoding: "utf8"
+  });
+  const entries = parsePorcelainZ(porcelain);
+  const dirty = entries.length;
+  if (dirty === 0)
+    return { baseCommit, dirty };
+  const { trackedPatch, stagedPatch } = buildTrackedPatch(cwd);
+  const { untrackedFiles, hashes, omitted } = buildUntracked(cwd, entries);
+  return { baseCommit, dirty, trackedPatch, stagedPatch, untrackedFiles, hashes, omitted };
+}
+function changedSinceGitState(saved, cwd) {
+  const current = computeGitState(cwd);
+  if (!current)
+    return null;
+  const changed = new Set;
+  const before = saved.trackedPatch ?? saved.baseCommit;
+  const after = current.trackedPatch ?? current.baseCommit;
+  if (before !== after) {
+    try {
+      if (!before || !after)
+        throw new Error("one side has no commit");
+      const out = execFileSync2("git", ["diff", "--name-only", "-z", before, after], {
+        cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"]
+      });
+      for (const path of out.split("\x00"))
+        if (path)
+          changed.add(path);
+    } catch {
+      changed.add("(HEAD)");
+    }
+  }
+  const untracked = (s) => new Map((s.untrackedFiles ?? []).map((f, i) => [f.path, s.hashes?.[i] ?? ""]));
+  const was = untracked(saved);
+  const now = untracked(current);
+  for (const [path, hash] of was)
+    if (now.get(path) !== hash)
+      changed.add(path);
+  for (const [path, hash] of now)
+    if (was.get(path) !== hash)
+      changed.add(path);
+  return [...changed].sort();
+}
+var DETERMINISTIC_COMMIT_ENV = { GIT_AUTHOR_DATE: "@0 +0000", GIT_COMMITTER_DATE: "@0 +0000" };
+function buildTrackedPatch(cwd) {
+  let sha;
+  try {
+    sha = execFileSync2("git", ["stash", "create"], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, ...DETERMINISTIC_COMMIT_ENV }
+    }).trim();
+  } catch {
+    return { trackedPatch: null, stagedPatch: null };
+  }
+  if (!sha)
+    return { trackedPatch: null, stagedPatch: null };
+  let stagedPatch;
+  try {
+    stagedPatch = execFileSync2("git", ["rev-parse", `${sha}^2`], { cwd, encoding: "utf8" }).trim();
+  } catch {
+    stagedPatch = null;
+  }
+  return { trackedPatch: sha, stagedPatch };
+}
+function buildUntracked(cwd, entries) {
+  const untrackedFiles = [];
+  const hashes = [];
+  const omitted = [];
+  const candidates = entries.filter((e) => e.code === "??");
+  for (let i = 0;i < candidates.length; i++) {
+    const candidate = candidates[i];
+    if (!candidate)
+      continue;
+    const path = candidate.path;
+    if (i >= CHECKPOINT_MAX_UNTRACKED_FILES) {
+      omitted.push({ path, reason: "too_many" });
+      continue;
+    }
+    const abs = join8(cwd, path);
+    let mode;
+    let size;
+    let symlinkTarget = null;
+    try {
+      const lst = lstatSync2(abs);
+      if (lst.isSymbolicLink()) {
+        symlinkTarget = readlinkSync2(abs);
+        mode = "120000";
+        size = Buffer.byteLength(symlinkTarget, "utf8");
+      } else {
+        const st = statSync2(abs);
+        mode = st.mode & 73 ? "100755" : "100644";
+        size = st.size;
+      }
+    } catch {
+      continue;
+    }
+    if (size > CHECKPOINT_MAX_UNTRACKED_BYTES) {
+      omitted.push({ path, reason: "too_large" });
+      continue;
+    }
+    let hash;
+    try {
+      hash = symlinkTarget !== null ? execFileSync2("git", ["hash-object", "-w", "--stdin"], { cwd, input: symlinkTarget, encoding: "utf8" }).trim() : execFileSync2("git", ["hash-object", "-w", "--", path], { cwd, encoding: "utf8" }).trim();
+    } catch {
+      continue;
+    }
+    untrackedFiles.push({ path, mode });
+    hashes.push(hash);
+  }
+  return { untrackedFiles, hashes, omitted };
+}
+
+// packages/mcp/src/tools.ts
 class OpenRolyApiError extends Error {
   status;
   body;
@@ -30530,6 +31064,8 @@ var prepareEntries = async (config2, input, allowReserved = false) => {
     out.push(await prepareContextValue(key, value));
   for (const path of input.sources ?? [])
     out.push(await prepareSource(cwd, path));
+  if (Object.keys(input.context ?? {}).length > 0)
+    await syncPendingContextValues(e2eeCall(config2)).catch(() => {});
   const expected = input.expected_versions ?? {};
   return out.map((e) => expected[e.key] !== undefined ? { ...e, expected_version: expected[e.key] } : e);
 };
@@ -30550,12 +31086,14 @@ var resolveMe = async (config2) => {
   return { runtimeId, kind: runtimeId ? agents.runtimes.find((r) => r.id === runtimeId)?.kind ?? null : null };
 };
 var isMine = (handled, me) => handled != null && me.runtimeId != null && (handled === me.runtimeId || handled === me.kind);
+var taskFolder = (taskId) => join9(openrolyHome(), "worktrees", taskId);
 function createAccountTools(config2) {
   let ownHandle = null;
   const resolveOwnHandle = () => ownHandle ??= (async () => {
     const who = await call(config2, "/v1/whoami");
     return who.handle;
   })();
+  let notice = null;
   return {
     whoami: () => call(config2, "/v1/whoami"),
     inbox_list: () => call(config2, "/v1/inbox/messages"),
@@ -30700,6 +31238,13 @@ function createAccountTools(config2) {
         body: { entries, ...input.run_id ? { runId: input.run_id } : {} }
       });
     },
+    work_context_publish: (workId, input) => call(config2, `/v1/works/${encodeURIComponent(workId)}/context/publish`, {
+      body: {
+        keys: input.keys,
+        ...input.expected_versions ? { expected_versions: input.expected_versions } : {},
+        ...input.run_id ? { runId: input.run_id } : {}
+      }
+    }),
     work_context_search: async (workId, input = {}) => {
       const params = new URLSearchParams;
       if (input.kind)
@@ -30714,9 +31259,16 @@ function createAccountTools(config2) {
         cwd: config2.cwd ?? process.cwd(),
         query: input.query,
         indexOnly: input.index_only,
-        maxTokens: input.max_tokens
+        maxTokens: input.max_tokens,
+        account: { call: e2eeCall(config2), deviceKind: deviceKindOf(config2) }
       });
-      return { work_id: workId, ...resolved };
+      const delivered = inboxDeliveredKeys(resolved.entries);
+      if (delivered.length > 0) {
+        await call(config2, `/v1/works/${encodeURIComponent(workId)}/context/reads`, { body: { keys: delivered } }).then(() => {
+          notice = null;
+        }, () => {});
+      }
+      return { work_id: workId, ...resolved, ...res.hidden_by_profile ? { hidden_by_profile: res.hidden_by_profile } : {} };
     },
     work_assigned: async () => {
       const [me, works] = await Promise.all([resolveMe(config2), call(config2, "/v1/works")]);
@@ -30730,10 +31282,34 @@ function createAccountTools(config2) {
           status: w.status,
           handoff_note: w.handoff_note ?? null,
           project_id: w.parent_work_id ?? null,
+          folder: existsSync5(taskFolder(w.id)) ? taskFolder(w.id) : null,
           lease_live: isLeaseLive(w, now),
           context_index: summarizeContextIndex(index.entries)
         };
       }));
+    },
+    context_sync: () => syncPendingContextValues(e2eeCall(config2)),
+    inbox_notice: () => {
+      const now = Date.now();
+      if (notice && now - notice.at < CHECKPOINT_TICK_INTERVAL_SECS * 1000)
+        return notice.text;
+      const text = (async () => {
+        const [me, works] = await Promise.all([resolveMe(config2), call(config2, "/v1/works")]);
+        if (me.runtimeId == null)
+          return null;
+        const lines = [];
+        for (const w of works.filter((x) => x.owner_runtime_id === me.runtimeId && isLeaseLive(x, now))) {
+          const index = await call(config2, `/v1/works/${encodeURIComponent(w.id)}/context?prefix=inbox%2F`);
+          const { unread } = countInbox(index.entries);
+          if (unread > 0) {
+            lines.push(`notice: ${unread} unread inbox message${unread === 1 ? "" : "s"} on ${w.id} \u2014 work_context_search(work_id:${JSON.stringify(w.id)}, prefix:"inbox/")`);
+          }
+        }
+        return lines.length > 0 ? lines.join(`
+`) : null;
+      })().catch(() => null);
+      notice = { at: now, text };
+      return text;
     },
     work_task_create: async (parentWorkId, input) => {
       const { title, ...handoff } = input;
@@ -30741,9 +31317,20 @@ function createAccountTools(config2) {
       const task = await call(config2, "/v1/works", { body: { title, parent_work_id: parentWorkId } });
       const wants = handoff.to !== undefined || handoff.note !== undefined || handoff.context !== undefined || handoff.sources !== undefined;
       if (!wants)
-        return { task_id: task.id, task, handed_off: null };
+        return { task_id: task.id, task, folder: null, handed_off: null };
+      let folder = null;
+      const cwd = config2.cwd ?? process.cwd();
+      const state = handoff.to !== undefined ? computeGitState(cwd) : null;
+      if (state?.baseCommit) {
+        try {
+          checkoutForkFolder(cwd, state, taskFolder(task.id));
+          folder = taskFolder(task.id);
+        } catch (e) {
+          throw new Error(`task ${task.id} was created under ${parentWorkId}, but its folder could not be built \u2014 nothing was handed off: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
+        }
+      }
       try {
-        return { task_id: task.id, task, handed_off: await handoffCall(config2, task.id, handoff) };
+        return { task_id: task.id, task, folder, handed_off: await handoffCall(config2, task.id, handoff) };
       } catch (e) {
         throw new Error(`task ${task.id} was created under ${parentWorkId}, but handing it off failed \u2014 retry work_handoff on ${task.id}: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
       }
@@ -30762,9 +31349,28 @@ function createAccountTools(config2) {
           status: t.status,
           assigned_to: t.handled_runtime_id ?? null,
           is_you: isMine(t.handled_runtime_id, me),
-          lease_live: isLeaseLive(t, now)
+          lease_live: isLeaseLive(t, now),
+          merge: t.merge ?? "not_started"
         }))
       };
+    },
+    work_task_merge: async (projectWorkId, taskId) => {
+      const team = await call(config2, `/v1/works/${encodeURIComponent(projectWorkId)}/team`);
+      if (team.project.id !== projectWorkId || !team.tasks.some((t) => t.id === taskId)) {
+        throw new Error(`not_on_team: ${taskId} is not a task of Work Project ${projectWorkId} \u2014 nothing was merged`);
+      }
+      const cwd = config2.cwd ?? process.cwd();
+      const d = mergeTaskFolder(taskFolder(taskId), cwd);
+      if (d.result === "applied" || d.result === "conflict") {
+        try {
+          await call(config2, `/v1/works/${encodeURIComponent(taskId)}/merges`, {
+            body: { projectWorkId, merge: d.result, paths: d.paths.slice(0, TASK_MERGE_PATHS_MAX) }
+          });
+        } catch (e) {
+          throw new Error(`${d.result === "applied" ? `merged ${taskId} into ${cwd}` : `${taskId} conflicts with ${cwd} (nothing applied)`}, but recording it on the task failed: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
+        }
+      }
+      return { task_id: taskId, project_id: projectWorkId, cwd, ...d };
     },
     work_message: async (toWorkId, input) => {
       const team = await call(config2, `/v1/works/${encodeURIComponent(input.from_work_id)}/team`);
@@ -30780,136 +31386,142 @@ function createAccountTools(config2) {
       });
       return { to: toWorkId, key, delivered: sent.entries.length === 1 };
     },
+    work_transfer: async (workId, input) => {
+      const { to, run_id, intent, note, ...fields } = input;
+      const path = `/v1/works/${encodeURIComponent(workId)}`;
+      const w = await call(config2, path);
+      const frozen = await call(config2, `${path}/transfers`, {
+        body: { to, runId: run_id, expectedWriteEpoch: w.lease_epoch, ...intent !== undefined ? { intent } : {} }
+      });
+      const tid = frozen.transfer_id;
+      const stopped = (state, detail, next, cause) => new Error(`transfer ${tid} of work ${workId} to ${to} stopped at ${state}: ${detail} \u2014 ${next}`, { cause });
+      const cwd = config2.cwd ?? process.cwd();
+      let routed;
+      let version2;
+      let droppedKeys;
+      try {
+        if (note !== undefined)
+          await call(config2, `${path}/handoff`, { body: { note } });
+        const gitState = computeGitState(cwd);
+        const pushed = await pushCapsule(config2, workId, { lease_epoch: frozen.reserved_epoch }, frozen.holder_run, {
+          ...fields,
+          ...gitState ? { git_state: gitState } : {}
+        });
+        version2 = pushed.capsule.version;
+        droppedKeys = pushed.dropped_keys;
+        routed = await call(config2, `${path}/transfers/${encodeURIComponent(tid)}/route`, {
+          body: { capsuleVersion: version2, folder: cwd }
+        });
+      } catch (e) {
+        throw stopped("frozen", e instanceof Error ? e.message : String(e), `the lease stays reserved for this transfer until the server expires it (${WORK_LIVENESS_TIMEOUT_SECS}s); then claim the work again to resume here`, e);
+      }
+      if (routed.transfer.state !== "routed") {
+        throw stopped(routed.transfer.state, routed.transfer.reason ?? "not routed", "the lease was released; claim the work again to resume here");
+      }
+      return { work_id: workId, transfer_id: tid, state: "routed", to, reserved_epoch: frozen.reserved_epoch, capsule_version: version2, dropped_keys: droppedKeys };
+    },
+    work_accept: async (workId, input) => {
+      const path = `/v1/works/${encodeURIComponent(workId)}`;
+      const runId = input.run_id ?? `run-${crypto.randomUUID()}`;
+      let work2;
+      let version2 = null;
+      if (input.transfer_id !== undefined) {
+        const committed = await call(config2, `${path}/transfers/${encodeURIComponent(input.transfer_id)}/commit`, {
+          body: { runId }
+        });
+        work2 = committed.work;
+        version2 = committed.transfer.capsule_version;
+      } else {
+        work2 = await call(config2, `${path}/claim`, { body: { runId } });
+      }
+      const [capsules, index] = await Promise.all([
+        call(config2, `${path}/capsules`),
+        call(config2, `${path}/context`)
+      ]);
+      const capsule2 = version2 == null ? capsules.at(-1) : capsules.find((c) => c.version === version2);
+      version2 = capsule2?.version ?? version2;
+      const hash = capsule2?.body?.payload_hash;
+      const body = typeof hash === "string" ? await readCasPayload(hash) : null;
+      const profile = work2.context_profile ?? "full";
+      const shown = applyContextProfile(profile, body ?? {});
+      const preamble = [];
+      const saved = shown.kept.git_state;
+      if (saved != null && typeof saved === "object") {
+        const changed = changedSinceGitState(saved, config2.cwd ?? process.cwd());
+        if (changed && changed.length > 0)
+          preamble.push(`tree changed since capsule: ${changed.join(", ")}`);
+      }
+      if (!capsule2) {
+        preamble.push("this work has no capsule yet");
+      } else if (body == null) {
+        preamble.push(`capsule v${version2} is not on this device, so its content cannot be shown (pushed from another device or cleaned up)`);
+      }
+      preamble.push(`context index: ${summarizeContextIndex(index.entries)}`);
+      const r = renderCapsule(shown.kept, { maxTokens: CONTEXT_SEARCH_DEFAULT_MAX_TOKENS, preamble });
+      return {
+        work_id: workId,
+        transfer_id: input.transfer_id ?? null,
+        run_id: runId,
+        lease: { epoch: work2.lease_epoch, holder_run: work2.lease_holder_run },
+        capsule_version: version2,
+        rendered: r.rendered,
+        receipt: {
+          omitted: r.omitted,
+          ...profile !== "full" ? { profile, hidden: shown.hidden, enforcement: "cooperative" } : {},
+          est_tokens: r.est_tokens,
+          max_tokens: CONTEXT_SEARCH_DEFAULT_MAX_TOKENS
+        }
+      };
+    },
+    work_fork: async (workId, input) => {
+      const path = `/v1/works/${encodeURIComponent(workId)}`;
+      const capsules = await call(config2, `${path}/capsules`);
+      const latest = capsules.at(-1);
+      if (!latest) {
+        throw new Error(`no_capsule: work ${workId} has no capsule to fork from \u2014 push one with work_capsule first`);
+      }
+      const hash = latest.body?.payload_hash;
+      const body = typeof hash === "string" ? await readCasPayload(hash) : null;
+      const gitState = body?.git_state;
+      if (gitState == null || typeof gitState !== "object") {
+        throw new Error(`capsule v${latest.version} of work ${workId} has no git_state on this device \u2014 the fork's folder cannot be built`);
+      }
+      const folder = `${openrolyHome()}/worktrees/${crypto.randomUUID()}`;
+      checkoutForkFolder(config2.cwd ?? process.cwd(), gitState, folder);
+      let forked;
+      try {
+        forked = await call(config2, `${path}/forks`, {
+          body: {
+            to: input.to,
+            role: input.role,
+            capsuleVersion: latest.version,
+            folder,
+            ...input.note !== undefined ? { note: input.note } : {}
+          }
+        });
+      } catch (e) {
+        rmSync2(folder, { recursive: true, force: true });
+        throw e;
+      }
+      return {
+        work_id: forked.work.id,
+        forked_from: `${workId}@${latest.version}`,
+        profile: forked.work.context_profile ?? "full",
+        folder,
+        wake: forked.wake
+      };
+    },
     work_freeze: (workId, input = {}) => call(config2, `/v1/works/${encodeURIComponent(workId)}/freeze`, {
       body: { intent: input.intent ?? null }
     })
   };
 }
 
-// packages/mcp/src/git-state.ts
-import { execFileSync } from "child_process";
-import { lstatSync, readlinkSync, statSync as statSync2 } from "fs";
-import { join as join7 } from "path";
-
-// packages/core/src/git-checkpoint.ts
-var CHECKPOINT_MAX_UNTRACKED_BYTES = 1024 * 1024;
-var CHECKPOINT_MAX_UNTRACKED_FILES = 64;
-// packages/mcp/src/git-state.ts
-function parsePorcelainZ(output) {
-  const tokens = output.split("\x00");
-  const entries = [];
-  let i = 0;
-  while (i < tokens.length) {
-    const tok = tokens[i];
-    if (tok === undefined || tok === "") {
-      i++;
-      continue;
-    }
-    const code = tok.slice(0, 2);
-    entries.push({ code, path: tok.slice(3) });
-    i += code[0] === "R" || code[0] === "C" || code[1] === "R" || code[1] === "C" ? 2 : 1;
-  }
-  return entries;
-}
-function computeGitState(cwd) {
-  try {
-    execFileSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd, stdio: ["ignore", "ignore", "ignore"] });
-  } catch {
-    return null;
-  }
-  let baseCommit;
-  try {
-    baseCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd, stdio: ["pipe", "pipe", "ignore"] }).toString("utf8").trim();
-  } catch {
-    baseCommit = null;
-  }
-  const porcelain = execFileSync("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
-    cwd,
-    encoding: "utf8"
-  });
-  const entries = parsePorcelainZ(porcelain);
-  const dirty = entries.length;
-  if (dirty === 0)
-    return { baseCommit, dirty };
-  const { trackedPatch, stagedPatch } = buildTrackedPatch(cwd);
-  const { untrackedFiles, hashes, omitted } = buildUntracked(cwd, entries);
-  return { baseCommit, dirty, trackedPatch, stagedPatch, untrackedFiles, hashes, omitted };
-}
-var DETERMINISTIC_COMMIT_ENV = { GIT_AUTHOR_DATE: "@0 +0000", GIT_COMMITTER_DATE: "@0 +0000" };
-function buildTrackedPatch(cwd) {
-  let sha;
-  try {
-    sha = execFileSync("git", ["stash", "create"], {
-      cwd,
-      encoding: "utf8",
-      env: { ...process.env, ...DETERMINISTIC_COMMIT_ENV }
-    }).trim();
-  } catch {
-    return { trackedPatch: null, stagedPatch: null };
-  }
-  if (!sha)
-    return { trackedPatch: null, stagedPatch: null };
-  let stagedPatch;
-  try {
-    stagedPatch = execFileSync("git", ["rev-parse", `${sha}^2`], { cwd, encoding: "utf8" }).trim();
-  } catch {
-    stagedPatch = null;
-  }
-  return { trackedPatch: sha, stagedPatch };
-}
-function buildUntracked(cwd, entries) {
-  const untrackedFiles = [];
-  const hashes = [];
-  const omitted = [];
-  const candidates = entries.filter((e) => e.code === "??");
-  for (let i = 0;i < candidates.length; i++) {
-    const candidate = candidates[i];
-    if (!candidate)
-      continue;
-    const path = candidate.path;
-    if (i >= CHECKPOINT_MAX_UNTRACKED_FILES) {
-      omitted.push({ path, reason: "too_many" });
-      continue;
-    }
-    const abs = join7(cwd, path);
-    let mode;
-    let size;
-    let symlinkTarget = null;
-    try {
-      const lst = lstatSync(abs);
-      if (lst.isSymbolicLink()) {
-        symlinkTarget = readlinkSync(abs);
-        mode = "120000";
-        size = Buffer.byteLength(symlinkTarget, "utf8");
-      } else {
-        const st = statSync2(abs);
-        mode = st.mode & 73 ? "100755" : "100644";
-        size = st.size;
-      }
-    } catch {
-      continue;
-    }
-    if (size > CHECKPOINT_MAX_UNTRACKED_BYTES) {
-      omitted.push({ path, reason: "too_large" });
-      continue;
-    }
-    let hash;
-    try {
-      hash = symlinkTarget !== null ? execFileSync("git", ["hash-object", "-w", "--stdin"], { cwd, input: symlinkTarget, encoding: "utf8" }).trim() : execFileSync("git", ["hash-object", "-w", "--", path], { cwd, encoding: "utf8" }).trim();
-    } catch {
-      continue;
-    }
-    untrackedFiles.push({ path, mode });
-    hashes.push(hash);
-  }
-  return { untrackedFiles, hashes, omitted };
-}
-
 // packages/mcp/src/auto-context.ts
-import { execFileSync as execFileSync2 } from "child_process";
-import { existsSync as existsSync4, readdirSync, readFileSync as readFileSync2, statSync as statSync3 } from "fs";
+import { execFileSync as execFileSync3 } from "child_process";
+import { closeSync as closeSync2, existsSync as existsSync6, openSync as openSync2, readdirSync, readFileSync as readFileSync3, readSync, statSync as statSync3 } from "fs";
 import { homedir as homedir4 } from "os";
-import { isAbsolute, join as join8, relative as relative2, resolve } from "path";
+import { basename as basename2, isAbsolute, join as join10, relative as relative3, resolve } from "path";
 var AUTO_KEYS = {
   git: "auto/git",
   filesTouched: "auto/files_touched",
@@ -30923,19 +31535,19 @@ var TRANSCRIPT_RECENT_MS = 10 * 60 * 1000;
 var TEST_COMMAND_RE = /(^|[\s;&|(])(bun (run )?test|npm (run )?test|pnpm (run )?test|yarn test|pytest|python -m pytest|cargo test|go test|vitest|jest|mix test|rspec)(\s|$)/;
 var FILE_TOOLS = new Set(["Edit", "Write", "MultiEdit"]);
 function claudeProjectDir(cwd, home = homedir4()) {
-  return join8(home, ".claude", "projects", cwd.replace(/[^A-Za-z0-9]/g, "-"));
+  return join10(home, ".claude", "projects", cwd.replace(/[^A-Za-z0-9]/g, "-"));
 }
 function pickTranscript(cwd, opts = {}) {
   const dir = claudeProjectDir(cwd, opts.home);
-  if (!existsSync4(dir))
+  if (!existsSync6(dir))
     return { path: null, reason: "no_transcript_dir" };
   const sid = (opts.env ?? process.env).CLAUDE_CODE_SESSION_ID;
   if (sid && /^[A-Za-z0-9-]{1,100}$/.test(sid)) {
-    const path = join8(dir, `${sid}.jsonl`);
-    return existsSync4(path) ? { path, by: "session_env" } : { path: null, reason: "no_transcript" };
+    const path = join10(dir, `${sid}.jsonl`);
+    return existsSync6(path) ? { path, by: "session_env" } : { path: null, reason: "no_transcript" };
   }
   const now = opts.now ?? Date.now();
-  const recent = readdirSync(dir).filter((f) => f.endsWith(".jsonl")).map((f) => join8(dir, f)).filter((p) => now - statSync3(p).mtimeMs <= TRANSCRIPT_RECENT_MS);
+  const recent = readdirSync(dir).filter((f) => f.endsWith(".jsonl")).map((f) => join10(dir, f)).filter((p) => now - statSync3(p).mtimeMs <= TRANSCRIPT_RECENT_MS);
   if (recent.length === 0)
     return { path: null, reason: "no_transcript" };
   if (recent.length > 1)
@@ -30944,7 +31556,7 @@ function pickTranscript(cwd, opts = {}) {
 }
 function insideCwd(cwd, p) {
   const abs = isAbsolute(p) ? p : resolve(cwd, p);
-  const rel = relative2(cwd, abs);
+  const rel = relative3(cwd, abs);
   if (!rel || rel === ".." || rel.startsWith("../") || isAbsolute(rel))
     return null;
   return rel;
@@ -31003,10 +31615,121 @@ function readTranscriptFacts(text, cwd) {
     cwd_rows: cwdRows
   };
 }
+var ROLLOUT_META_MAX_BYTES = 256 * 1024;
+var APPLY_PATCH_HEADERS = ["*** Add File: ", "*** Delete File: ", "*** Update File: "];
+var APPLY_PATCH_MOVE_TO = "*** Move to: ";
+var APPLY_PATCH_ENVIRONMENT = "*** Environment ID:";
+function codexSessionsDir(env2, home = homedir4()) {
+  return join10(env2.CODEX_HOME || join10(home, ".codex"), "sessions");
+}
+function rolloutSessionCwd(path) {
+  const buf = Buffer.alloc(ROLLOUT_META_MAX_BYTES);
+  const fd = openSync2(path, "r");
+  let text;
+  try {
+    text = buf.subarray(0, readSync(fd, buf, 0, buf.length, 0)).toString("utf8");
+  } finally {
+    closeSync2(fd);
+  }
+  const nl = text.indexOf(`
+`);
+  try {
+    const row = JSON.parse(nl === -1 ? text : text.slice(0, nl));
+    return row?.type === "session_meta" && typeof row.payload?.cwd === "string" ? row.payload.cwd : null;
+  } catch {
+    return null;
+  }
+}
+function pickRollout(cwd, opts = {}) {
+  const dir = codexSessionsDir(opts.env ?? process.env, opts.home);
+  if (!existsSync6(dir))
+    return { path: null, reason: "no_rollout_dir" };
+  const now = opts.now ?? Date.now();
+  const mine = readdirSync(dir, { recursive: true }).filter((f) => /^rollout-.*\.jsonl$/.test(basename2(f))).map((f) => join10(dir, f)).filter((p) => now - statSync3(p).mtimeMs <= TRANSCRIPT_RECENT_MS && rolloutSessionCwd(p) === cwd);
+  if (mine.length === 0)
+    return { path: null, reason: "no_rollout" };
+  if (mine.length > 1)
+    return { path: null, reason: "ambiguous_rollout" };
+  return { path: mine[0], by: "only_recent_rollout" };
+}
+function applyPatchPaths(patch) {
+  const paths = [];
+  for (const line of patch.split(`
+`)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith(APPLY_PATCH_ENVIRONMENT))
+      return [];
+    const header = APPLY_PATCH_HEADERS.find((h) => trimmed.startsWith(h));
+    if (header)
+      paths.push(trimmed.slice(header.length));
+    else if (line.trimEnd().startsWith(APPLY_PATCH_MOVE_TO))
+      paths.push(line.trimEnd().slice(APPLY_PATCH_MOVE_TO.length));
+  }
+  return paths;
+}
+function parseCodexRollout(text, cwd) {
+  const files = new Map;
+  const runs = new Map;
+  let turnCwd = null;
+  let cwdRows = 0;
+  for (const line of text.split(`
+`)) {
+    if (!line.trim())
+      continue;
+    let row;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const p = row?.payload;
+    if (row?.type === "session_meta" || row?.type === "turn_context") {
+      if (typeof p?.cwd === "string")
+        turnCwd = p.cwd;
+      if (turnCwd === cwd)
+        cwdRows++;
+      continue;
+    }
+    if (turnCwd !== cwd)
+      continue;
+    const at = typeof row.timestamp === "string" ? row.timestamp : null;
+    if (row.type === "response_item" && p?.type === "custom_tool_call" && p.name === "apply_patch" && typeof p.input === "string") {
+      for (const path of applyPatchPaths(p.input)) {
+        const rel = insideCwd(cwd, path);
+        if (rel) {
+          files.delete(rel);
+          files.set(rel, { path: rel, tool: "apply_patch", at });
+        }
+      }
+    } else if (row.type === "response_item" && p?.type === "function_call" && p.name === "exec_command" && typeof p.call_id === "string") {
+      let args = null;
+      try {
+        args = JSON.parse(p.arguments);
+      } catch {
+        continue;
+      }
+      const workdir = args?.workdir;
+      const here = typeof workdir !== "string" || resolve(cwd, workdir) === cwd || insideCwd(cwd, workdir) !== null;
+      if (here && typeof args?.cmd === "string" && TEST_COMMAND_RE.test(args.cmd)) {
+        runs.set(p.call_id, { command: args.cmd.slice(0, AUTO_COMMAND_MAX), ok: null, at });
+      }
+    } else if (row.type === "event_msg" && p?.type === "item_completed" && p.item?.type === "CommandExecution") {
+      const run2 = runs.get(p.item.id);
+      if (run2 && typeof p.item.exit_code === "number")
+        run2.ok = p.item.exit_code === 0;
+    }
+  }
+  const tests = [...runs.values()].sort((a, b) => (b.at ?? "").localeCompare(a.at ?? ""));
+  return {
+    files_touched: [...files.values()].reverse().slice(0, AUTO_FILES_MAX),
+    tests: tests.slice(0, AUTO_TESTS_MAX),
+    cwd_rows: cwdRows
+  };
+}
 function readGitFacts(cwd) {
   const git = (args) => {
     try {
-      return execFileSync2("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+      return execFileSync3("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
     } catch {
       return null;
     }
@@ -31014,7 +31737,7 @@ function readGitFacts(cwd) {
   if (git(["rev-parse", "--is-inside-work-tree"]) !== "true")
     return null;
   const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]);
-  const porcelain = execFileSync2("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
+  const porcelain = execFileSync3("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
     cwd,
     encoding: "utf8"
   });
@@ -31031,10 +31754,12 @@ function buildAutoContext(cwd, opts = {}) {
   if (!git)
     return { context: {}, transcript: "not_a_git_worktree" };
   const context2 = { [AUTO_KEYS.git]: git };
-  const pick2 = pickTranscript(cwd, opts);
+  const codex = (opts.env ?? process.env).OPENROLY_RUNTIME_KIND === "codex";
+  const pick2 = codex ? pickRollout(cwd, opts) : pickTranscript(cwd, opts);
   if (pick2.path === null)
     return { context: context2, transcript: pick2.reason };
-  const facts = readTranscriptFacts(readFileSync2(pick2.path, "utf8"), cwd);
+  const text = readFileSync3(pick2.path, "utf8");
+  const facts = codex ? parseCodexRollout(text, cwd) : readTranscriptFacts(text, cwd);
   if (facts.cwd_rows === 0)
     return { context: context2, transcript: "no_cwd_rows" };
   context2[AUTO_KEYS.filesTouched] = facts.files_touched;
@@ -31055,6 +31780,8 @@ async function runCheckpointTick(tools, cwd) {
   const current = await tools.work_current();
   if (!current || !current.lease.holder_run)
     return { pushed: false, reason: "no_active_work" };
+  if (isTransferHolderId(current.lease.holder_run))
+    return { pushed: false, reason: "transfer_in_progress" };
   if (current.ambiguous)
     return { pushed: false, reason: "ambiguous_work" };
   const gitState = computeGitState(cwd);
@@ -31084,6 +31811,7 @@ function startCheckpointTicker(tools, opts) {
       return;
     inFlight = true;
     try {
+      await tools.context_sync().catch(() => {});
       const result = await runCheckpointTick(tools, opts.cwd);
       tickCount += 1;
       if (result.pushed && opts.autoContext !== false) {
@@ -31136,11 +31864,14 @@ try {
 var peek = openPeek(process.env);
 var reportTool = openSessionUpdate(process.env);
 var server = new McpServer({ name: "openroly-account", version: "0.2.0" });
-var json = (tool, input, v) => {
+var json = async (tool, input, v) => {
   const text = JSON.stringify(maskValue(v, secrets), null, 2);
-  peek?.record({ tool, input: maskValue(input, secrets), output: text });
+  const found = await tools.inbox_notice();
+  const notice = found == null ? null : String(maskValue(found, secrets));
+  peek?.record({ tool, input: maskValue(input, secrets), output: notice == null ? text : `${text}
+${notice}` });
   reportTool?.(tool);
-  return { content: [{ type: "text", text }] };
+  return { content: [{ type: "text", text }, ...notice == null ? [] : [{ type: "text", text: notice }]] };
 };
 server.tool("whoami", "Identity of the attached agent account and its unread count", {}, async () => json("whoami", {}, await tools.whoami()));
 server.tool("inbox_list", "List received messages (metadata only, no bodies). Use inbox_read for the body", {}, async () => json("inbox_list", {}, await tools.inbox_list()));
@@ -31161,6 +31892,9 @@ server.tool("approval_get", "Status of an approval you raised (a send/reply awai
 server.tool("notification_label", "Put a triage label on a notification item (action = needs handling / fyi = for information / discard = not needed). The summary is sealed with the device key before sending", labelInputShape, async ({ message_id, label, summary }) => json("notification_label", { message_id, label, summary }, await tools.notification_label(message_id, label, summary)));
 server.tool("rules_put", "Save how the owner asked to handle things as a rule (nl = their words verbatim, scope = what it applies to, action = what to do). The server normalizes it, picks the layer (metadata / content) and returns the normalized rule \u2014 echo it back to the owner in one sentence. Putting the same nl again updates in place (no duplicate rules). sender / keywords in scope make it a content rule, stored encrypted on the server", rulesPutInputShape, async (input) => json("rules_put", input, await tools.rules_put(input)));
 server.tool("rules_list", "List saved rules. The scope of content rules is restored with the device key", {}, async () => json("rules_list", {}, await tools.rules_list()));
+server.tool("work_transfer", "Move the work you hold to another runtime (e.g. codex) without a moment where nobody holds it: the server reserves the lease for the transfer, this call snapshots this folder's git state plus the capsule fields you pass (goal, current_state, decisions, ...) under that reservation, and the server wakes the target runtime in this folder with a fixed instruction to call work_accept. A runtime needs a one-time intent token a human issued (openroly work intent <id> --action transfer_primary). If it stops midway the error names the transfer id and the state; a failed route releases the lease so you can claim the work again", workTransferInputShape, async ({ work_id, ...input }) => json("work_transfer", { work_id, to: input.to }, await tools.work_transfer(work_id, input)));
+server.tool("work_accept", "Take over a work that was transferred to you (work_id and transfer_id are in the instruction that woke you) or a forked work (work_id only). It gives you the write lease and returns the work's capsule as text (rendered) \u2014 the same text whichever runtime you are \u2014 starting with a line when this folder's files changed since the capsule, then the work's context key index. Fields that do not fit 2000 tokens are left out whole and named in receipt.omitted. On a reviewer branch the fields the profile keeps from you are named (never shown) in receipt.hidden. Use the returned run_id for work_capsule / work_proof from now on", workAcceptInputShape, async ({ work_id, ...input }) => json("work_accept", { work_id, transfer_id: input.transfer_id }, await tools.work_accept(work_id, input)));
+server.tool("work_fork", "Branch a work without stopping it: copies the work's latest capsule into a new work, makes a separate copy of this folder's repo at the capsule's git state (under ~/.openroly/worktrees \u2014 this folder and its .git are never written), and wakes the target runtime there. role implementer = try another approach with the full context; role reviewer = a blind review that sees only the goal, artifacts, git state and tests, not the previous agent's decisions or notes. A runtime needs the owner's permission (delegation work_authority fork_work / start_review). If the wake fails the branch stays ready and work_accept can pick it up later", workForkInputShape, async ({ work_id, ...input }) => json("work_fork", { work_id, to: input.to, role: input.role }, await tools.work_fork(work_id, input)));
 server.tool("work_capsule", `Push one immutable snapshot (a 'capsule') of this work's state \u2014 goal, current_state, decisions, unresolved_questions, relevant_artifacts, relevant_memory, git_state, capability_requirements. Only the run that holds the lease can: pass your own run id. Pushing the exact same content as the last capsule does not create a new version (dedupe: deduped:true in the reply). Never pass conversation/messages/transcript here \u2014 that call is rejected. The actual content is stored only on this device (~/.openroly/checkpoints), never sent to the server \u2014 the server only keeps a small manifest (hash/size). To reference a secret, use {credential_ref: "env:NAME"} \u2014 never write a raw secret value into any field, it will be rejected`, workCapsuleInputShape, async ({ work_id, ...input }) => json("work_capsule", { work_id, ...input }, await tools.work_capsule(work_id, input)));
 server.tool("work_capsules", "List every capsule version pushed for this work, oldest first \u2014 each entry has the full body (goal / current_state / decisions / ...) plus version, content_hash, and created_at", { work_id: exports_external.string() }, async ({ work_id }) => json("work_capsules", { work_id }, await tools.work_capsules(work_id)));
 server.tool("work_current", "The work this account has a live run on right now (null if none). Picked by the lease alone; handled_runtime_id is the standing owner and is reported separately - never read it as 'running now'. ambiguous:true means more than one work is leased and this is the most recent one", {}, async () => json("work_current", {}, await tools.work_current()));
@@ -31173,12 +31907,17 @@ server.tool("work_proof", "Record what a check actually said on this work (e.g. 
 });
 server.tool("work_promote", "Turn a thread you labelled 'action' into a work item. Calling it again on the same thread returns the same work_id (already_promoted: true) instead of making a second one", { thread_id: exports_external.string() }, async ({ thread_id }) => json("work_promote", { thread_id }, await tools.work_promote(thread_id)));
 server.tool("work_handoff", `Hand the work to another runtime (to = its runtime id or kind) and/or leave a note \u2014 and in the same call publish what the next agent needs into this work's Work Project: context = key/value facts, preferably the well-known keys goal / next_step / decisions / open_questions / failed_attempts / verified_findings (e.g. {"next_step": "make the reconnect test deterministic"}), sources = repo-relative file paths (e.g. docs/plan.md). Values are stored only on this device (the server keeps the key, a hash and who wrote it); sources are recorded by path + sha256, not copied. Either all of it lands or none of it does. Never put conversation/messages/transcript into context; reference a secret as {credential_ref: "env:NAME"}. This sets the standing owner, not the live lease`, workHandoffInputShape, async ({ work_id, ...input }) => json("work_handoff", { work_id, ...input }, await tools.work_handoff(work_id, input)));
-server.tool("work_context_put", `Publish key/value context and/or source file paths into this work's Work Project without handing it off (e.g. while working in parallel). Writing a key again with different content makes a new version; pass expected_versions {key: n} to refuse overwriting a newer value (409 stale_version \u2014 nothing in the call is written). Values stay on this device; the server only keeps key, hash and writer. Never put conversation/messages/transcript here; reference a secret as {credential_ref: "env:NAME"}`, workContextPutInputShape, async ({ work_id, ...input }) => json("work_context_put", { work_id, ...input }, await tools.work_context_put(work_id, input)));
-server.tool("work_context_search", "Pull only what you need from this work's Work Project before you start, in two steps: index_only:true lists every key with est_tokens and a short preview (no values), then pull the keys you chose. Each call returns at most max_tokens (default 2000, up to 20000), highest priority first \u2014 goal, next_step, decisions, open_questions, failed_attempts, verified_findings, then other keys, sources, auto/, inbox/ \u2014 and entries that do not fit are left out whole and named in budget.omitted. Filter by exact keys, a key prefix or kind (context / source); query matches key and value text on this device. Each context entry comes with its value \u2014 or value null + missing_on_device:true when it was written on another device. Each source comes with source_status same / changed / missing (re-hashed against the file here). work_assigned already shows each work's key index \u2014 pull goal and next_step first. auto/ keys (git, files_touched, tests) are machine-recorded facts: read them, never write them", workContextSearchInputShape, async ({ work_id, ...input }) => json("work_context_search", { work_id, ...input }, await tools.work_context_search(work_id, input)));
-server.tool("work_assigned", "Works whose standing owner is this runtime (handed to you by runtime id or by kind) \u2014 where to look when you start and nothing is leased yet. Returns work_id, title, status, handoff_note, project_id, lease_live and context_index (which keys exist, without their values). Then pull what you need with work_context_search", {}, async () => json("work_assigned", {}, await tools.work_assigned()));
-server.tool("work_task_create", "Split a Work Project: create one task under it (parent_work_id) and, if you pass to/note/context/sources, hand it to a runtime in the same call. A task cannot itself have tasks. If the task is created but handing it off fails, the error names the task id so you can retry work_handoff on it", workTaskCreateInputShape, async ({ parent_work_id, ...input }) => json("work_task_create", { parent_work_id, ...input }, await tools.work_task_create(parent_work_id, input)));
-server.tool("work_team", "Who else is working on the same Work Project: the project and every task under it, each with its address (the task's work id), who it is assigned to, whether a run is live on it, and is_you. Use an address with work_message to reach that agent", { work_id: exports_external.string().describe("any task or the project itself") }, async ({ work_id }) => json("work_team", { work_id }, await tools.work_team(work_id)));
-server.tool("work_message", `Send a note to another agent on the same Work Project (to_work_id = their address from work_team, from_work_id = your own task). It lands in their task's Work Project context under inbox/<your task>/..., which they read with work_context_search prefix "inbox/" \u2014 agents coordinate through work state, not a chat. The text stays on this device like other context values. Refused (nothing sent) when the address is not on your project`, workMessageInputShape, async ({ to_work_id, ...input }) => json("work_message", { to_work_id, ...input }, await tools.work_message(to_work_id, { ...input, text: restoreText(input.text, secrets) })));
+server.tool("work_context_put", `Publish key/value context and/or source file paths into this work's Work Project without handing it off (e.g. while working in parallel). Writing a key again with different content makes a new version; pass expected_versions {key: n} to refuse overwriting a newer value (409 stale_version \u2014 nothing in the call is written). Values stay on this device; the server only keeps key, hash and writer. Never put conversation/messages/transcript here; reference a secret as {credential_ref: "env:NAME"}. If you hold a task, write to your task: writing to its Work Project directly is refused (409 publish_required) \u2014 share with the project through work_context_publish, which is also the only way into a project nobody holds`, workContextPutInputShape, async ({ work_id, ...input }) => json("work_context_put", { work_id, ...input }, await tools.work_context_put(work_id, input)));
+server.tool("work_context_publish", "Publish keys you already wrote on your task to the task's Work Project \u2014 the only way a task's context reaches the project. All keys land or none do (a key missing on the task fails with unknown_key and nothing is written); each project entry records published_from: <task>@<version>. Pass expected_versions {key: n} with the project's version to refuse overwriting a newer value (409 stale_version). auto/ and inbox/ keys cannot be published", workContextPublishInputShape, async ({ work_id, ...input }) => json("work_context_publish", { work_id, ...input }, await tools.work_context_publish(work_id, input)));
+server.tool("work_context_search", "Pull only what you need from this work's Work Project before you start, in two steps: index_only:true lists every key with est_tokens and a short preview (no values), then pull the keys you chose. Each call returns at most max_tokens (default 2000, up to 20000), highest priority first \u2014 goal, next_step, decisions, open_questions, failed_attempts, verified_findings, then other keys, sources, auto/, inbox/ \u2014 and entries that do not fit are left out whole and named in budget.omitted. Filter by exact keys, a key prefix or kind (context / source); query matches key and value text on this device. Each context entry comes with its value \u2014 or value null + missing_on_device:true when it was written on another device. Each source comes with source_status same / changed / missing (re-hashed against the file here). work_assigned already shows each work's key index \u2014 pull goal and next_step first. auto/ keys (git, files_touched, tests) are machine-recorded facts: read them, never write them. A Work Project entry that a task published carries published_from: <task>@<version>", workContextSearchInputShape, async ({ work_id, ...input }) => json("work_context_search", { work_id, ...input }, await tools.work_context_search(work_id, input)));
+server.tool("work_assigned", "Works whose standing owner is this runtime (handed to you by runtime id or by kind) \u2014 where to look when you start and nothing is leased yet. Returns work_id, title, status, handoff_note, project_id, folder, lease_live and context_index (which keys exist, without their values). When folder is not null, the task has its own copy of the project's files there \u2014 do all your file work in that folder, not in the project's folder. Then pull what you need with work_context_search", {}, async () => json("work_assigned", {}, await tools.work_assigned()));
+server.tool("work_task_create", "Split a Work Project: create one task under it (parent_work_id) and, if you pass to/note/context/sources, hand it to a runtime in the same call. A task cannot itself have tasks. When you hand it to a runtime (to) from inside a git repo with a commit, the task gets its own folder \u2014 a copy of this folder's current files under the openroly home's worktrees/<task id> \u2014 returned as folder, so parallel tasks never write the same file; bring the result back with work_task_merge. If the task is created but its folder or the handoff fails, the error names the task id so you can retry work_handoff on it", workTaskCreateInputShape, async ({ parent_work_id, ...input }) => json("work_task_create", { parent_work_id, ...input }, await tools.work_task_create(parent_work_id, input)));
+server.tool("work_task_merge", "Bring a task's work back into this folder (the Work Project's working tree): every change made in the task's folder since it was handed off \u2014 edited, added and deleted files \u2014 is applied to the files here. Nothing is committed and the git index is not touched, so the result shows up in git diff / git status. If any change collides with what is here, nothing at all is applied and result is conflict with the colliding paths. busy = another git operation holds this repo's index.lock (nothing applied, try again); empty = the task changed nothing. Refused before touching anything when the task is not on this Work Project (not_on_team) or its folder is not on this device (worktree_missing). applied and conflict are recorded on the task and show up as merge in work_team", {
+  work_id: exports_external.string().describe("the Work Project whose working tree is this folder"),
+  task_id: exports_external.string().describe("the task to merge (its address from work_team)")
+}, async ({ work_id, task_id }) => json("work_task_merge", { work_id, task_id }, await tools.work_task_merge(work_id, task_id)));
+server.tool("work_team", "Who else is working on the same Work Project: the project and every task under it, each with its address (the task's work id), who it is assigned to, whether a run is live on it, is_you, and merge (not_started / applied / conflict \u2014 the last work_task_merge of that task). Use an address with work_message to reach that agent", { work_id: exports_external.string().describe("any task or the project itself") }, async ({ work_id }) => json("work_team", { work_id }, await tools.work_team(work_id)));
+server.tool("work_message", `Send a note to another agent on the same Work Project (to_work_id = their address from work_team, from_work_id = your own task). It lands in their task's Work Project context under inbox/<your task>/..., which they read with work_context_search prefix "inbox/" \u2014 agents coordinate through work state, not a chat. The text stays on this device like other context values. Refused (nothing sent) when the address is not on your project. While the receiver holds its task, every openroly tool reply it gets carries a second text "notice: N unread inbox messages on <task> \u2026" (up to 30 seconds late) until it pulls them with work_context_search \u2014 index_only or entries left out by max_tokens stay unread`, workMessageInputShape, async ({ to_work_id, ...input }) => json("work_message", { to_work_id, ...input }, await tools.work_message(to_work_id, { ...input, text: restoreText(input.text, secrets) })));
 server.tool("work_freeze", "Release the live lease (stop_primary) \u2014 the previous epoch is rejected forever after this. This always requires a one-time intent token a human already issued out-of-band (openroly work intent <id> --action stop_primary); without it this call is rejected with explicit_user_intent_required, no matter who calls it", {
   work_id: exports_external.string(),
   intent: exports_external.string().optional().describe("one-time token from `openroly work intent <id> --action stop_primary`")

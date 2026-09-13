@@ -36,9 +36,11 @@
 // `fetch <bare sha>` / `stash apply` / `cat-file`)。patch 形式も content-address も git が
 // 既に持っているので、TS で patch parser を自作しない。**bare sha を dest 無しで fetch できる**
 // (実測: ローカル transport は `uploadpack.allowAnySHA1InWant` 無しでも通る)ので ref は要らない。
-import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { execFileSync, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, relative } from "node:path";
+import { decideMerge, type MergeDecision } from "./work.ts";
 
 export const CHECKPOINT_MAX_UNTRACKED_BYTES = 1024 * 1024; // 1 MiB(v0 の既定上限。AC-6)
 export const CHECKPOINT_MAX_UNTRACKED_FILES = 64; // AC-6
@@ -115,9 +117,175 @@ export function applyGitCheckpoint(cwd: string, checkpoint: GitState, opts: Appl
   }
 }
 
-/** ref を経由せず bare sha を直接 fetch する(source 側に ref を作らずに済む — AC-2 の理由)。*/
+/** ref を経由せず bare sha を直接 fetch する(source 側に ref を作らずに済む — AC-2 の理由)。
+ * 既にこの repo から読める object は取りに行かない(fork folder は clone --shared で元の object を共有する = PBI-0440)。*/
 function fetchObject(cwd: string, remote: string, sha: string): void {
+  if (hasObject(cwd, sha)) return;
   execFileSync("git", ["fetch", "--no-tags", remote, sha], { cwd, stdio: ["ignore", "ignore", "pipe"] });
+}
+
+function hasObject(cwd: string, spec: string): boolean {
+  try {
+    execFileSync("git", ["cat-file", "-e", spec], { cwd, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * fork の枝の folder を作る(PBI-0440・図84)。`repoCwd`(fork 元の作業 dir)の repo を `dir` へ `clone --shared`
+ * (object は元の repo を alternates で読む = 写さない)し、capsule の baseCommit に detach して git_state を戻す。
+ * **元の repo の refs / tree / .git には書かない**(clone の refs は dir の中にだけ出来る)。
+ * `git worktree` にしないのは、worktree の管理 file(HEAD / index)が元の .git/worktrees の下に在り、broker の
+ * sandbox(folder の中だけ write)が枝の commit も 30 秒 tick の stash create も拒むから。
+ * baseCommit がこの repo に無い / 戻せない時は dir を残さず throw する(呼び手は server に POST しない)。
+ * 作った直後の tree を元の repo の object に snapshot し、hash を元の repo の git dir の `openroly-task-base/<dir 名>` に置く —— task の合流
+ * (`mergeTaskFolder`・PBI-0447)の起点。task の folder も同じ関数で作る(worktree にしない理由も同じ)。
+ * ponytail: alternates なので、元の repo で `git gc --prune=now` を打つと枝からも dangling な checkpoint object が
+ * 消える(上の天井と同じ。base の tree も同じく dangling)。枝を長く持つ運用が来たら `git repack -a -d` で object を枝へ写す
+ */
+export function checkoutForkFolder(repoCwd: string, checkpoint: GitState, dir: string): void {
+  const base = checkpoint.baseCommit;
+  if (!base) throw new Error("fork refused: the capsule's git_state has no baseCommit (the repo had no commit yet)");
+  if (!hasObject(repoCwd, `${base}^{commit}`)) {
+    throw new Error(`fork refused: baseCommit ${base} is not in the repo at ${repoCwd}`);
+  }
+  if (existsSync(dir)) throw new Error(`fork refused: ${dir} already exists`);
+  const top = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: repoCwd, encoding: "utf8" }).trim();
+  mkdirSync(dirname(dir), { recursive: true });
+  try {
+    execFileSync("git", ["clone", "--quiet", "--shared", "--no-checkout", top, dir], { stdio: ["ignore", "ignore", "pipe"] });
+    execFileSync("git", ["checkout", "--quiet", "--detach", base], { cwd: dir, stdio: ["ignore", "ignore", "pipe"] });
+    applyGitCheckpoint(dir, checkpoint);
+    const gitDir = gitDirOf(top);
+    const baseFile = mergeBaseFileOf(gitDir, dir);
+    mkdirSync(dirname(baseFile), { recursive: true });
+    writeFileSync(baseFile, `${snapshotTree(gitDir, dir, base)}\n`);
+  } catch (e) {
+    rmSync(dir, { recursive: true, force: true });
+    throw e;
+  }
+}
+
+/**
+ * 合流の起点(作った直後の tree の hash)の置き場。**元の repo の git dir の中**(ref ではない plain file = refs は増えない)。
+ * folder の中に置かないのは、folder が task の agent の書ける場所だから —— 起点を書き換えられると合流する側の
+ * `git diff` に option(`--output=<任意の file>`)を渡され、sandbox の外の file を合流する側の権限で上書きされた(review 実測)
+ */
+const mergeBaseFileOf = (gitDir: string, folder: string): string => join(gitDir, "openroly-task-base", basename(folder));
+const OBJECT_ID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+// patch と path 一覧を読む上限(execFileSync の既定 1MiB は数千 file の repo で溢れる)
+const GIT_OUTPUT_MAX_BYTES = 512 * 1024 * 1024;
+
+function gitDirOf(cwd: string): string {
+  return execFileSync("git", ["rev-parse", "--absolute-git-dir"], { cwd, encoding: "utf8" }).trim();
+}
+
+/**
+ * `workTree` の今の中身を tree object にして hash を返す。`seed`(起点の commit / tree)を一時 index に読み、tracked は
+ * `add -u`(**.gitignore に掛かっていても tracked のまま**・消した file は消える)、untracked は .gitignore を除いて足す。
+ * seed 無しで untracked だけ数えると、tracked で ignore に掛かる file の編集が落ち、task が ignore を足すと tracked file が
+ * 「消した」ことになって合流が project から消していた(review 実測)。object は `gitDir` の repo に書き、
+ * **`workTree` にも `gitDir` の index にも書かない**(一時 index)。ref は作らない。
+ * sandbox が project の中だけ write を許す merger でも task の folder を読むだけで済む(実測 2026-09-13)
+ */
+function snapshotTree(gitDir: string, workTree: string, seed: string): string {
+  const index = join(gitDir, `openroly-snapshot-${randomUUID()}`);
+  const opts = { cwd: workTree, env: { ...process.env, GIT_DIR: gitDir, GIT_WORK_TREE: workTree, GIT_INDEX_FILE: index }, maxBuffer: GIT_OUTPUT_MAX_BYTES };
+  try {
+    execFileSync("git", ["read-tree", seed], { ...opts, stdio: ["ignore", "ignore", "pipe"] });
+    execFileSync("git", ["add", "-u"], { ...opts, stdio: ["ignore", "ignore", "pipe"] });
+    const files = execFileSync("git", ["ls-files", "-z", "--others", "--exclude-standard"], opts);
+    execFileSync("git", ["update-index", "-z", "--add", "--stdin"], { ...opts, input: files, stdio: ["pipe", "ignore", "pipe"] });
+    return execFileSync("git", ["write-tree"], { ...opts, encoding: "utf8" }).trim();
+  } finally {
+    rmSync(index, { force: true });
+  }
+}
+
+/**
+ * task の folder を project の作業ツリーへ合流する(PBI-0447・図80c ⑥)。base(`checkoutForkFolder` が置いた起点)→ 今の folder の
+ * 差分を project の repo の object で取り(folder には書かない)、project の `index.lock` を取ってから `git apply --check` →
+ * 通った時だけ `git apply`。**working tree だけを書き、index / HEAD / refs は触らない**(commit しない)。ぶつかれば 1 byte も当てない。
+ * `--3way` は使わない —— `--index` を含むので project の未 stage の変更を一律に断り、staged の衝突では check が通って
+ * conflict marker を当てる(実測)。folder に base が無ければ `worktree_missing` で throw(project に触らない)
+ */
+export function mergeTaskFolder(folder: string, projectCwd: string): MergeDecision {
+  const missing = `worktree_missing: ${folder} is not a task folder of this repo on this device — nothing was merged`;
+  // patch の path は repo の root 基準。subdir で git apply すると外の path を黙って飛ばす
+  const top = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: projectCwd, encoding: "utf8" }).trim();
+  const gitDir = gitDirOf(top);
+  const baseFile = mergeBaseFileOf(gitDir, folder);
+  if (!existsSync(folder) || !existsSync(baseFile)) throw new Error(missing);
+  const base = readFileSync(baseFile, "utf8").trim();
+  // 起点は object id だけ。それ以外(`--output=…` などの option・rev の式)は git に渡さない
+  if (!OBJECT_ID_RE.test(base)) throw new Error(missing);
+  const now = snapshotTree(gitDir, folder, base);
+  const git = { cwd: top, maxBuffer: GIT_OUTPUT_MAX_BYTES };
+  const changed = execFileSync("git", ["diff", "--name-only", "-z", base, now], { ...git, encoding: "utf8" }).split("\0").filter(Boolean);
+  if (changed.length === 0) return decideMerge({ changed, busy: false, checkError: null });
+  const lockPath = join(gitDir, "index.lock");
+  let lock: number;
+  try {
+    lock = openSync(lockPath, "wx");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST") return decideMerge({ changed, busy: true, checkError: null });
+    throw e;
+  }
+  try {
+    const patch = execFileSync("git", ["diff", "--binary", base, now], git);
+    const check = spawnSync("git", ["apply", "--check"], { ...git, input: patch });
+    const d = decideMerge({ changed, busy: false, checkError: check.status === 0 ? null : String(check.stderr ?? "") });
+    if (d.result !== "applied") return d;
+    // check が通っても書き込みは途中で落ちうる(書けない dir・sandbox が拒む path)。git apply は落ちる前に書いた file を
+    // 戻さないので、当てる前の姿を持っておき、落ちたら戻す(review 実測: 1 file 目だけ当たって throw していた)。
+    // ponytail: 変わる file を全部 memory に読む・apply が作った空 dir は残る。巨大な binary の合流が来たら一時 dir に写す
+    const before = changed.map((p) => savePath(join(top, p)));
+    const applied = spawnSync("git", ["apply"], { ...git, input: patch });
+    if (applied.status !== 0) {
+      for (const s of before) restorePath(s);
+      throw new Error(`merge_failed: git apply stopped part way (${String(applied.stderr ?? "").trim()}) — every file was put back, nothing was merged`);
+    }
+    return d;
+  } finally {
+    closeSync(lock);
+    rmSync(lockPath, { force: true });
+  }
+}
+
+type SavedPath =
+  | { abs: string; kind: "absent" }
+  | { abs: string; kind: "file"; data: Buffer; mode: number }
+  | { abs: string; kind: "link"; target: string }
+  | { abs: string; kind: "other" };
+
+function savePath(abs: string): SavedPath {
+  const st = lstatSync(abs, { throwIfNoEntry: false });
+  if (!st) return { abs, kind: "absent" };
+  if (st.isSymbolicLink()) return { abs, kind: "link", target: readlinkSync(abs) };
+  if (st.isFile()) return { abs, kind: "file", data: readFileSync(abs), mode: st.mode & 0o7777 };
+  return { abs, kind: "other" }; // dir 等は apply が file に替えない(check が already exists で落とす)
+}
+
+/** 合流が途中で落ちた時、当てる前の姿に戻す。変わっていない path(書けなかった path を含む)には触らない */
+function restorePath(s: SavedPath): void {
+  const st = lstatSync(s.abs, { throwIfNoEntry: false });
+  if (s.kind === "other") return;
+  if (s.kind === "absent") {
+    if (st) rmSync(s.abs, { force: true });
+    return;
+  }
+  if (s.kind === "file" && st?.isFile() && (st.mode & 0o7777) === s.mode && readFileSync(s.abs).equals(s.data)) return;
+  if (s.kind === "link" && st?.isSymbolicLink() && readlinkSync(s.abs) === s.target) return;
+  if (st) rmSync(s.abs, { force: true });
+  mkdirSync(dirname(s.abs), { recursive: true });
+  if (s.kind === "link") symlinkSync(s.target, s.abs);
+  else {
+    writeFileSync(s.abs, s.data);
+    chmodSync(s.abs, s.mode);
+  }
 }
 
 /** `cwd` の外に出る path(`..` traversal)を拒む。絶対 path は `join` が `cwd` 配下へ畳み込む

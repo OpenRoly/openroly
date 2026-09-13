@@ -1,4 +1,5 @@
 mod adopt;
+mod c1;
 mod discovery;
 mod egress;
 mod env_compat;
@@ -7,6 +8,7 @@ mod launch;
 mod log;
 mod openroly_cli;
 mod procgroup;
+mod profiles;
 mod registry;
 mod sandbox;
 mod sessions;
@@ -64,6 +66,9 @@ struct BrokerState {
     /// 閉じ込めの土台(PBI-0238 / 図72)。起動時の self_test に通った backend。通らなかった機は
     /// `NoSandbox` に差し替えてあり、全 dedicated wake が `sandbox_unavailable` になる。
     sandbox: Box<dyn sandbox::SandboxBackend>,
+    /// C1(PBI-0441 ③)の在り無し。起動時に 1 回決め、hello の runtime 別 enforcement と
+    /// dedicated session の閉じ込め(専用 uid + pf)に使う。setup していない機では `available: false`。
+    c1: c1::C1Status,
     /// OpenRoly server の host(ws url から)。egress allowlist に足す(MCP が Cloud に繋ぐ先)。
     server_host: String,
     /// user の HOME。sandbox の deny_read / writable_extra の既定に使う(env は起動時に 1 回だけ読む)。
@@ -126,7 +131,30 @@ async fn main() {
     let egress_check = std::net::TcpListener::bind("127.0.0.1:0")
         .map(|_| ())
         .map_err(|e| format!("loopback bind failed: {e}"));
-    sandbox::write_status(&cache_dir, &sandbox_status, &egress_check, sandbox.egress_enforcement());
+    // C1(PBI-0441 ③): claude の dedicated session を専用 uid + pf で loopback egress だけに閉じられるか。
+    // setup していない機(既定)は unavailable = claude も `port_scoped` のまま(正直な床)。
+    // **write_status より前に決める** —— doctor が読む status file に runtime 別の表を載せるため。
+    let c1 = c1::detect();
+    if c1.available {
+        eprintln!("broker: c1: available (claude dedicated sessions can be host-scoped)");
+    } else {
+        eprintln!("broker: c1: unavailable ({}) — claude egress stays port-scoped", c1.reason);
+    }
+    let raised = c1::raised_by_runtime(sandbox.egress_enforcement(), &c1);
+    // PBI-0331 AC-X3: 同じ backend 名でも kernel ごとに掛かる壁が違う(Landlock の ABI)。self_test 落ちなら
+    // NoSandbox に差し替わっているので None
+    let strength = sandbox.strength();
+    if let Some(s) = &strength {
+        eprintln!("broker: sandbox strength: {s}");
+    }
+    sandbox::write_status(
+        &cache_dir,
+        &sandbox_status,
+        &egress_check,
+        sandbox.egress_enforcement(),
+        &raised,
+        strength.as_deref(),
+    );
     let server_host = ws_url
         .parse::<http::Uri>()
         .ok()
@@ -142,6 +170,7 @@ async fn main() {
         scan_env,
         hook_dirs: Vec::new(),
         sandbox,
+        c1,
         server_host,
         user_home,
         sessions: sessions::Sessions::new(sessions::tool_cap_from_env(
@@ -278,7 +307,9 @@ async fn scan_now(state: &mut BrokerState) -> Vec<Found> {
     let mut env = state.scan_env.clone();
     env.extra_dirs.extend(state.hook_dirs.iter().cloned());
     let (found, cache) = tokio::task::spawn_blocking(move || {
-        let found = discovery::scan(&reg, &env, &mut cache);
+        let mut found = discovery::scan(&reg, &env, &mut cache);
+        // runtime profile / local catalog(PBI-0211)。scan の結果に端末の file を重ねる
+        profiles::merge(&reg, profiles::state_dir().as_deref(), &env, &mut found);
         (found, cache)
     })
     .await
@@ -307,8 +338,16 @@ fn hello_message(
     last_failure: Option<&LastFailure>,
     sessions: &sessions::Sessions,
     egress_enforcement: &str,
+    egress_by_runtime: &[(&str, &str)],
 ) -> String {
     let mut msg = json!({ "type": "hello", "runtimes": found, "egress_enforcement": egress_enforcement });
+    // 床より上げた runtime だけの表(C1。PBI-0441 ③)。**上げる物が無ければ key ごと出さない** ——
+    // その時の wire は旧 broker と 1 byte も変わらない(server / web / CLI は無改修で今までどおり)
+    if !egress_by_runtime.is_empty() {
+        msg["egress_enforcement_by_runtime"] = Value::Object(
+            egress_by_runtime.iter().map(|(k, v)| ((*k).to_string(), json!(v))).collect(),
+        );
+    }
     let (live, capacity) = sessions.hello_snapshot(adopt::ADOPT_CONCURRENCY);
     msg["sessions"] = live;
     msg["capacity"] = capacity;
@@ -317,6 +356,13 @@ fn hello_message(
         msg["failed_attempts"] = json!(f.attempts);
     }
     msg.to_string()
+}
+
+/// hello に載せる「床」と「床より上げた runtime の表」(PBI-0441 ③)。**2 箇所で同じ組み方をしない** ——
+/// 片方だけ直すと、接続直後の 1 通目と差分 hello が違う値を名乗る。
+fn egress_advert(state: &BrokerState) -> (&'static str, Vec<(&'static str, &'static str)>) {
+    let floor = state.sandbox.egress_enforcement();
+    (floor, c1::raised_by_runtime(floor, &state.c1))
 }
 
 /// **再スキャンの合流点**(図18)。T0 / heartbeat / registry 更新 / 層 2・4 の trigger は全部ここへ
@@ -339,8 +385,9 @@ where
     }
     *known = current;
     blog!("discovery updated = {}", serde_json::to_string(known).unwrap_or_default());
+    let (floor, raised) = egress_advert(state);
     write
-        .send(Message::Text(hello_message(known, None, &state.sessions, state.sandbox.egress_enforcement()).into()))
+        .send(Message::Text(hello_message(known, None, &state.sessions, floor, &raised).into()))
         .await
         .map_err(|e| format!("hello send failed: {e}"))
 }
@@ -387,8 +434,9 @@ async fn run_once(
 
     let mut known_runtimes = scan_now(state).await;
     blog!("discovery = {}", serde_json::to_string(&known_runtimes).unwrap_or_default());
+    let (floor, raised) = egress_advert(state);
     write
-        .send(Message::Text(hello_message(&known_runtimes, Some(failure), &state.sessions, state.sandbox.egress_enforcement()).into()))
+        .send(Message::Text(hello_message(&known_runtimes, Some(failure), &state.sessions, floor, &raised).into()))
         .await
         .map_err(|e| format!("hello send failed: {e}"))?;
 
@@ -411,6 +459,10 @@ async fn run_once(
     // 外からは正常に見える)。None を 1 回受けたら即 return するので空回りもしない。
     let _materialize = AbortOnDrop(tokio::spawn(async move {
         while let Some(batch) = adopt_rx.recv().await {
+            // `local-*`(PBI-0211)は端末の catalog.local.json の native を添える(server は native を持たない)
+            let dir = profiles::state_dir();
+            let batch: Vec<adopt::Adoption> =
+                batch.iter().cloned().map(|a| profiles::with_local_native(a, dir.as_deref())).collect();
             adopt::adopt_all(&batch, &ack_tx).await;
         }
     }));
@@ -673,30 +725,27 @@ async fn run_once(
                 } else {
                     match instruction {
                         Some(instr) => {
-                            // catalog の `egress.hosts`(署名検証済み entry の通信先。PBI-0240)
-                            let catalog_hosts: &[String] = state
-                                .registry
-                                .detector(runtime)
-                                .and_then(|d| d.egress.as_ref())
-                                .map(|e| e.hosts.as_slice())
-                                .unwrap_or(&[]);
                             let isolation = launch::Isolation {
                                 sandbox: state.sandbox.as_ref(),
                                 egress: egress::EgressConfig {
                                     // allowlist = 内蔵表 ∪ catalog の egress.hosts ∪ server host ∪
-                                    // claude の ANTHROPIC_BASE_URL(PBI-0240 / PBI-0388)
-                                    allow: egress::hosts_for(
-                                        catalog_hosts,
+                                    // claude の ANTHROPIC_BASE_URL(PBI-0240 / PBI-0388)。variant(PBI-0211)は
+                                    // broker env ではなく profile の base URL の host
+                                    allow: profiles::wake_hosts(
+                                        &state.registry,
                                         runtime,
                                         &state.server_host,
                                         std::env::var("ANTHROPIC_BASE_URL").ok().as_deref(),
+                                        profiles::state_dir().as_deref(),
                                     ),
                                     events: Some(results_tx.clone()),
                                     upstream_override: None,
                                     observe: None,
                                 },
                                 folder,
+                                lane,
                                 user_home: state.user_home.clone(),
+                                c1: &state.c1,
                             };
                             launch::launch_session_scoped(&state.registry, &known_runtimes, runtime, instr, request_id, scope_token, &isolation)
                                 .map(|(c, e)| (c, Some(e)))
@@ -806,7 +855,7 @@ mod tests {
         let failure = LastFailure { reason: Some("x".into()), attempts: 1 };
         for last_failure in [None, Some(&failure)] {
             let msg: Value =
-                serde_json::from_str(&hello_message(&[], last_failure, &sessions, backend.egress_enforcement())).unwrap();
+                serde_json::from_str(&hello_message(&[], last_failure, &sessions, backend.egress_enforcement(), &[])).unwrap();
             assert_eq!(msg["egress_enforcement"], "none");
         }
     }

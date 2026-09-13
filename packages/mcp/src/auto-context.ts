@@ -9,10 +9,12 @@
 // `input.command` と、tool_result の `is_error` / `tool_use_id` だけ。user / assistant の text、
 // tool_result の content、Edit の old/new string、Write の content は値として一切拾わない
 // (Capsule の「会話を Work state に入れない」C4 #13 と同じ線)。
+// PBI-0445: runtime が Codex(`OPENROLY_RUNTIME_KIND=codex`)の時は transcript の代わりに Codex の rollout から
+// 同じ 2 key を埋める。線は同じ —— patch の header 行の path・exec_command の cmd・終了コードだけを見る。
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { parsePorcelainZ } from "./git-state.ts";
 import type { AccountTools } from "./tools.ts";
 
@@ -151,6 +153,144 @@ export function readTranscriptFacts(
   };
 }
 
+/** rollout の 1 行目(session_meta)を読む上限。base_instructions を含むので数十 KB になる(実測で最大 22 KB) */
+const ROLLOUT_META_MAX_BYTES = 256 * 1024;
+
+// Codex の apply_patch の header の綴り。openai/codex@1715e55 の値の写し:
+// codex-rs/apply-patch/src/parser.rs(ADD_FILE / DELETE_FILE / UPDATE_FILE / MOVE_TO / ENVIRONMENT_ID_MARKER)と
+// streaming_parser.rs(Add / Delete / Update は `line.trim()` に、Move to は `line.trim_end()` に strip_prefix)
+const APPLY_PATCH_HEADERS = ["*** Add File: ", "*** Delete File: ", "*** Update File: "] as const;
+const APPLY_PATCH_MOVE_TO = "*** Move to: ";
+/** 別の実行環境に当てる patch。この端末の cwd の file ではないので 1 行も数えない */
+const APPLY_PATCH_ENVIRONMENT = "*** Environment ID:";
+
+/** Codex が rollout を置く dir。Codex は MCP の子に HOME 等の既定の env しか渡さないので、普段は ~/.codex */
+export function codexSessionsDir(env: Env, home: string = homedir()): string {
+  return join(env.CODEX_HOME || join(home, ".codex"), "sessions");
+}
+
+export type RolloutPick =
+  | { path: string; by: "only_recent_rollout" }
+  | { path: null; reason: "no_rollout_dir" | "no_rollout" | "ambiguous_rollout" };
+
+/** rollout の 1 行目(session_meta)の cwd。書きかけ・形が違う時は null(= この cwd の物と数えない) */
+function rolloutSessionCwd(path: string): string | null {
+  const buf = Buffer.alloc(ROLLOUT_META_MAX_BYTES);
+  const fd = openSync(path, "r");
+  let text: string;
+  try {
+    text = buf.subarray(0, readSync(fd, buf, 0, buf.length, 0)).toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
+  const nl = text.indexOf("\n");
+  try {
+    const row = JSON.parse(nl === -1 ? text : text.slice(0, nl));
+    return row?.type === "session_meta" && typeof row.payload?.cwd === "string" ? row.payload.cwd : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * どの rollout がこの session の物か。Codex は session を特定する env を MCP に渡さない(上流の rmcp-client は
+ * DEFAULT_ENV_VARS だけを通す)ので、**`session_meta.cwd` がこの cwd で、直近 10 分に更新された rollout が
+ * ちょうど 1 つ** の時だけ採る。cwd の違う rollout は数えない。2 つ以上 = 同じ repo で並列の session(書かない)。
+ */
+export function pickRollout(cwd: string, opts: { env?: Env; home?: string; now?: number } = {}): RolloutPick {
+  const dir = codexSessionsDir(opts.env ?? process.env, opts.home);
+  if (!existsSync(dir)) return { path: null, reason: "no_rollout_dir" };
+  const now = opts.now ?? Date.now();
+  // ponytail: 全 rollout を毎 tick stat する(実測 151 本で数 ms)。数万本になったら mtime の索引を持つ
+  //(resume は開始日の dir の file に追記するので、日付 dir で打ち切る近道は取れない)
+  const mine = (readdirSync(dir, { recursive: true }) as string[])
+    .filter((f) => /^rollout-.*\.jsonl$/.test(basename(f)))
+    .map((f) => join(dir, f))
+    .filter((p) => now - statSync(p).mtimeMs <= TRANSCRIPT_RECENT_MS && rolloutSessionCwd(p) === cwd);
+  if (mine.length === 0) return { path: null, reason: "no_rollout" };
+  if (mine.length > 1) return { path: null, reason: "ambiguous_rollout" };
+  return { path: mine[0] as string, by: "only_recent_rollout" };
+}
+
+/** patch の header 行の path だけ。中身の行(` ` / `+` / `-` / `@@` で始まる)は判定して捨てる */
+function applyPatchPaths(patch: string): string[] {
+  const paths: string[] = [];
+  for (const line of patch.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith(APPLY_PATCH_ENVIRONMENT)) return [];
+    const header = APPLY_PATCH_HEADERS.find((h) => trimmed.startsWith(h));
+    if (header) paths.push(trimmed.slice(header.length));
+    else if (line.trimEnd().startsWith(APPLY_PATCH_MOVE_TO)) paths.push(line.trimEnd().slice(APPLY_PATCH_MOVE_TO.length));
+  }
+  return paths;
+}
+
+/**
+ * Codex の rollout(JSONL)から事実だけを取り出す。触るのは:
+ *  - `session_meta` / `turn_context` の `cwd`(この cwd の turn の行だけ数える。`cwd_rows` = 一致した行数)
+ *  - `custom_tool_call` の `apply_patch` の `input` のうち **header 行の path だけ**
+ *  - `function_call` の `exec_command` の `arguments.cmd`(と、判定だけに使う `workdir`)
+ *  - `event_msg` / `item_completed` の `CommandExecution` の `id` と `exit_code`(成否。出力は読まない)
+ * message / reasoning / `*_output` の本文、patch の中身、cmd 以外の引数は値として拾わない。
+ * 形は Codex の版で動く(実測 2 週間で 0.147〜0.153 の 5 版)ので版では絞らず、上の形に合わない行を数えない。
+ */
+export function parseCodexRollout(
+  text: string,
+  cwd: string,
+): { files_touched: FileTouched[]; tests: TestRun[]; cwd_rows: number } {
+  const files = new Map<string, FileTouched>();
+  const runs = new Map<string, TestRun>(); // call_id → テスト command(成否は item_completed が来たら埋める)
+  let turnCwd: string | null = null;
+  let cwdRows = 0;
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    let row: any;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      continue; // 書きかけの末尾行など
+    }
+    const p = row?.payload;
+    if (row?.type === "session_meta" || row?.type === "turn_context") {
+      if (typeof p?.cwd === "string") turnCwd = p.cwd;
+      if (turnCwd === cwd) cwdRows++;
+      continue;
+    }
+    if (turnCwd !== cwd) continue;
+    const at = typeof row.timestamp === "string" ? row.timestamp : null;
+    if (row.type === "response_item" && p?.type === "custom_tool_call" && p.name === "apply_patch" && typeof p.input === "string") {
+      for (const path of applyPatchPaths(p.input)) {
+        const rel = insideCwd(cwd, path);
+        if (rel) {
+          files.delete(rel);
+          files.set(rel, { path: rel, tool: "apply_patch", at });
+        }
+      }
+    } else if (row.type === "response_item" && p?.type === "function_call" && p.name === "exec_command" && typeof p.call_id === "string") {
+      let args: any = null;
+      try {
+        args = JSON.parse(p.arguments);
+      } catch {
+        continue;
+      }
+      const workdir = args?.workdir;
+      const here = typeof workdir !== "string" || resolve(cwd, workdir) === cwd || insideCwd(cwd, workdir) !== null;
+      if (here && typeof args?.cmd === "string" && TEST_COMMAND_RE.test(args.cmd)) {
+        runs.set(p.call_id, { command: args.cmd.slice(0, AUTO_COMMAND_MAX), ok: null, at });
+      }
+    } else if (row.type === "event_msg" && p?.type === "item_completed" && p.item?.type === "CommandExecution") {
+      const run = runs.get(p.item.id);
+      if (run && typeof p.item.exit_code === "number") run.ok = p.item.exit_code === 0;
+    }
+  }
+  const tests = [...runs.values()].sort((a, b) => (b.at ?? "").localeCompare(a.at ?? ""));
+  return {
+    files_touched: [...files.values()].reverse().slice(0, AUTO_FILES_MAX),
+    tests: tests.slice(0, AUTO_TESTS_MAX),
+    cwd_rows: cwdRows,
+  };
+}
+
 export interface GitFacts {
   branch: string | null;
   head: string | null;
@@ -184,22 +324,25 @@ export function readGitFacts(cwd: string): GitFacts | null {
 
 export interface AutoContextResult {
   context: Record<string, unknown>;
-  /** transcript を使えなかった理由(使えた時は "session_env" / "only_recent") */
+  /** 会話記録(transcript / rollout)を使えなかった理由(使えた時は "session_env" / "only_recent" / "only_recent_rollout") */
   transcript: string;
 }
 
 /**
- * 1 回分の自動 context。git が読めなければ何も返さない(空 object)。transcript を決められなければ
- * `auto/git` だけ(transcript 由来の 2 key を**推測で**埋めない)。掴んだ transcript に 1 行も
+ * 1 回分の自動 context。git が読めなければ何も返さない(空 object)。runtime の記録(Claude Code の transcript /
+ * Codex の rollout)を決められなければ `auto/git` だけ(記録由来の 2 key を**推測で**埋めない)。掴んだ記録に 1 行も
  * cwd が一致する行が無ければ、その file はこの cwd の session の物では無いので同じく `auto/git` だけ。
  */
 export function buildAutoContext(cwd: string, opts: { env?: Env; home?: string; now?: number } = {}): AutoContextResult {
   const git = readGitFacts(cwd);
   if (!git) return { context: {}, transcript: "not_a_git_worktree" };
   const context: Record<string, unknown> = { [AUTO_KEYS.git]: git };
-  const pick = pickTranscript(cwd, opts);
+  // mcp-config が runtime ごとに MCP の env へ書く名乗り。codex 以外(claude・名乗りの無い手動起動)は今までどおり transcript
+  const codex = (opts.env ?? process.env).OPENROLY_RUNTIME_KIND === "codex";
+  const pick = codex ? pickRollout(cwd, opts) : pickTranscript(cwd, opts);
   if (pick.path === null) return { context, transcript: pick.reason };
-  const facts = readTranscriptFacts(readFileSync(pick.path, "utf8"), cwd);
+  const text = readFileSync(pick.path, "utf8");
+  const facts = codex ? parseCodexRollout(text, cwd) : readTranscriptFacts(text, cwd);
   if (facts.cwd_rows === 0) return { context, transcript: "no_cwd_rows" };
   context[AUTO_KEYS.filesTouched] = facts.files_touched;
   context[AUTO_KEYS.tests] = facts.tests;

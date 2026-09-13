@@ -10,6 +10,8 @@
 //!   3. IPv6 bracket(`http://[::1]:8080/`)→「[」が allowlist に入る
 //!   4. 対(正常系): userinfo を除いた host は足る —— 直しすぎて AC-6 本体を壊していないか
 
+#[path = "../src/c1.rs"]
+mod c1;
 #[path = "../src/egress.rs"]
 mod egress;
 

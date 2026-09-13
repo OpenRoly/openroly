@@ -20,6 +20,11 @@ mod discovery;
 mod openroly_cli;
 #[path = "../src/launch.rs"]
 mod launch;
+#[path = "../src/c1.rs"]
+mod c1;
+
+/// PBI-0441 ③: test では C1 を掛けない(pane / CI は root op を打てない)。C1 の形は c1.rs の test が fake で武装する
+static C1_OFF: c1::C1Status = c1::C1Status { available: false, reason: String::new() };
 #[path = "../src/egress.rs"]
 mod egress;
 #[path = "../src/sandbox.rs"]
@@ -80,7 +85,9 @@ async fn attacker_written_body_cannot_run_shell_in_any_runtime() {
                 sandbox: &sandbox::Seatbelt,
                 egress: egress::EgressConfig { allow: egress_allow(runtime), events: None, upstream_override: None, observe: None },
                 folder: None,
+                lane: "manual",
                 user_home: std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())),
+                c1: &C1_OFF,
             },
         );
         // 閉じ込めが組めない環境(AC-4)は「起こさない」が正解 —— そのまま合格にする。

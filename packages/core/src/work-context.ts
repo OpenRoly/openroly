@@ -148,6 +148,35 @@ export function buildContextValue(key: string, value: unknown): { payload: Conte
   return { payload, hash: hashCapsuleBody(payload) };
 }
 
+// ---------- 端末をまたぐ値(PBI-0446・図80d) ----------
+
+/** account へ seal して上げる 1 値の上限(CAS の byte 数)。超えた値は上げず、別端末では too_large_to_sync */
+export const WORK_CONTEXT_SYNC_MAX_BYTES = 256 * 1024;
+
+/** 別端末で値を開けなかった理由(missing_on_device に添える。理由なし = まだ上がっていない) */
+export type ContextSyncReason = "too_large_to_sync" | "no_account_key" | "sealed_hash_mismatch";
+
+/**
+ * account から開いた平文が、索引の hash と同じ中身か(client 側)。server は account の公開鍵を持つので、
+ * 別の中身を正しく seal し直して差し替えられる —— **開けた事は中身の証明にならない**。
+ * hash は CAS の file 名と同じ正規化 hash。形は buildContextValue が作る `{ key, value }` だけを通す
+ */
+export function verifySealedValue(
+  expectedHash: string,
+  plaintext: Uint8Array,
+): { ok: true; payload: ContextValuePayload } | { ok: false } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(plaintext));
+  } catch {
+    return { ok: false };
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return { ok: false };
+  const p = parsed as Record<string, unknown>;
+  if (typeof p.key !== "string" || Object.keys(p).sort().join(",") !== "key,value") return { ok: false };
+  return hashCapsuleBody(p) === expectedHash ? { ok: true, payload: { key: p.key, value: p.value } } : { ok: false };
+}
+
 // ---------- 決まった key と索引 1 行(PBI-0437・「123やる」の 2) ----------
 
 /**
@@ -170,18 +199,77 @@ export function findReservedContextKeys(keys: readonly string[]): string[] {
   return keys.filter((k) => WORK_CONTEXT_RESERVED_PREFIXES.some((p) => k.startsWith(p)));
 }
 
+// ---------- task → Work Project の公開(PBI-0443・図80c ④) ----------
+
+type WorkNode = { id: string; parentWorkId: string | null };
+
+/**
+ * context を target に直接書いてよいか。**task を握る run が自分の project へ直接書く事だけを止める** —— project に出すのは
+ * publish(出所が残る)だけ。`held` = writer が lease を握っている work(human は null)。
+ *  - human・何も握っていない・target を握っている・task を 1 つも握っていない → ok(今まで通り)
+ *  - target が握っている task の project → publish_required。ただし全部 `inbox/` の key(work_message)は message なので ok
+ *  - target が同じ project の task(自分・兄弟)か、握っている project の task → ok
+ *  - それ以外(別 project の task / project / 単独の work) → not_found(他 project の住所を漏らさない)
+ */
+export function decideContextWrite(
+  target: WorkNode,
+  held: readonly WorkNode[] | null,
+  keys: readonly string[],
+): { ok: true } | { ok: false; reason: "publish_required" | "not_found" } {
+  if (held == null || held.some((h) => h.id === target.id)) return { ok: true };
+  const projects = new Set(held.flatMap((h) => (h.parentWorkId == null ? [] : [h.parentWorkId])));
+  if (projects.size === 0) return { ok: true };
+  if (projects.has(target.id)) {
+    return keys.length > 0 && keys.every((k) => k.startsWith("inbox/")) ? { ok: true } : { ok: false, reason: "publish_required" };
+  }
+  const parent = target.parentWorkId;
+  if (parent != null && held.some((h) => h.id === parent)) return { ok: true };
+  // 兄弟の task へ届けてよいのは message(inbox/)だけ。他の key は相手の task の context を直接書き換える(review で塞いだ)
+  if (parent != null && projects.has(parent)) {
+    return keys.length > 0 && keys.every((k) => k.startsWith("inbox/")) ? { ok: true } : { ok: false, reason: "publish_required" };
+  }
+  return { ok: false, reason: "not_found" };
+}
+
+// ---------- inbox の既読(PBI-0444・図80c ⑤) ----------
+
+type IndexRow = { kind: string; key: string; read?: boolean };
+
+const isInbox = (r: { kind: string; key: string }): boolean => r.kind === "context" && r.key.startsWith("inbox/");
+
+/**
+ * inbox の件数と未読。`read` は server が **その work 自身の inbox 行にだけ**付ける(project の inbox は受け手の物ではない) ——
+ * read が無い行は未読に数えない(読んだ事を記録できない行を永久に未読として鳴らさない)
+ */
+export function countInbox(rows: readonly IndexRow[]): { total: number; unread: number } {
+  return {
+    total: new Set(rows.filter(isInbox).map((r) => r.key)).size,
+    unread: rows.filter((r) => isInbox(r) && r.read === false).length,
+  };
+}
+
+/**
+ * search の結果のうち **値が agent に渡った未読の `inbox/` 行**の key。既読にしてよいのはこれだけ ——
+ * index_only(値を落とした行)・予算で外れた行(entries に居ない)・この端末に値が無い行(missing_on_device)は読んでいない
+ */
+export function inboxDeliveredKeys(
+  entries: readonly (IndexRow & { value?: unknown; missing_on_device?: boolean })[],
+): string[] {
+  return entries.filter((e) => isInbox(e) && e.read === false && "value" in e && e.missing_on_device !== true).map((e) => e.key);
+}
+
 /**
  * 「この仕事に何の key が在るか」を**値を読まずに** 1 行にする(索引行の kind と key だけ)。
- * 例: `context: goal, next_step · auto: git, tests · +2 keys · 1 source · inbox 2`
+ * 例: `context: goal, next_step · auto: git, tests · +2 keys · 1 source · inbox 3 (2 unread)`
  * task の索引(自分 + project)で同じ key が 2 行来ても 1 つに数える。
  */
-export function summarizeContextIndex(rows: readonly { kind: string; key: string }[]): string {
+export function summarizeContextIndex(rows: readonly IndexRow[]): string {
   const contextKeys = [...new Set(rows.filter((r) => r.kind === "context").map((r) => r.key))];
   const sources = new Set(rows.filter((r) => r.kind === "source").map((r) => r.key)).size;
   const present = new Set(contextKeys);
   const known = WORK_CONTEXT_WELL_KNOWN_KEYS.filter((k) => present.has(k));
   const auto = contextKeys.filter((k) => k.startsWith("auto/")).map((k) => k.slice("auto/".length)).sort();
-  const inbox = contextKeys.filter((k) => k.startsWith("inbox/")).length;
+  const inbox = countInbox(rows);
   const other = contextKeys.filter(
     (k) => !(WORK_CONTEXT_WELL_KNOWN_KEYS as readonly string[]).includes(k) && findReservedContextKeys([k]).length === 0,
   ).length;
@@ -190,7 +278,7 @@ export function summarizeContextIndex(rows: readonly { kind: string; key: string
   if (auto.length > 0) parts.push(`auto: ${auto.join(", ")}`);
   if (other > 0) parts.push(`+${other} key${other === 1 ? "" : "s"}`);
   if (sources > 0) parts.push(`${sources} source${sources === 1 ? "" : "s"}`);
-  if (inbox > 0) parts.push(`inbox ${inbox}`);
+  if (inbox.total > 0) parts.push(`inbox ${inbox.total}${inbox.unread > 0 ? ` (${inbox.unread} unread)` : ""}`);
   return parts.length > 0 ? parts.join(" · ") : "context: (empty)";
 }
 

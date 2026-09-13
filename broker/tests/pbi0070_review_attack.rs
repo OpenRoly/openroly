@@ -15,6 +15,8 @@ mod discovery;
 mod openroly_cli;
 #[path = "../src/launch.rs"]
 mod launch;
+#[path = "../src/c1.rs"]
+mod c1;
 #[path = "../src/egress.rs"]
 mod egress;
 #[path = "../src/sandbox.rs"]

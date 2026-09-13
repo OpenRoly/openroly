@@ -1,0 +1,189 @@
+[
+  {
+    "runtime": "claude",
+    "version": "2.1.270 (Claude Code)",
+    "measured_at": "2026-09-13",
+    "level": "A",
+    "capabilities": {
+      "pre_action": true,
+      "rewrite_action": true,
+      "post_action": true,
+      "inject_after_result": true,
+      "post_batch": true,
+      "pre_inference": false
+    },
+    "evidence": {
+      "pre_action": {
+        "how": "headless (-p)・一時 dir の project 設定: PreToolUse が exit 2 を返した",
+        "observed": "PreToolUse に deny_target の呼び出し 1 回・deny_target.txt は作られなかった",
+        "source_url": "https://code.claude.com/docs/en/hooks"
+      },
+      "rewrite_action": {
+        "how": "headless (-p)・一時 dir の project 設定: PreToolUse が command を書き換えて返した",
+        "observed": "rewrite_dst.txt が作られ rewrite_src.txt は作られなかった",
+        "source_url": "https://code.claude.com/docs/en/hooks"
+      },
+      "post_action": {
+        "how": "headless (-p)・一時 dir の project 設定: PostToolUse の stdin を記録",
+        "observed": "PostToolUse の入力に POSTMARK_01ea4a69(tool 出力でだけ連結される)が在った",
+        "source_url": "https://code.claude.com/docs/en/hooks"
+      },
+      "inject_after_result": {
+        "how": "headless (-p)・一時 dir の project 設定: PostToolUse が additionalContext で token を返した",
+        "observed": "最終応答に INJca144e3a が在った",
+        "source_url": "https://code.claude.com/docs/en/hooks"
+      },
+      "post_batch": {
+        "how": "headless (-p)・一時 dir の project 設定: 文書にある event を全部 hook(PreToolUse,PostToolUse,PostToolUseFailure,PostToolBatch,Stop)",
+        "observed": "PostToolBatch が 2 tool の後に 1 回だけ呼ばれ、入力に両方の出力が在った・PreToolUse:両方0/片方0 PostToolUse:両方0/片方2 PostToolUseFailure:両方0/片方0 PostToolBatch:両方1/片方0 Stop:両方0/片方0",
+        "source_url": "https://code.claude.com/docs/en/hooks"
+      },
+      "pre_inference": {
+        "how": "headless: BeforeModel を hook 登録し、合成応答(llm_response)で推論を差し替える JSON を返した・prompt は \"Reply with exactly: HELLO\"",
+        "observed": "BeforeModel 呼び出し 0 回・応答は model のまま: HELLO",
+        "source_url": "https://code.claude.com/docs/en/hooks"
+      }
+    }
+  },
+  {
+    "runtime": "codex",
+    "version": "codex-cli 0.151.0",
+    "measured_at": "2026-09-13",
+    "level": "unmeasured",
+    "capabilities": {
+      "pre_action": "unmeasured",
+      "rewrite_action": "unmeasured",
+      "post_action": "unmeasured",
+      "inject_after_result": "unmeasured",
+      "post_batch": "unmeasured",
+      "pre_inference": "unmeasured"
+    },
+    "evidence": {
+      "pre_action": {
+        "how": "headless (codex exec)・一時 dir の project 設定: PreToolUse が exit 2 を返す設定",
+        "observed": "model が 403(codex_workspace_access_denied)で応答せず tool も推論も起きない・model 無しで codex の stderr が完了を出した hook: SessionStart / probe の log に届いた hook: 無し",
+        "source_url": "https://learn.chatgpt.com/docs/hooks"
+      },
+      "rewrite_action": {
+        "how": "headless (codex exec)・一時 dir の project 設定: PreToolUse が command を書き換えて返す設定",
+        "observed": "model が 403(codex_workspace_access_denied)で応答せず tool も推論も起きない・model 無しで codex の stderr が完了を出した hook: SessionStart / probe の log に届いた hook: 無し",
+        "source_url": "https://learn.chatgpt.com/docs/hooks"
+      },
+      "post_action": {
+        "how": "headless (codex exec)・一時 dir の project 設定: PostToolUse の stdin を記録",
+        "observed": "model が 403(codex_workspace_access_denied)で応答せず tool も推論も起きない・model 無しで codex の stderr が完了を出した hook: SessionStart / probe の log に届いた hook: 無し",
+        "source_url": "https://learn.chatgpt.com/docs/hooks"
+      },
+      "inject_after_result": {
+        "how": "headless (codex exec)・一時 dir の project 設定: PostToolUse が additionalContext で token を返す設定",
+        "observed": "model が 403(codex_workspace_access_denied)で応答せず tool も推論も起きない・model 無しで codex の stderr が完了を出した hook: SessionStart / probe の log に届いた hook: 無し",
+        "source_url": "https://learn.chatgpt.com/docs/hooks"
+      },
+      "post_batch": {
+        "how": "headless (codex exec)・一時 dir の project 設定: 文書にある event を全部 hook(SessionStart,UserPromptSubmit,PreToolUse,PostToolUse,Stop)",
+        "observed": "model が 403(codex_workspace_access_denied)で応答せず tool も推論も起きない・model 無しで codex の stderr が完了を出した hook: SessionStart / probe の log に届いた hook: 無し",
+        "source_url": "https://learn.chatgpt.com/docs/hooks ; https://github.com/openai/codex/issues/43184 (open 2026-09-13)"
+      },
+      "pre_inference": {
+        "how": "headless: BeforeModel を hook 登録し、合成応答(llm_response)で推論を差し替える JSON を返した・prompt は \"Reply with exactly: HELLO\"",
+        "observed": "model が 403(codex_workspace_access_denied)で応答せず tool も推論も起きない・model 無しで codex の stderr が完了を出した hook: SessionStart / probe の log に届いた hook: 無し",
+        "source_url": "https://learn.chatgpt.com/docs/hooks"
+      }
+    },
+    "unmeasured_reason": "codex_account_not_entitled"
+  },
+  {
+    "runtime": "gemini",
+    "version": "0.46.0",
+    "measured_at": "2026-09-13",
+    "level": "unmeasured",
+    "capabilities": {
+      "pre_action": "unmeasured",
+      "rewrite_action": "unmeasured",
+      "post_action": "unmeasured",
+      "inject_after_result": "unmeasured",
+      "post_batch": "unmeasured",
+      "pre_inference": "unmeasured"
+    },
+    "evidence": {
+      "pre_action": {
+        "how": "headless (-p)・一時 dir の project 設定: BeforeTool が exit 2 を返す設定",
+        "observed": "gemini がこの機で未認証(auth method も GEMINI_API_KEY 等も無い)で model を呼ぶ前に止まる・tool も推論も起きない・model 無しで runtime の stderr が完了を出した hook: 無し / probe の log に届いた hook: 無し",
+        "source_url": "https://geminicli.com/docs/hooks/reference"
+      },
+      "rewrite_action": {
+        "how": "headless (-p)・一時 dir の project 設定: BeforeTool が command を書き換えて返す設定",
+        "observed": "gemini がこの機で未認証(auth method も GEMINI_API_KEY 等も無い)で model を呼ぶ前に止まる・tool も推論も起きない・model 無しで runtime の stderr が完了を出した hook: 無し / probe の log に届いた hook: 無し",
+        "source_url": "https://geminicli.com/docs/hooks/reference"
+      },
+      "post_action": {
+        "how": "headless (-p)・一時 dir の project 設定: AfterTool の stdin を記録",
+        "observed": "gemini がこの機で未認証(auth method も GEMINI_API_KEY 等も無い)で model を呼ぶ前に止まる・tool も推論も起きない・model 無しで runtime の stderr が完了を出した hook: 無し / probe の log に届いた hook: 無し",
+        "source_url": "https://geminicli.com/docs/hooks/reference"
+      },
+      "inject_after_result": {
+        "how": "headless (-p)・一時 dir の project 設定: AfterTool が additionalContext で token を返す設定",
+        "observed": "gemini がこの機で未認証(auth method も GEMINI_API_KEY 等も無い)で model を呼ぶ前に止まる・tool も推論も起きない・model 無しで runtime の stderr が完了を出した hook: 無し / probe の log に届いた hook: 無し",
+        "source_url": "https://geminicli.com/docs/hooks/reference"
+      },
+      "post_batch": {
+        "how": "headless (-p)・一時 dir の project 設定: 文書にある event を全部 hook(BeforeTool,AfterTool,BeforeModel,AfterModel,BeforeToolSelection,AfterAgent)",
+        "observed": "gemini がこの機で未認証(auth method も GEMINI_API_KEY 等も無い)で model を呼ぶ前に止まる・tool も推論も起きない・model 無しで runtime の stderr が完了を出した hook: 無し / probe の log に届いた hook: 無し",
+        "source_url": "https://geminicli.com/docs/hooks/reference"
+      },
+      "pre_inference": {
+        "how": "headless: BeforeModel を hook 登録し、合成応答(llm_response)で推論を差し替える JSON を返した・prompt は \"Reply with exactly: HELLO\"",
+        "observed": "gemini がこの機で未認証(auth method も GEMINI_API_KEY 等も無い)で model を呼ぶ前に止まる・tool も推論も起きない・model 無しで runtime の stderr が完了を出した hook: 無し / probe の log に届いた hook: 無し",
+        "source_url": "https://geminicli.com/docs/hooks/reference"
+      }
+    },
+    "unmeasured_reason": "gemini_not_authenticated"
+  },
+  {
+    "runtime": "kimi",
+    "version": "0.42.0",
+    "measured_at": "2026-09-13",
+    "level": "unmeasured",
+    "capabilities": {
+      "pre_action": "unmeasured",
+      "rewrite_action": "unmeasured",
+      "post_action": "unmeasured",
+      "inject_after_result": "unmeasured",
+      "post_batch": "unmeasured",
+      "pre_inference": "unmeasured"
+    },
+    "evidence": {
+      "pre_action": {
+        "how": "headless (-p)・一時 dir の global config.toml に追記→戻す: PreToolUse が exit 2 を返す設定",
+        "observed": "kimi は login 済みだが購読の月間上限に達していて model が 403 で応答しない・tool も推論も起きない・model 無しで runtime の stderr が完了を出した hook: 無し / probe の log に届いた hook: TurnStarted",
+        "source_url": "https://moonshotai.github.io/kimi-code/en/customization/hooks.html"
+      },
+      "rewrite_action": {
+        "how": "headless (-p)・一時 dir の global config.toml に追記→戻す: PreToolUse が command を書き換えて返す設定",
+        "observed": "kimi は login 済みだが購読の月間上限に達していて model が 403 で応答しない・tool も推論も起きない・model 無しで runtime の stderr が完了を出した hook: 無し / probe の log に届いた hook: TurnStarted",
+        "source_url": "https://moonshotai.github.io/kimi-code/en/customization/hooks.html"
+      },
+      "post_action": {
+        "how": "headless (-p)・一時 dir の global config.toml に追記→戻す: PostToolUse の stdin を記録",
+        "observed": "kimi は login 済みだが購読の月間上限に達していて model が 403 で応答しない・tool も推論も起きない・model 無しで runtime の stderr が完了を出した hook: 無し / probe の log に届いた hook: TurnStarted",
+        "source_url": "https://moonshotai.github.io/kimi-code/en/customization/hooks.html"
+      },
+      "inject_after_result": {
+        "how": "headless (-p)・一時 dir の global config.toml に追記→戻す: PostToolUse が additionalContext で token を返す設定",
+        "observed": "kimi は login 済みだが購読の月間上限に達していて model が 403 で応答しない・tool も推論も起きない・model 無しで runtime の stderr が完了を出した hook: 無し / probe の log に届いた hook: TurnStarted",
+        "source_url": "https://moonshotai.github.io/kimi-code/en/customization/hooks.html"
+      },
+      "post_batch": {
+        "how": "headless (-p)・一時 dir の global config.toml に追記→戻す: 文書にある event を全部 hook(PreToolUse,PostToolUse,PostToolUseFailure,TurnStarted,Stop)",
+        "observed": "kimi は login 済みだが購読の月間上限に達していて model が 403 で応答しない・tool も推論も起きない・model 無しで runtime の stderr が完了を出した hook: 無し / probe の log に届いた hook: TurnStarted",
+        "source_url": "https://moonshotai.github.io/kimi-code/en/customization/hooks.html"
+      },
+      "pre_inference": {
+        "how": "headless: BeforeModel を hook 登録し、合成応答(llm_response)で推論を差し替える JSON を返した・prompt は \"Reply with exactly: HELLO\"",
+        "observed": "kimi は login 済みだが購読の月間上限に達していて model が 403 で応答しない・tool も推論も起きない・model 無しで runtime の stderr が完了を出した hook: 無し / probe の log に届いた hook: TurnStarted・pre_inference の run で観測: 応答が無い(exit 1): BeforeModel は設定の検証で弾かれ hooks 節ごと無視された・Invalid option: expected one of PreToolUse|PostToolUse|PostToolUseFailure|PermissionRequest|PermissionResult|UserPromptSubmit|UserPromptQueued|TurnStarted|Stop|StopFailure|Interrupt|SessionStart|SessionEnd|SessionHeartbeat|SubagentStart|SubagentStop|TaskStarted|PreCompact|PostCompact|Notification\"",
+        "source_url": "https://moonshotai.github.io/kimi-code/en/customization/hooks.html"
+      }
+    },
+    "unmeasured_reason": "kimi_quota_exhausted"
+  }
+]
