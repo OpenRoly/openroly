@@ -1,0 +1,9 @@
+{
+  "name": "@openclaw/normalization-core",
+  "version": "0.0.0-vendored",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./string-coerce": "./src/string-coerce.ts"
+  }
+}

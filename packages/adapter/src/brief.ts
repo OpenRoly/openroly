@@ -48,7 +48,13 @@ export function buildBrief(whoami: any, messages: any[]): SessionBrief {
 }
 
 /**
- * 要件 §19 の表示形。
+ * 要件 §19 の表示形（**未読の数と内訳だけ**）。
+ *
+ * **handle はここで出さない**（2026-09-11・PBI-0424）。`openroly status` は identity を
+ * 見出しにして `@handle` を 1 度だけ自分で出し、この本体を字下げして並べる ——
+ * runtime ごとに `Attached as @handle` を繰り返すと、**runtime が主語**の面になる
+ * （`docs/positioning.md` §8 ⑥「Your runtime is not your agent. と言いたい製品が
+ * runtime を主語にして喋っている」）。
  *
  * unread は whoami(inbox bucket・全期間)、senders は inbox/messages(直近 N 件の window)
  * から来る —— 母集団が違うので内訳の合計が unread に届かないことがある。
@@ -56,7 +62,7 @@ export function buildBrief(whoami: any, messages: any[]): SessionBrief {
  * 差分を必ず 1 行にして見せる。
  */
 export function formatBrief(brief: SessionBrief): string {
-  const lines = [`Attached as @${brief.handle}`, `Unread: ${brief.unread}`];
+  const lines = [`Unread: ${brief.unread}`];
   for (const s of brief.senders) lines.push(`- ${s.name} ×${s.count}`);
   const shown = brief.senders.reduce((n, s) => n + s.count, 0);
   if (brief.unread > shown) lines.push(`- and ${brief.unread - shown} more`);

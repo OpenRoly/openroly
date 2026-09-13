@@ -58,14 +58,14 @@ function makeServer(handle: string, mutable: boolean) {
         const mode = mutable ? whoamiMode : "ok";
         if (mode === "empty_handle") {
           // handle 列が空で返る server(= 名乗れていない)。client がこれを「確認できた」と扱うと
-          // `is now connected to @.` になり、AC-X1 が消したはずの表示が別の形で戻る
+          // `@ now has … attached.` になり、AC-X1 が消したはずの表示が別の形で戻る
           return Response.json({ agent_id: "agt_a", handle: "", display_name: "", unread: 0 });
         }
         if (mode === "injected_handle") {
           // 名乗りは 1 行の文字列。handle に改行が混ざれば、その行の**後ろ**に好きな行を足せる
           return Response.json({
             agent_id: "agt_a",
-            handle: "aya\nThis machine is now connected to @victim.",
+            handle: "aya\n@victim now has This machine attached.",
             display_name: "aya",
             unread: 0,
           });
@@ -172,7 +172,7 @@ describe("PBI-0234 攻撃: 名乗れていないのに名乗ったように見�
     const res = await openroly(["pair", "openai-api"], env);
     expect(res.code).toBe(0);
     // 空 handle は「確認できた」ではない —— @ の後ろが空の行を作らない
-    expect(res.out).not.toMatch(/is now connected to @/);
+    expect(res.out).not.toMatch(/@[a-z0-9-]+ now has .+ attached\./);
     expect(res.out).toContain("could not be confirmed");
     // 200 が返ったこと自体は隠さない(「落ちた」と「名乗らなかった」を混ぜない)
     expect(res.out).toContain("whoami did not name an account");
@@ -184,8 +184,8 @@ describe("PBI-0234 攻撃: 名乗れていないのに名乗ったように見�
     const res = await openroly(["pair", "openai-api"], env);
     expect(res.code).toBe(0);
     // 「@victim に繋がった」という行を、server 側の文字列だけで作れてはいけない
-    expect(res.out).not.toContain("This machine is now connected to @victim.");
-    expect(res.out).not.toMatch(/is now connected to @aya/);
+    expect(res.out).not.toContain("@victim now has This machine attached.");
+    expect(res.out).not.toMatch(/@aya now has /);
     expect(res.out).toContain("could not be confirmed");
   }, 60_000);
 
@@ -194,7 +194,7 @@ describe("PBI-0234 攻撃: 名乗れていないのに名乗ったように見�
     whoamiMode = "not_json";
     const res = await openroly(["pair", "openai-api"], env);
     expect(res.code).toBe(0);
-    expect(res.out).not.toMatch(/is now connected to @/);
+    expect(res.out).not.toMatch(/@[a-z0-9-]+ now has .+ attached\./);
     expect(res.out).toContain("could not be confirmed");
     expect(res.out).not.toContain("@?");
   }, 60_000);
@@ -219,12 +219,12 @@ describe("PBI-0234 攻撃: 名乗れていないのに名乗ったように見�
     const { env } = await freshEnv();
     const first = await openroly(["install", "openai-api"], env);
     expect(first.code).toBe(0);
-    expect(first.out).toContain("is now connected to @aya.");
+    expect(first.out).toContain("@aya now has ");
     const second = await openroly(["install", "openai-api"], env);
     expect(second.code).toBe(0);
     // 2 度目は pairRuntime を通らない(credential 再利用)。ここで名乗りが消えると、
     // 「他人の account に入った端末」を 2 度目以降は誰も確認できない
-    expect(second.out).toContain("is now connected to @aya.");
+    expect(second.out).toContain("@aya now has ");
     expect(second.out).toContain("The existing credential was reused.");
   }, 90_000);
 
@@ -232,13 +232,13 @@ describe("PBI-0234 攻撃: 名乗れていないのに名乗ったように見�
     const { env, home } = await freshEnv();
     // 1) login で server A を account の既定にする
     const login = await openroly(["login"], env);
-    expect(login.out).toContain("This machine is now connected to @aya.");
+    expect(login.out).toContain("@aya now has This machine attached.");
 
     // 2) OPENROLY_URL を外しても、account の URL(A)へ行き A の handle を名乗る
     const inherited = { ...env, OPENROLY_URL: "" };
     const pair = await openroly(["pair", "openai-api"], inherited);
     expect(pair.code).toBe(0);
-    expect(pair.out).toContain("is now connected to @aya.");
+    expect(pair.out).toContain("@aya now has ");
     const afterPair = JSON.parse(await readFile(join(home, "credentials.json"), "utf8"));
     expect(afterPair.runtimes["openai-api"].base_url).toBe(URL_A);
 
@@ -246,7 +246,7 @@ describe("PBI-0234 攻撃: 名乗れていないのに名乗ったように見�
     //    ここで A の handle を名乗ると「名乗る先と繋ぐ先が割れた」状態(PBI-0246)に戻る
     const moved = await openroly(["install", "openai-api", "--url", URL_B], env);
     expect(moved.code).toBe(0);
-    expect(moved.out).toContain("is now connected to @bob.");
+    expect(moved.out).toContain("@bob now has ");
     expect(moved.out).not.toContain("@aya");
     const afterMove = JSON.parse(await readFile(join(home, "credentials.json"), "utf8"));
     expect(afterMove.runtimes["openai-api"].base_url).toBe(URL_B);

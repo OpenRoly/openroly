@@ -115,8 +115,12 @@ pub fn stat_paths(paths: &[PathBuf]) -> Vec<Option<(SystemTime, u64)>> {
 }
 
 /// CLI を 1 本起こして完走を待つ。stdout / stderr は捨てる(log は broker の 1 行だけ)。
-/// **timeout で future を drop すると `kill_on_drop` が子を殺す** —— 対話待ちで固まった
-/// CLI を残さない(`adopt.rs` と同じ扱い)。
+/// **timeout で future を drop すると `kill_on_drop` が直の子(openroly CLI)を殺す** —— 対話待ちで
+/// 固まった CLI を残さない(`adopt.rs` と同じ扱い)。**直の子だけでは足りない**(PBI-0405 —
+/// `launch_in` を通らない別口の 1 つ): `openroly sync` / `share` は先で `claude mcp add` 等の
+/// runtime CLI(孫)を起こすので、group leader にして(`process_group(0)`)timeout の時は
+/// group ごと `procgroup::kill_group` で落とす(仕組みは `launch_in` / `cancel_with_escalate` と
+/// 同じ 1 つを呼ぶだけ — 新しく作らない)。
 async fn run_cli(argv: &[String], timeout: Duration, args: &[&str]) -> Result<(), String> {
     let Some((program, leading)) = argv.split_first() else {
         return Err("openroly_cli_not_found".to_string());
@@ -128,9 +132,18 @@ async fn run_cli(argv: &[String], timeout: Duration, args: &[&str]) -> Result<()
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true);
+    #[cfg(unix)]
+    cmd.process_group(0);
     let mut child = cmd.spawn().map_err(|e| format!("cannot start the openroly CLI ({e})"))?;
+    let pid = child.id();
     match tokio::time::timeout(timeout, child.wait()).await {
-        Err(_) => Err(format!("timed out after {timeout:?}")),
+        Err(_) => {
+            // 見捨てる = group ごと落とす(PBI-0405 未決の問いの結論。孤児を積ませない)
+            if let Some(pid) = pid {
+                crate::procgroup::kill_group(pid, libc::SIGKILL);
+            }
+            Err(format!("timed out after {timeout:?}"))
+        }
         Ok(Err(e)) => Err(format!("wait failed: {e}")),
         Ok(Ok(status)) if status.success() => Ok(()),
         Ok(Ok(status)) => Err(format!("exit {}", status.code().unwrap_or(-1))),
@@ -152,15 +165,26 @@ async fn ask_watch_paths(argv: &[String], timeout: Duration) -> Option<Vec<PathB
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true);
+    // group leader にして timeout 時に孫ごと落とせるようにする(PBI-0405。run_cli と同じ理由)
+    #[cfg(unix)]
+    cmd.process_group(0);
     let Ok(child) = cmd.spawn() else {
         eprintln!("broker: cannot ask the openroly CLI for the watch paths");
         return None;
     };
+    let pid = child.id();
     match tokio::time::timeout(timeout, child.wait_with_output()).await {
         Ok(Ok(out)) if out.status.success() => Some(parse_watch_paths(
             &String::from_utf8_lossy(&out.stdout),
             MAX_WATCH_PATHS,
         )),
+        Err(_) => {
+            if let Some(pid) = pid {
+                crate::procgroup::kill_group(pid, libc::SIGKILL);
+            }
+            eprintln!("broker: openroly watch-dirs timed out; keeping the paths we already watch");
+            None
+        }
         _ => {
             eprintln!("broker: openroly watch-dirs failed; keeping the paths we already watch");
             None

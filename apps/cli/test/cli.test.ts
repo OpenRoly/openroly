@@ -72,9 +72,16 @@ describe("openroly CLI", () => {
     );
     const result = await openroly(["status"], env);
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("Attached as @aya");
+    // PBI-0424: **主語は identity**。1 行目が @handle で、runtime はその下の一覧に落ちる
+    const head = result.stdout.split("\n").filter((l) => l.trim() !== "")[0];
+    expect(head).toBe("@aya");
     expect(result.stdout).toContain("Unread: 2");
     expect(result.stdout).toContain("- Shibu ×2");
+    expect(result.stdout).toContain("[Attached runtimes]");
+    expect(result.stdout).toContain("Claude Code · MacBook / Claude Code");
+    // runtime を見出しにしない(旧: `[Claude Code] MacBook / Claude Code` が 1 行目だった)
+    expect(result.stdout).not.toMatch(/^\[Claude Code\]/m);
+    expect(result.stdout).not.toContain("Attached as @");
     expect(result.stdout).not.toContain("msg_1");
   }, 30_000);
 

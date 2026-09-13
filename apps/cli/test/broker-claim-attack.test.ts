@@ -65,7 +65,7 @@ async function freshEnv() {
       OPENROLY_BROKER_HOME: brokerHome,
       OPENROLY_BROKER_BIN: bin,
       OPENROLY_URL: "http://127.0.0.1:9",
-      OPENROLY_CLAIM_TRACE: "1", // PBI-0312: Linux でだけ破れる相互排他の窓を CI から読む
+      OPENROLY_CLAIM_TRACE: "1", // PBI-0312: CI が赤い時に claim の判断を stderr から読む窓(この誤診を決着させた手段。env が無ければ 1 行も出ない)
     } as Record<string, string>,
   };
 }

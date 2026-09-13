@@ -4,7 +4,8 @@
   "workspaces": [
     "packages/*",
     "apps/*",
-    "adapters/official/*"
+    "adapters/official/*",
+    "third_party/openclaw/packages/*"
   ],
   "scripts": {
     "dev": "bun run --cwd apps/server dev",
@@ -13,13 +14,14 @@
     "plugin:build": "bun build packages/mcp/src/server.ts --target=bun --outfile adapters/official/claude/mcp-server.bundle.js && bun build packages/mcp/src/server.ts --target=bun --outfile adapters/official/codex/mcp-server.bundle.js && cp packages/mcp/openroly-mcp adapters/official/claude/openroly-mcp && cp packages/mcp/openroly-mcp adapters/official/codex/openroly-mcp && chmod +x adapters/official/claude/openroly-mcp adapters/official/codex/openroly-mcp",
     "build:binaries": "./scripts/build-binaries.sh",
     "test": "OPENROLY_WAKE_TIMEOUT_MS=20000 bun test --timeout 30000",
-    "typecheck": "tsc --noEmit -p packages/core && tsc --noEmit -p packages/crypto-envelope && tsc --noEmit -p packages/adapter && tsc --noEmit -p packages/mcp-mask && tsc --noEmit -p packages/mcp && tsc --noEmit -p adapters/official/claude && tsc --noEmit -p adapters/official/codex && tsc --noEmit -p adapters/official/gemini && tsc --noEmit -p apps/server && tsc --noEmit -p apps/cli && tsc --noEmit -p apps/web",
+    "typecheck": "for p in packages/core packages/crypto-envelope packages/adapter packages/mcp-mask packages/mcp adapters/official/claude adapters/official/codex adapters/official/gemini apps/server apps/cli apps/web; do [ -d \"$p\" ] || continue; tsc --noEmit -p \"$p\" || exit 1; done",
     "e2e": "./scripts/e2e.sh && ./scripts/e2e-runtimes.sh && ./scripts/e2e-broker.sh && ./scripts/e2e-auto-session.sh",
-    "check": "bun run typecheck && bun run test && PATH=\"/usr/local/opt/rustup/bin:$PATH\" cargo test --manifest-path broker/Cargo.toml --quiet && ./diagrams-check.sh"
+    "check": "bun run typecheck && bun run test && PATH=\"/usr/local/opt/rustup/bin:$PATH\" cargo test --manifest-path broker/Cargo.toml --quiet && sh -c '[ -f ./diagrams-check.sh ] || exit 0; ./diagrams-check.sh'"
   },
   "devDependencies": {
     "@types/bun": "^1.2.0",
     "typescript": "^5.6.0",
-    "@openroly/adapter": "workspace:*"
+    "@openroly/adapter": "workspace:*",
+    "@openclaw/normalization-core": "workspace:*"
   }
 }

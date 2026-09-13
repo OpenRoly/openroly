@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { saveCredential } from "@openroly/adapter";
+import { CONTRACT_TOOLS } from "./contract-tools.ts";
 
 // PBI-0112: marketplace install(= node_modules を持たない clone、実 cache と同構造)から
 // bundle を起動し、runtime と同じ stdio transport で MCP を往復する。
@@ -17,23 +18,6 @@ import { saveCredential } from "@openroly/adapter";
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const BUNDLE = "adapters/official/claude/mcp-server.bundle.js";
-
-/** 要件 §16 Runtime Access Contract の tools(これ以外を生やさない。PBI-0031 で approval_get・PBI-0094 で reply・EP-0013 W3 で notification_label・W4 で rules_put / rules_list・PBI-0129 で agents_list 追加) */
-const CONTRACT_TOOLS = [
-  "agents_list",
-  "approval_get",
-  "contacts_get",
-  "contacts_list",
-  "inbox_list",
-  "inbox_read",
-  "mark_read",
-  "notification_label",
-  "reply",
-  "rules_list",
-  "rules_put",
-  "send",
-  "whoami",
-];
 
 // stub Account。credential の token を検証する —— 固定値を返すだけだと
 // 「子 process が credential を解決して Account まで到達した」証拠にならない
@@ -108,7 +92,7 @@ describe("plugin bundle の MCP 往復", () => {
     // AC-1: handshake が成立する(stdout に JSON-RPC 以外が混ざっていたらここで落ちる)
     expect(session.client.getServerVersion()?.name).toBe("openroly-account");
 
-    // AC-2: 要件 §16 の 13 tools が過不足なく並ぶ(memory.* / task.* 等を生やさない)
+    // AC-2: 要件 §16 の 21 tools が過不足なく並ぶ(memory.* / task.* 等を生やさない)
     const tools = (await session.client.listTools()).tools.map((t) => t.name).sort();
     expect(tools).toEqual(CONTRACT_TOOLS);
 

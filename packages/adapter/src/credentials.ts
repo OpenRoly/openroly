@@ -1,4 +1,5 @@
 import { chmod, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { legacyDir, LEGACY_STATE_DIR, STATE_DIR } from "@openroly/core";
@@ -42,8 +43,26 @@ const LOCK_TIMEOUT_MS = 5_000;
 const LOCK_STALE_MS = 30_000;
 
 export function openrolyHome(env: Env = process.env): string {
+  // PBI-0414 review: `bun test` は既定で NODE_ENV=test を立てる(apps/server/src/db.ts と同じ
+  // 判定 — このリポジトリで既に信用されている検知法)。isolate し忘れて OPENROLY_HOME が
+  // 未設定のまま in-process test がここを通ると、実行者本人の本物の ~/.openroly に書き込む
+  // (PBI-0414 実装中に実際に発生した事故)。呼び出し側(test file)ごとに isolate を足す運用は
+  // 次の PBI で必ず再発するので、ここ 1 箇所で拒否する。
+  // **`process.env.NODE_ENV` と書かない**: この file は packages/mcp/src/server.ts 経由で配布
+  // plugin の bundle(`bun build --target=bun`)に含まれる。bun のバンドラは `process.env.NODE_ENV`
+  // の**字面**を build 時点の値で静的に inline する(実測: NODE_ENV=test で bundle すると
+  // `=== "test"` が `true` に固定される)。build 環境にたまたま NODE_ENV=test が立っていると、
+  // 配布物が実行時の NODE_ENV に関係なく常に throw する壊れた plugin になる。key を変数経由の
+  // bracket access にすると bun は特別扱いせず、素直な実行時参照のまま残る(実測で確認済み)
+  const nodeEnvKey = "NODE_ENV";
+  if (env.OPENROLY_HOME === undefined && process.env[nodeEnvKey] === "test") {
+    throw new Error(
+      "openrolyHome: OPENROLY_HOME is not set while running under `bun test`. " +
+        "This would fall back to the real ~/.openroly. Set OPENROLY_HOME (e.g. via mkdtemp) before this code runs.",
+    );
+  }
   // 旧 `~/.atn` だけが在る端末ではそれを引き継ぐ(PBI-0344 AC-3。警告は legacyDir が 1 行出す)
-  return env.OPENROLY_HOME ?? legacyDir(join(homedir(), STATE_DIR), join(homedir(), LEGACY_STATE_DIR));
+  return env.OPENROLY_HOME ?? legacyDir(join(homedir(), STATE_DIR), join(homedir(), LEGACY_STATE_DIR), existsSync);
 }
 
 export function credentialsPath(env: Env = process.env): string {

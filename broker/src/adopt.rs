@@ -175,9 +175,14 @@ async fn adopt_one(argv: &[String], timeout: Duration, a: &Adoption) -> (bool, S
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        // timeout で future を drop した時に子を確実に殺す(credential を書きかけたまま
-        // 取り残さない)
+        // timeout で future を drop した時に直の子(openroly CLI)を確実に殺す(credential を
+        // 書きかけたまま取り残さない)
         .kill_on_drop(true);
+    // 直の子だけでは足りない(PBI-0405): `openroly adopt` は先で `claude mcp add` 等の runtime CLI
+    // (孫)を起こすので、group leader にして(`process_group(0)`)timeout の時は group ごと
+    // `procgroup::kill_group` で落とす(0403 review の攻撃 test が実射した穴)。
+    #[cfg(unix)]
+    cmd.process_group(0);
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -185,15 +190,28 @@ async fn adopt_one(argv: &[String], timeout: Duration, a: &Adoption) -> (bool, S
             return (false, "openroly_cli_not_found".to_string());
         }
     };
+    let pid = child.id();
     // spec は stdin へ 1 行書いて close する(EOF を送らないと CLI 側の読み取りが返らない)
     if let Some(mut stdin) = child.stdin.take() {
         if let Err(e) = stdin.write_all(format!("{}\n", spec_line(a)).as_bytes()).await {
-            return (false, format!("stdin write failed: {e}"));
+            // 子が spec を待たずに(config 無し等で)先に読み口を閉じて exit すると Broken Pipe
+            // になる。ここで打ち切ると子の本当の exit code/stderr が握り潰されて
+            // "stdin write failed" に化ける(PBI-0382)。Broken Pipe だけは無視して下の
+            // wait_with_output に進み、子の実診断を detail にする。他の write 失敗はそのまま返す
+            if e.kind() != std::io::ErrorKind::BrokenPipe {
+                return (false, format!("stdin write failed: {e}"));
+            }
         }
         drop(stdin);
     }
     match tokio::time::timeout(timeout, child.wait_with_output()).await {
-        Err(_) => (false, "adopt_timeout".to_string()),
+        Err(_) => {
+            // 見捨てる = group ごと落とす(PBI-0405 未決の問いの結論。孤児を積ませない)
+            if let Some(pid) = pid {
+                crate::procgroup::kill_group(pid, libc::SIGKILL);
+            }
+            (false, "adopt_timeout".to_string())
+        }
         Ok(Err(e)) => (false, format!("wait failed: {e}")),
         Ok(Ok(out)) if out.status.success() => (true, String::new()),
         Ok(Ok(out)) => {

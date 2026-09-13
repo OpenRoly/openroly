@@ -5,6 +5,7 @@
     "": {
       "name": "paa",
       "devDependencies": {
+        "@openclaw/normalization-core": "workspace:*",
         "@openroly/adapter": "workspace:*",
         "@types/bun": "^1.2.0",
         "typescript": "^5.6.0",
@@ -74,6 +75,7 @@
       "name": "@openroly/core",
       "version": "0.1.0",
       "dependencies": {
+        "@openclaw/workboard-contract": "workspace:*",
         "uuid": "^11.0.0",
       },
     },
@@ -110,6 +112,14 @@
         "zod": "^3.24.0",
       },
     },
+    "third_party/openclaw/packages/normalization-core": {
+      "name": "@openclaw/normalization-core",
+      "version": "0.0.0-vendored",
+    },
+    "third_party/openclaw/packages/workboard-contract": {
+      "name": "@openclaw/workboard-contract",
+      "version": "0.0.0-vendored",
+    },
   },
   "packages": {
     "@hono/node-server": ["@hono/node-server@2.1.1", "", { "peerDependencies": { "hono": "^4" } }, "sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg=="],
@@ -119,6 +129,10 @@
     "@hpke/core": ["@hpke/core@1.9.0", "", { "dependencies": { "@hpke/common": "^1.10.0" } }, "sha512-pFxWl1nNJeQCSUFs7+GAblHvXBCjn9EPN65vdKlYQil2aURaRxfGMO6vBKGqm1YHTKwiAxJQNEI70PbSowMP9Q=="],
 
     "@modelcontextprotocol/sdk": ["@modelcontextprotocol/sdk@1.30.0", "", { "dependencies": { "@hono/node-server": "^1.19.9 || ^2.0.5", "ajv": "^8.17.1", "ajv-formats": "^3.0.1", "content-type": "^1.0.5", "cors": "^2.8.5", "cross-spawn": "^7.0.5", "eventsource": "^3.0.2", "eventsource-parser": "^3.0.0", "express": "^5.2.1", "express-rate-limit": "^8.2.1", "hono": "^4.11.4", "jose": "^6.1.3", "json-schema-typed": "^8.0.2", "pkce-challenge": "^5.0.0", "raw-body": "^3.0.0", "zod": "^3.25 || ^4.0", "zod-to-json-schema": "^3.25.1" }, "peerDependencies": { "@cfworker/json-schema": "^4.1.1" }, "optionalPeers": ["@cfworker/json-schema"] }, "sha512-xKd8OIzlqNzcqcNumGAa6g+PW2kjD5vrpcKOnfldAUPP3j7lnqMPwlTXQm8gF+UwH72z0lqaRbjr9hqGz0eITA=="],
+
+    "@openclaw/normalization-core": ["@openclaw/normalization-core@workspace:third_party/openclaw/packages/normalization-core"],
+
+    "@openclaw/workboard-contract": ["@openclaw/workboard-contract@workspace:third_party/openclaw/packages/workboard-contract"],
 
     "@openroly/adapter": ["@openroly/adapter@workspace:packages/adapter"],
 

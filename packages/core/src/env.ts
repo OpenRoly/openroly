@@ -1,9 +1,10 @@
 // 改名の互換(PBI-0344 AC-3)。旧 env 名(`PAA_*`)と旧 state dir(`~/.atn`)は**少なくとも
 // 1 release は読み続け、使った時だけ 1 行警告する**。「旧を読める」は release note ではなく
 // test で保証する。新名が在る時は常に新名が勝つ(両方在る時の所属を曖昧にしない)。
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+// **この file は node builtin を import しない** —— core の entry から web(vite)の bundle に
+// 焼き込まれる。node:fs の `existsSync` 等をここに置くと deploy の web build だけが
+// `"existsSync" is not exported by "__vite-browser-external"` で死ぬ(PBI-0380)。
+// 使う側(CLI / MCP / server)が自分で import して渡す。
 
 export const ENV_PREFIX = "OPENROLY_";
 export const LEGACY_ENV_PREFIX = "PAA_";
@@ -46,11 +47,12 @@ export function adoptLegacyEnv(env: Env = process.env, warn = onceWarn()): strin
 /**
  * 「新しい場所を既定に、旧の場所だけが在る端末ではそれを引き継ぐ」1 関数。state dir の互換
  * (`~/.openroly` ← `~/.atn`)はこれ 1 本で表す。新が在る/両方無い → 新。旧だけ在る → 旧 + 警告 1 行。
+ * `exists` は必須(既定で `existsSync` を引かない —— 上の node builtin 禁止。呼び側が渡す)。
  */
 export function legacyDir(
   fresh: string,
   legacy: string,
-  exists: (p: string) => boolean = existsSync,
+  exists: (p: string) => boolean,
   warn: (line: string) => void = onceWarn(),
 ): string {
   if (exists(fresh) || !exists(legacy)) return fresh;

@@ -6,8 +6,10 @@ mod launch;
 #[macro_use]
 mod log;
 mod openroly_cli;
+mod procgroup;
 mod registry;
 mod sandbox;
+mod sessions;
 mod sync;
 mod triggers;
 
@@ -66,6 +68,10 @@ struct BrokerState {
     server_host: String,
     /// user の HOME。sandbox の deny_read / writable_extra の既定に使う(env は起動時に 1 回だけ読む)。
     user_home: PathBuf,
+    /// 「いま動いている session」の正本(PBI-0229)。child の handle を持ち、admission / cancel /
+    /// presence(hello の sessions 一覧)は全部ここから出る。**main 所有** で接続を跨いで生存
+    /// (切断しても session は動き続ける —— 再接続直後の hello が snapshot を運ぶ)。
+    sessions: sessions::Sessions,
 }
 
 #[tokio::main]
@@ -138,6 +144,9 @@ async fn main() {
         sandbox,
         server_host,
         user_home,
+        sessions: sessions::Sessions::new(sessions::tool_cap_from_env(
+            env_compat::env_new_or_legacy("OPENROLY_SESSION_TOOL_CAP").as_deref(),
+        )),
     };
 
     // 再スキャンのきっかけ(層 2 / 層 4)。`results_tx` と同じく **main 所有** にして接続を跨いで
@@ -148,13 +157,26 @@ async fn main() {
         &triggers::watch_dirs(&state.scan_env, triggers::MAX_WATCH_DIRS),
         trigger_tx.clone(),
     );
-    tokio::spawn(triggers::serve_hook_socket(hook_socket, trigger_tx));
 
-    // session_result(dedicated session の終了通知)を接続を跨いで運ぶ channel。
-    // 送信端は各 reaper(child.wait() する tokio task)へ clone され、受信端は run_once の
-    // select! が拾う。main で作るので spawn 後に切断・再接続しても結果は失われず、次の接続で
-    // flush される(PBI-0019 図15)。
+    // session_result / session_update を接続を跨いで運ぶ channel。
+    // 送信端は reaper(PBI-0229。child の exit を拾う)と hook socket(MCP の tool 記録)へ
+    // clone され、受信端は run_once の select! が拾う。main で作るので spawn 後に切断・
+    // 再接続しても結果は失われず、次の接続で flush される(PBI-0019 図15)。
     let (results_tx, mut results_rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+
+    // session の reaper(PBI-0229)。registry が持つ child の exit を 250ms 間隔の `try_wait`
+    // で拾って `session_result` を channel へ流す。per-child の wait task にしない理由は
+    // child の handle を registry が持つため(admission の生存判定と cancel がここに集約される)。
+    state.sessions.spawn_reaper(results_tx.clone());
+
+    // hook socket への引数はこの順序でないと作れない(results_tx が要る)ので、channel の後。
+    // JSON 行への答え(status / cancel / tool)はここで束ねる —— triggers.rs は I/O だけを持ち、
+    // crate:: を持たない(src を `#[path]` で取り込む攻撃 test crate でも compile できるように)
+    let sessions_for_hook = state.sessions.clone();
+    let results_for_hook = results_tx.clone();
+    tokio::spawn(triggers::serve_hook_socket(hook_socket, trigger_tx, std::sync::Arc::new(move |v, now_ms| {
+        sessions::handle_hook_json(&sessions_for_hook, &results_for_hook, v, now_ms, adopt::ADOPT_CONCURRENCY)
+    })));
 
     let timings =
         triggers::timings_from_env(env_compat::env_new_or_legacy("OPENROLY_BROKER_HEARTBEAT_MS").as_deref());
@@ -276,8 +298,14 @@ struct LastFailure {
 }
 
 /// `last_failure` は **接続確立直後の 1 通目にだけ** 載せる(以後の差分 hello は None)。
-fn hello_message(found: &[Found], last_failure: Option<&LastFailure>) -> String {
+/// sessions(PBI-0229)は逆に **毎回** 載せる —— これが server 側 cache の reconcile の正本。
+/// 旧 server は未知の key を読まないので互換は壊れない。capacity.max は dedicated session の
+/// 同時実行上限(adopt と同じ ADOPT_CONCURRENCY)。
+fn hello_message(found: &[Found], last_failure: Option<&LastFailure>, sessions: &sessions::Sessions) -> String {
     let mut msg = json!({ "type": "hello", "runtimes": found });
+    let (live, capacity) = sessions.hello_snapshot(adopt::ADOPT_CONCURRENCY);
+    msg["sessions"] = live;
+    msg["capacity"] = capacity;
     if let Some(f) = last_failure.filter(|f| f.attempts > 0) {
         msg["last_error"] = json!(f.reason.as_deref().unwrap_or("unknown"));
         msg["failed_attempts"] = json!(f.attempts);
@@ -306,7 +334,7 @@ where
     *known = current;
     blog!("discovery updated = {}", serde_json::to_string(known).unwrap_or_default());
     write
-        .send(Message::Text(hello_message(known, None).into()))
+        .send(Message::Text(hello_message(known, None, &state.sessions).into()))
         .await
         .map_err(|e| format!("hello send failed: {e}"))
 }
@@ -354,7 +382,7 @@ async fn run_once(
     let mut known_runtimes = scan_now(state).await;
     blog!("discovery = {}", serde_json::to_string(&known_runtimes).unwrap_or_default());
     write
-        .send(Message::Text(hello_message(&known_runtimes, Some(failure)).into()))
+        .send(Message::Text(hello_message(&known_runtimes, Some(failure), &state.sessions).into()))
         .await
         .map_err(|e| format!("hello send failed: {e}"))?;
 
@@ -516,6 +544,32 @@ async fn run_once(
                     }
                     continue;
                 }
+                // cancel(PBI-0229 / AC-3): server の human 操作。SIGTERM → 5 秒 → SIGKILL。
+                // 終了そのものは reaper が session_result(reason:"cancelled")で伝える。
+                // request_id は accountId で絞る(AC-X1: 他人の request_id を知った接続が
+                // cancel / status で触れない。broker は 1 接続で複数 account を serve しうる)
+                if parsed.get("type").and_then(Value::as_str) == Some("cancel") {
+                    let rid = parsed.get("requestId").and_then(Value::as_str).unwrap_or("");
+                    let account_id = parsed.get("accountId").and_then(Value::as_str).unwrap_or("");
+                    let ok = state.sessions.cancel_scoped(rid, account_id, "cancelled");
+                    blog!("cancel requestId={rid} accepted={ok}");
+                    continue;
+                }
+                // status(AC-2): server の timeout handler からの生存確認。registry に居て
+                // try_wait が None を返す child の時だけ true。応答が戻らない時は server 側の
+                // 締切が fail-closed に倒す(問い合わせは「閉じる」方向の安全側で失敗する)。
+                if parsed.get("type").and_then(Value::as_str) == Some("status") {
+                    let rid = parsed.get("requestId").and_then(Value::as_str).unwrap_or("");
+                    let account_id = parsed.get("accountId").and_then(Value::as_str).unwrap_or("");
+                    let alive = state.sessions.status_alive_scoped(rid, account_id);
+                    blog!("status requestId={rid} alive={alive}");
+                    let response = json!({ "type": "status_result", "requestId": rid, "alive": alive });
+                    write
+                        .send(Message::Text(response.to_string().into()))
+                        .await
+                        .map_err(|e| format!("status_result send failed: {e}"))?;
+                    continue;
+                }
                 if parsed.get("type").and_then(Value::as_str) != Some("wake") {
                     continue;
                 }
@@ -551,6 +605,12 @@ async fn run_once(
                     .get("scopeToken")
                     .and_then(Value::as_str)
                     .filter(|s| !s.is_empty());
+                // lane(PBI-0229)。server は wake payload に載せる。欠落時は "manual" —— 旧 server
+                // の wake(bare spawn も含む)は全て admission 対象外に倒す = 現行挙動を守る安全側。
+                let lane = parsed.get("lane").and_then(Value::as_str).unwrap_or("manual");
+                // 1 接続 1 account だが broker は account_id を知らないので payload に載る。
+                // 欠落時は空文字列(manual と同じく admission の対象外として働く)。
+                let account_id = parsed.get("accountId").and_then(Value::as_str).unwrap_or("");
                 // lane の folder(PBI-0238 AC-4)。owner / work lane だけが持つ(server が rule から
                 // 解決する = PBI-0239)。無ければ session_dir/scratch。
                 let folder = parsed
@@ -562,6 +622,44 @@ async fn run_once(
                     .detector(runtime)
                     .map(|d| d.kind == "api")
                     .unwrap_or(false);
+                // **admission は broker が判定**(PBI-0229 / AC-X3)。同じ (account, lane) の
+                // dedicated session が生きていれば 2 本目を起こさず `running:<id>` を返す
+                // —— 判定は child の handle(try_wait)で、pid ではない。manual は免除(人在室)。
+                if let Some(running) = state.sessions.admission_check(account_id, lane) {
+                    blog!("wake denied session_active requestId={request_id} running={running} lane={lane}");
+                    let response = json!({
+                        "type": "wake_result",
+                        "requestId": request_id,
+                        "ok": false,
+                        "reason": "session_active",
+                        "running": running,
+                    });
+                    write
+                        .send(Message::Text(response.to_string().into()))
+                        .await
+                        .map_err(|e| format!("wake_result send failed: {e}"))?;
+                    continue;
+                }
+                // **同時実行上限の enforcement**(PBI-0391 / AC-1)。admission((account, lane) の
+                // 2 本目禁止)とは別の門で、端末全体の本数を hello の capacity {used, max} と
+                // 同じ数え方(sessions::admission_used)で数える —— used==max で web が
+                // 「No capacity right now」(AC-A5-2)と出しているのに 5 本目を spawn する矛盾
+                // (0229 review)を閉じる。満杯の wake は spawn せず capacity_full を返す
+                // (presence に新しい状態は作らない = 4 状態のまま。行が無い = idle)。
+                if state.sessions.capacity_full(lane, adopt::ADOPT_CONCURRENCY) {
+                    blog!("wake denied capacity_full requestId={request_id} lane={lane}");
+                    let response = json!({
+                        "type": "wake_result",
+                        "requestId": request_id,
+                        "ok": false,
+                        "reason": "capacity_full",
+                    });
+                    write
+                        .send(Message::Text(response.to_string().into()))
+                        .await
+                        .map_err(|e| format!("wake_result send failed: {e}"))?;
+                    continue;
+                }
                 // dedicated session は (child, egress proxy) の対。proxy は child と同じ寿命
                 // (reaper が wait の後に drop = 閉じる)。Manual / API 経路は proxy 無し。
                 let launch_result = if is_api {
@@ -575,6 +673,7 @@ async fn run_once(
                                     allow: egress::hosts_for(runtime, &state.server_host),
                                     events: Some(results_tx.clone()),
                                     upstream_override: None,
+                                    observe: None,
                                 },
                                 folder,
                                 user_home: state.user_home.clone(),
@@ -587,26 +686,29 @@ async fn run_once(
                 };
                 let response = match launch_result {
                     Ok((child, egress)) => {
-                        // reaper: 子の終了を待って session_result を送る(zombie 回収も兼ねる)。
-                        // Manual routing の bare spawn も同じ reaper を通す —— session_result は
-                        // Cloud 側で active session の requestId と一致した時だけ作用するので、
-                        // Manual(active 未登録)の分は無視される(無害・経路を一本化)。
-                        let tx = results_tx.clone();
-                        let rid = request_id.to_string();
-                        let mut child = child;
-                        tokio::spawn(async move {
-                            let exit_code = match child.wait().await {
-                                // signal 終了は code() が None → JSON null
-                                Ok(status) => status.code(),
-                                Err(_) => None,
-                            };
-                            // session 終了で proxy を閉じる(PBI-0238)。
-                            drop(egress);
-                            let _ = tx.send(json!({
-                                "type": "session_result",
-                                "requestId": rid,
-                                "exit_code": exit_code,
-                            }));
+                        // registry へ 1 行(PBI-0229)。child の handle は registry が持ち、exit は
+                        // reaper(250ms poll try_wait)が session_result にして流す —— 経路は旧
+                        // per-child wait task から 1 本に集約される。Manual routing の bare spawn
+                        // もここを通す(session_result は Cloud 側で active session の requestId と
+                        // 一致した時だけ作用するので、active 未登録の分は無視される。無害・一本化)。
+                        // egress proxy は行と同じ寿命(reap で drop = 閉じる / PBI-0238)。
+                        let started_at = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0);
+                        state.sessions.insert(sessions::Session {
+                            request_id: request_id.to_string(),
+                            lane: lane.to_string(),
+                            account_id: account_id.to_string(),
+                            thread_id: thread_id.to_string(),
+                            runtime: runtime.to_string(),
+                            started_at,
+                            child: Some(child),
+                            egress,
+                            last_tool: None,
+                            tool_count: 0,
+                            exit: None,
+                            cancel_reason: None,
                         });
                         json!({ "type": "wake_result", "requestId": request_id, "ok": true })
                     }

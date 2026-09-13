@@ -4,15 +4,16 @@
 // - 書く場所は broker の session_dir(`$OPENROLY_BROKER_HOME/sessions/<request_id>/`・instruction.txt /
 //   stdout.log と同じ dir)。id は broker が dedicated session の子 env `OPENROLY_SESSION_ID` に載せる。
 //   manual session には無いので何もしない(人が画面で見ている面を二重に記録しない)。
-// - **値は一度も復元しない**。この file は restore 系の関数を import しない(diagrams-check 規則 (c))。
+// - **値は一度も復元しない**。この file は restore 系の関数を import しない(旧 diagrams-check 規則 (c))。
 //   server.ts が model に返す masked 済み文字列をそのまま受け取って書くだけ。
 // - **fail-open**: open / write の失敗は stderr 1 行で握りつぶし、tool 実行を止めない(peek は観測
 //   であって機能ではない。log が書けない事で agent の仕事を止めない)。
 // - id は broker 側 `is_safe_request_id` と同じ境界(英数と _ - のみ)を MCP 側でも持つ —— env は
 //   信頼境界の外(runtime の設定 file 経由でも書ける)なので `../x` を dir に混ぜない。
 
-import { appendFileSync, chmodSync, mkdirSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
+import { createConnection } from "node:net";
 import { join } from "node:path";
 import { legacyDir, LEGACY_STATE_DIR, STATE_DIR } from "@openroly/core";
 
@@ -24,7 +25,11 @@ const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
  * 旧 `~/.atn/broker` だけが在る端末ではそれを引き継ぐ(PBI-0344 AC-3) */
 export const brokerHome = (env: Env = process.env): string =>
   env.OPENROLY_BROKER_HOME ??
-  legacyDir(join(homedir(), STATE_DIR, "broker"), join(homedir(), LEGACY_STATE_DIR, "broker"));
+  legacyDir(
+    join(homedir(), STATE_DIR, "broker"),
+    join(homedir(), LEGACY_STATE_DIR, "broker"),
+    existsSync,
+  );
 
 export interface PeekRecord {
   tool: string;
@@ -77,5 +82,37 @@ export function openPeek(env: Env = process.env, home: string = brokerHome(env))
         warn(e);
       }
     },
+  };
+}
+
+// broker の hook socket 名(broker/src/triggers.rs の HOOK_SOCKET_NAME と同じ名前)。
+const HOOK_SOCKET_NAME = "broker.sock";
+
+/**
+ * hook socket への tool 報告(PBI-0229)。broker が session の last_tool / tool_count を持つ為の
+ * 上流。`OPENROLY_SESSION_ID` が無ければ null(manual session = 何もしない)。**fail-open**:
+ * socket が無い / 繋がらない端末(broker 未起動)では 1 行も送らず、tool 実行は止めない(AC-X2)。
+ * 1 呼び出し 1 接続 1 行(`{"type":"tool","session":id,"tool":name}`)で、broker は答えを
+ * 返さない(tool は投げっぱなし。status / cancel だけが 1 行の答えを受け取る)。
+ */
+export function openSessionUpdate(
+  env: Env = process.env,
+  home: string = brokerHome(env),
+): ((tool: string) => void) | null {
+  const id = env.OPENROLY_SESSION_ID;
+  if (!id) return null;
+  if (!SESSION_ID_RE.test(id)) return null;
+  const sockPath = join(home, HOOK_SOCKET_NAME);
+  return (tool) => {
+    try {
+      const client = createConnection(sockPath);
+      // broker 未起動 / socket 消滅は握りつぶす(観測で agent の仕事を止めない = peek と同じ)
+      client.on("error", () => {});
+      client.on("connect", () => {
+        client.write(JSON.stringify({ type: "tool", session: id, tool }) + "\n", () => client.end());
+      });
+    } catch (e) {
+      warn(e);
+    }
   };
 }

@@ -6,7 +6,7 @@ import { accessSync, constants as fsConstants } from "node:fs";
 // runtime 固有なのは "その runtime へ MCP server をどう登録するか" だけに絞る。
 // pairing / credential / 診断の本体は packages/adapter の engine 側にある。
 
-/** 図 7 の adapter-contract ブロックと一致させる(diagrams-check.sh が検査) */
+/** 図 7 の adapter-contract ブロックと一致させる(旧 diagrams-check が検査) */
 export const ADAPTER_OPS = [
   "id",
   "displayName",

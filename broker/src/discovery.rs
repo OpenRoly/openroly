@@ -10,9 +10,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
 use serde::{Deserialize, Serialize};
 
-use crate::registry::{ModelsSpec, Registry, ServiceProbe};
+use crate::registry::{self, ModelsSpec, Registry, ServiceProbe};
 
 /// hello.runtimes の 1 要素。`PartialEq` で heartbeat ごとの差分判定をする(version も含む —
 /// probe 結果は cache されるので binary が変わらない限り安定)。
@@ -139,6 +142,12 @@ impl VersionCache {
 /// tokio worker / blocking pool の spawn と競合して実測で hang した)。ファイルなら継承の有無に
 /// 関係なく、子が exit した時点で内容が確定する。
 fn run_version_probe(path: &Path, args: &[String]) -> Option<String> {
+    // PBI-0244 の二重の 2 本目: parse の deny を迂回する経路が将来できても、**spawn の直前**で止める。
+    // probe は heartbeat 15 秒ごとに全 detector 分走るので、ここが一番よく踏まれる spawn 口。
+    if registry::is_forbidden_program(&path.to_string_lossy()) {
+        eprintln!("broker: version probe refused a forbidden program {}", path.display());
+        return None;
+    }
     // 一意な一時ファイル(probe は同時に 1 本だが、念のため pid + nanos で衝突を避ける)
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -152,14 +161,19 @@ fn run_version_probe(path: &Path, args: &[String]) -> Option<String> {
             return None;
         }
     };
-    let spawned = Command::new(path)
-        .args(args)
+    let mut cmd = Command::new(path);
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(out_file)
         .stderr(Stdio::null())
         // Claude Code の中から broker を起動した時、CLAUDECODE が残っていると nested 判定で落ちる
-        .env_remove("CLAUDECODE")
-        .spawn();
+        .env_remove("CLAUDECODE");
+    // probe 対象も広く任意の binary(claude/codex/ollama 等の CLI)であり、内部で孫を起こさない
+    // 保証は無い(PBI-0405 有界レビュー: adopt_one/run_cli/ask_watch_paths と同じ「broker が自分の
+    // 都合で起こし timeout で見捨てる」門。group leader にして timeout 時は群ごと落とす)。
+    #[cfg(unix)]
+    cmd.process_group(0);
+    let spawned = cmd.spawn();
     let mut child = match spawned {
         Ok(c) => c,
         Err(e) => {
@@ -174,7 +188,9 @@ fn run_version_probe(path: &Path, args: &[String]) -> Option<String> {
             Ok(Some(_)) => break true,
             Ok(None) => {
                 if start.elapsed() > PROBE_TIMEOUT {
-                    let _ = child.kill();
+                    // 見捨てる = group ごと落とす(PBI-0405 と同じ結論。孤児を積ませない)
+                    let pid = child.id();
+                    crate::procgroup::kill_group(pid, libc::SIGKILL);
                     let _ = child.wait();
                     eprintln!("broker: version probe timeout {}", path.display());
                     break false;
@@ -669,6 +685,29 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(6));
         assert_eq!(run_version_probe(&dir.join("fail"), &args), None);
         assert_eq!(run_version_probe(&dir.join("long"), &args).unwrap().len(), VERSION_MAX_CHARS);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // PBI-0244 AC-3(probe 側): parse を迂回して forbidden な path が来ても spawn しない。
+    // 「引数が allowlist の外」だけでは守りにならない —— 引数の検査は parse にしか無いので、
+    // spawn 直前のここは **program の名前**で止める必要がある(marker file で実測する)。
+    #[test]
+    fn probe_refuses_forbidden_basename() {
+        let marker = std::env::temp_dir().join(format!("openroly-pbi0244-probe-{}", std::process::id()));
+        let _ = fs::remove_file(&marker);
+        let args = vec!["-c".to_string(), format!("touch {}", marker.display())];
+        for program in ["/bin/sh", "/bin/bash", "/usr/bin/env"] {
+            assert_eq!(run_version_probe(Path::new(program), &args), None, "{program} が通った");
+        }
+        assert!(!marker.exists(), "forbidden な program を probe が spawn した");
+        // 正規の binary は従来どおり probe できる(deny が全部を止めていない = 陰性対照)
+        let dir = tmp("probe-deny");
+        write_exec(&dir.join("claude"), "#!/bin/sh\necho v9.9.9\n");
+        warm(&dir.join("claude"));
+        assert_eq!(
+            run_version_probe(&dir.join("claude"), &["--version".to_string()]),
+            Some("v9.9.9".to_string())
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 

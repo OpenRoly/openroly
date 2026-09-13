@@ -11,7 +11,7 @@
 //!
 //! 3 つとも「合流点 1 箇所」(`main.rs` の `rescan_and_hello`)へ流し込むだけで、hello から先
 //! (自動登録・materialize・Activity)には一切触れない。**検出のきっかけが増えても Detect ≠ Grant は
-//! 不変** —— この file は delegation も is_default も allowlist も参照しない(diagrams-check で機械検査)。
+//! 不変** —— この file は delegation も is_default も allowlist も参照しない(旧 diagrams-check で機械検査)。
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -350,9 +350,23 @@ pub fn absorb(registry: &Registry, hook_dirs: &mut Vec<PathBuf>, batch: &[Trigge
 /// shell hook の受け口。1 接続につき 1 行だけ読んで閉じる。パースできない行は無視して
 /// **listener は生かし続ける**(1 通の壊れた行で層 4 が永久に死なない)。
 ///
+/// 1 行の形態は 2 つ(PBI-0229)。legacy `{"cmd","path"}`(shell hook → re-scan trigger)と、
+/// `{"type":...}` の JSON(MCP からの tool 記録 / CLI からの status・cancel)。`type` key の
+/// 有無で分ける —— `cmd`/`path` は type を持たない。status / cancel は **1 行の答え** を
+/// socket へ書き戻す(tool は投げっぱなし = 書き戻さない)。
+///
 /// bind の前に既存 path を unlink する —— 前回の異常終了で残った socket file があると
 /// `AddrInUse` で bind が失敗し、以後 hook が二度と繋がらなくなる。
-pub async fn serve_hook_socket(sock: PathBuf, tx: UnboundedSender<Trigger>) {
+pub async fn serve_hook_socket(
+    sock: PathBuf,
+    tx: UnboundedSender<Trigger>,
+    // JSON 行(status / cancel / tool)への答えは **注入する**。束ねる本体は main.rs
+    // (sessions::handle_hook_json + adopt::ADOPT_CONCURRENCY) —— triggers.rs に crate:: を
+    // 残すと、src を `#[path]` で取り込む攻撃 test crate(crate root は test 自身)で本体ごと
+    // compile できなくなる(PBI-0229 で実際に pbi0190/pbi0033 系が落ちた)。
+    // Arc なのは接続毎に spawn する task に配るため(async move は 1 回しか所有できない)
+    hook: std::sync::Arc<dyn Fn(&Value, u64) -> Option<String> + Send + Sync>,
+) {
     use tokio::io::AsyncReadExt;
     use tokio::net::UnixListener;
 
@@ -373,6 +387,7 @@ pub async fn serve_hook_socket(sock: PathBuf, tx: UnboundedSender<Trigger>) {
     loop {
         let Ok((mut stream, _)) = listener.accept().await else { continue };
         let tx = tx.clone();
+        let hook = hook.clone();
         tokio::spawn(async move {
             let mut buf = vec![0u8; HOOK_LINE_MAX];
             let mut len = 0usize;
@@ -391,8 +406,26 @@ pub async fn serve_hook_socket(sock: PathBuf, tx: UnboundedSender<Trigger>) {
             }
             let line = String::from_utf8_lossy(&buf[..len]);
             let line = line.split('\n').next().unwrap_or("");
-            if let Some(t) = parse_hook_line(line) {
-                let _ = tx.send(t);
+            let parsed: Option<Value> = serde_json::from_str(line.trim()).ok();
+            match parsed.filter(|v| v.get("type").is_some()) {
+                Some(v) => {
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    let answer = hook(&v, now_ms);
+                    if let Some(answer) = answer {
+                        use tokio::io::AsyncWriteExt;
+                        let _ = stream.write_all(answer.as_bytes()).await;
+                        let _ = stream.write_all(b"\n").await;
+                        let _ = stream.shutdown().await;
+                    }
+                }
+                None => {
+                    if let Some(t) = parse_hook_line(line) {
+                        let _ = tx.send(t);
+                    }
+                }
             }
         });
     }
@@ -709,7 +742,8 @@ mod tests {
         let sock = home.join(HOOK_SOCKET_NAME);
         fs::write(&sock, "stale").unwrap(); // 前回の異常終了の残骸(通常ファイル)
         let (tx, mut rx) = unbounded_channel();
-        tokio::spawn(serve_hook_socket(sock.clone(), tx));
+        // hook 行への答えはこの test の対象外(None = 全部 Trigger へ流す)
+        tokio::spawn(serve_hook_socket(sock.clone(), tx, std::sync::Arc::new(|_, _| None)));
         // 残骸を unlink して bind し直せていれば「繋がる」= socket として使える
         let send = async |line: &str| {
             let mut s = tokio::net::UnixStream::connect(&sock).await.unwrap();

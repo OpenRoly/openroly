@@ -112,3 +112,40 @@ export function inboundMailKeys(
   if (!base) return null;
   return { address: `${base}@${domain}`, domain, plus };
 }
+
+/** gmail(と旧称 googlemail)は local-part の `.` を無視して同じ受信箱に届ける。両ドメインは
+ * Google 自身が同じ受信箱の別名として運用している(旧 UK/DE ユーザー向けの旧称)。 */
+const GMAIL_DOMAINS = new Set(["gmail.com", "googlemail.com"]);
+
+/**
+ * 宛先ごとの mail-bomb 防止 bucket(PBI-0221)の key。**`inboundMailKeys` とは別の畳み方が要る** ——
+ * あちらは inbound routing 用で `.` を畳まない(PBI-0221 が意図的に外した判断: 他 provider では
+ * `.` が別人の住所になるので、畳むと巻き添えが起きる)。だが gmail は畳まないと、`.` の位置を
+ * 変えるだけで同じ実在の受信箱への「宛先」を無限に作れ、宛先ごとの上限(PBI-0221 AC-2)が
+ * 意味を失う(PBI-0386 有界レビューで実証)。**gmail/googlemail だけ**畳んで 1 ドメインへ正規化し、
+ * それ以外は `inboundMailKeys` の畳み方をそのまま使う(他 provider を巻き添えにしない)。
+ */
+export function mailBombTargetKey(rawAddress: string): string | null {
+  const keys = inboundMailKeys(rawAddress);
+  if (!keys) return null;
+  if (!GMAIL_DOMAINS.has(keys.domain)) return keys.address;
+  const local = keys.address.slice(0, keys.address.lastIndexOf("@"));
+  return `${local.replace(/\./g, "")}@gmail.com`;
+}
+
+/**
+ * 画面に出す「届いた住所」の上限(PBI-0222)。持ち込み domain は catch-all なので local-part を
+ * 送信者が自由に決められる —— `<10,000 文字>@<victim domain>` 宛の 1 通で inbox の全行と
+ * chat の sender 行に 10,000 文字の chip が出る。**切らずに落とす**のは、切った文字列が
+ * 「そこへ届いた」という嘘になる為(`aaa…a@x.test` の前 64 文字は別の住所を指し得る)。
+ * 上限は RFC 5321: local-part 64 + `@` + domain 253 = 318。
+ */
+export const DELIVERED_TO_LOCAL_MAX = 64;
+export const DELIVERED_TO_MAX = 318;
+
+/** 上限内ならその住所、超えたら null(呼び出し側が catch-all 表記 / system address に落とす) */
+export function boundedDeliveredTo(address: string): string | null {
+  const at = address.lastIndexOf("@");
+  if (at < 1) return null;
+  return at <= DELIVERED_TO_LOCAL_MAX && address.length <= DELIVERED_TO_MAX ? address : null;
+}

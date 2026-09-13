@@ -22,7 +22,7 @@ describe("codex plugin marketplace の構造 (PBI-0097 review)", () => {
     const entry = marketplace.plugins.find((p) => p.name === "openroly");
     expect(entry).toBeDefined();
     // source.path が実際に plugin 本体(.codex-plugin/plugin.json)へ解決する。CLI は検査しないので
-    // path の typo / dir 移動への唯一の防壁がこの test(diagrams-check の図7 規則は入口の存在だけ)
+    // path の typo / dir 移動への唯一の防壁がこの test(旧 diagrams-check の図7 規則は入口の存在だけ)
     expect(entry!.source.source).toBe("local");
     const resolved = join(repoRoot, entry!.source.path);
     expect(existsSync(join(resolved, ".codex-plugin", "plugin.json"))).toBe(true);

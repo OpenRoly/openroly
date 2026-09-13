@@ -134,7 +134,7 @@ describe("PBI-0234: 接続の完了表示が繋がった先の @account を名�
     const { env } = await freshEnv();
     const res = await openroly(["install", "openai-api"], env);
     expect(res.code).toBe(0);
-    expect(res.out).toContain("is now connected to @aya.");
+    expect(res.out).toContain("@aya now has ");
     expect(res.out).toContain("OpenAI (API)");
   }, 30_000);
 
@@ -142,7 +142,7 @@ describe("PBI-0234: 接続の完了表示が繋がった先の @account を名�
     const { env } = await freshEnv();
     const res = await openroly(["pair", "openai-api"], env);
     expect(res.code).toBe(0);
-    expect(res.out).toContain("is now connected to @aya.");
+    expect(res.out).toContain("@aya now has ");
     // runtime_id を落とさない(どの登録が生えたかの識別は残す)
     expect(res.out).toMatch(/rt_named_\d+/);
   }, 30_000);
@@ -152,7 +152,7 @@ describe("PBI-0234: 接続の完了表示が繋がった先の @account を名�
     const res = await openroly(["login"], env);
     expect(res.code).toBe(0);
     expect(res.out).toContain(
-      "This machine is now connected to @aya. The AIs on it are found automatically and appear under Your AI",
+      "@aya now has This machine attached. The AIs on it are found automatically and appear under Your AI",
     );
   }, 30_000);
 
@@ -170,7 +170,7 @@ describe("PBI-0234: 接続の完了表示が繋がった先の @account を名�
     expect(second.code).toBe(0);
     expect(second.out).toContain("The broker is already running");
     // ここが本 PBI の修正点: break の手前に handle 行が在ること
-    expect(second.out).toContain("This machine is now connected to @aya.");
+    expect(second.out).toContain("@aya now has This machine attached.");
   }, 30_000);
 
   test("AC-3b(2): broker binary が無く build 案内で落ちる時も handle の行は出ている", async () => {
@@ -178,7 +178,7 @@ describe("PBI-0234: 接続の完了表示が繋がった先の @account を名�
     const res = await openroly(["login"], env);
     expect(res.code).toBe(1);
     expect(res.err).toContain("cargo build --release --manifest-path broker/Cargo.toml");
-    expect(res.out).toContain("This machine is now connected to @aya.");
+    expect(res.out).toContain("@aya now has This machine attached.");
   }, 30_000);
 
   test("AC-X1: whoami が 500 で落ちても、接続成功と『account を確認できなかった』を両方言う(@? を出さない)", async () => {
@@ -193,7 +193,7 @@ describe("PBI-0234: 接続の完了表示が繋がった先の @account を名�
     expect(res.out).toContain("Settings → Connected runtimes");
     // 「@? という account に繋がった」に読める表示を作らない
     expect(res.out).not.toContain("@?");
-    expect(res.out).not.toMatch(/connected to @/);
+    expect(res.out).not.toMatch(/@[a-z0-9-]+ now has .+ attached\./);
   }, 30_000);
 
   test("AC-X1: 401 でも同じ理由付きで出る(pair 経路。500 と区別される)", async () => {
@@ -212,7 +212,7 @@ describe("PBI-0234: 接続の完了表示が繋がった先の @account を名�
     const res = await openroly(["pair", "openai-api"], env);
     expect(res.code).toBe(1);
     expect(res.err).toContain("NG pairing failed");
-    expect(res.out).not.toContain("is now connected");
+    expect(res.out).not.toContain("now has ");
   }, 30_000);
 
   test("AC-X2: 他人(mallory)が code を承認したら、その @handle が出る", async () => {
@@ -220,7 +220,7 @@ describe("PBI-0234: 接続の完了表示が繋がった先の @account を名�
     approverHandle = "mallory";
     const res = await openroly(["login"], env);
     expect(res.code).toBe(0);
-    expect(res.out).toContain("This machine is now connected to @mallory.");
+    expect(res.out).toContain("@mallory now has This machine attached.");
     expect(res.out).not.toContain("@aya");
   }, 30_000);
 
@@ -228,12 +228,12 @@ describe("PBI-0234: 接続の完了表示が繋がった先の @account を名�
     approverHandle = "mallory";
     const a = await freshEnv();
     const install = await openroly(["install", "openai-api"], a.env);
-    expect(install.out).toContain("is now connected to @mallory.");
+    expect(install.out).toContain("@mallory now has ");
     expect(install.out).not.toContain("@aya");
 
     const b = await freshEnv();
     const pair = await openroly(["pair", "openai-api"], b.env);
-    expect(pair.out).toContain("is now connected to @mallory.");
+    expect(pair.out).toContain("@mallory now has ");
     expect(pair.out).not.toContain("@aya");
   }, 60_000);
 });

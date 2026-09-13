@@ -255,3 +255,43 @@ describe("peek.jsonl(MCP 側・PBI-0224)", () => {
     }
   }, 30_000);
 });
+
+// PBI-0229 の tool 報告(hook socket)。openSessionUpdate は in-process で直接叩く
+// (送信の上流は broker の cargo test が根拠。ここが測るのは「止めない」側 = fail-open)
+describe("openSessionUpdate(MCP 側・PBI-0229 AC-X2)", () => {
+  test("OPENROLY_SESSION_ID が無ければ null(manual session は何もしない)", async () => {
+    const { home } = await fixture();
+    try {
+      const { openSessionUpdate } = await import("../src/peek.ts");
+      expect(openSessionUpdate({}, home)).toBeNull();
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("id が境界外(dir traversal・過長)なら null", async () => {
+    const { home } = await fixture();
+    try {
+      const { openSessionUpdate } = await import("../src/peek.ts");
+      expect(openSessionUpdate({ OPENROLY_SESSION_ID: "../escape" }, home)).toBeNull();
+      expect(openSessionUpdate({ OPENROLY_SESSION_ID: "a".repeat(65) }, home)).toBeNull();
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("socket が無い端末でも function を返し、呼んでも throw しない(fail-open・fire-and-forget)", async () => {
+    const { home } = await fixture();
+    try {
+      const { openSessionUpdate } = await import("../src/peek.ts");
+      const report = openSessionUpdate({ OPENROLY_SESSION_ID: "req_hook" }, home);
+      expect(report).not.toBeNull();
+      // broker 未起動 = connect error。それでも tool 実行側は止まらない
+      expect(() => report!("inbox_read")).not.toThrow();
+      // socket が出来るのを待たずに終わっても process が落ちない(error handler 済み)
+      await new Promise((r) => setTimeout(r, 100));
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+});

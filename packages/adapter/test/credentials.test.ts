@@ -8,6 +8,7 @@ import {
   getAccountUrl,
   getCredential,
   loadCredentials,
+  openrolyHome,
   removeCredential,
   saveAccountUrl,
   saveCredential,
@@ -194,4 +195,20 @@ describe("account_url", () => {
     const left = await readdir(env.OPENROLY_HOME);
     expect(left.filter((f) => f.endsWith(".lock") || f.endsWith(".tmp"))).toEqual([]);
   }, 60_000);
+});
+
+// review: PBI-0414 急所2(実射)。checkpoint-cas.ts 等の isolate し忘れが実行者本人の
+// 本物の ~/.openroly に書き込んだ事故(2026-09-10)を受けて、openrolyHome() 自身に
+// 「bun test 下で OPENROLY_HOME 未設定なら実 HOME に落ちず throw する」ガードを追加した。
+describe("openrolyHome の test-mode ガード(review: PBI-0414 急所2)", () => {
+  test("実射: OPENROLY_HOME 未設定 + bun test 下(process.env.NODE_ENV === \"test\")なら throw する", () => {
+    // bun test は既定で NODE_ENV=test を立てる(このファイル自体がそれで動いている)。
+    // env に OPENROLY_HOME を含めない(process.env をそのまま使う形)と実 HOME へ落ちるはずが、
+    // 落ちずに明示的に throw する事を実射で確認する
+    expect(() => openrolyHome({})).toThrow(/OPENROLY_HOME is not set while running under `bun test`/);
+  });
+
+  test("負の対照: OPENROLY_HOME を渡せば throw しない(既存の正常系を壊していない)", () => {
+    expect(openrolyHome({ OPENROLY_HOME: "/tmp/some-isolated-home" })).toBe("/tmp/some-isolated-home");
+  });
 });

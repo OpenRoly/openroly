@@ -44,7 +44,7 @@ describe("session brief", () => {
 
   test("要件 §19 の表示形になる", () => {
     expect(formatBrief(buildBrief(whoami, messages))).toBe(
-      ["Attached as @aya", "Unread: 3", "- Shibu ×2", "- Ken ×1", "- (requests: 1)"].join("\n"),
+      ["Unread: 3", "- Shibu ×2", "- Ken ×1", "- (requests: 1)"].join("\n"),
     );
   });
 
@@ -58,7 +58,7 @@ describe("session brief", () => {
     const brief = buildBrief({ ...whoami, unread: 25 }, messages);
     expect(brief.senders).toEqual([]);
     expect(formatBrief(brief)).toBe(
-      ["Attached as @aya", "Unread: 25", "- and 25 more", "- (requests: 1)"].join("\n"),
+      ["Unread: 25", "- and 25 more", "- (requests: 1)"].join("\n"),
     );
   });
 
@@ -71,12 +71,19 @@ describe("session brief", () => {
     }));
     const brief = buildBrief({ ...whoami, unread: 60 }, messages);
     expect(formatBrief(brief)).toBe(
-      ["Attached as @aya", "Unread: 60", "- Alice ×50", "- and 10 more"].join("\n"),
+      ["Unread: 60", "- Alice ×50", "- and 10 more"].join("\n"),
     );
   });
 
   test("AC-3: window が全未読を覆っていれば「ほか」は出ない", () => {
     expect(formatBrief(buildBrief(whoami, messages))).not.toContain(" more");
+  });
+
+  test("PBI-0424: 本体は handle を名乗らない(identity は status が 1 度だけ出す)", () => {
+    const out = formatBrief(buildBrief(whoami, messages));
+    expect(out).not.toContain("@aya");
+    expect(out).not.toContain("Attached as");
+    expect(out.split("\n")[0]).toStartWith("Unread: ");
   });
 });
 

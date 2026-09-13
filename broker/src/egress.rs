@@ -73,6 +73,15 @@ fn parse_connect(request_line: &str) -> Option<(String, u16)> {
     Some((host.to_ascii_lowercase(), port))
 }
 
+/// 1 CONNECT の観測(PBI-0388)。`observe` に流れる形は host/port/allowed だけ ——
+/// CONNECT のトンネルは TLS のまま素通しなので、これ以上の中身(header 本文等)は元々見えない。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectObservation {
+    pub host: String,
+    pub port: u16,
+    pub allowed: bool,
+}
+
 #[derive(Clone)]
 pub struct EgressConfig {
     pub allow: Vec<String>,
@@ -80,6 +89,9 @@ pub struct EgressConfig {
     pub events: Option<UnboundedSender<Value>>,
     /// test 用: allowed host を全部この loopback に繋ぐ(実 DNS / 実 network を使わない)
     pub upstream_override: Option<SocketAddr>,
+    /// PBI-0388: 1 CONNECT ごとに host/port/allowed を流す測定口。既定 `None` = 製品の挙動は
+    /// 1 ミリも変わらない(probe だけがこれを `Some` にする)。
+    pub observe: Option<UnboundedSender<ConnectObservation>>,
 }
 
 /// 走っている proxy。drop で閉じる。
@@ -151,7 +163,11 @@ async fn handle(mut client: TcpStream, config: &EgressConfig, request_id: &str) 
         deny(&mut client, config, request_id, &sanitize_host(host)).await;
         return Ok(());
     };
-    if !allows(&config.allow, &host) {
+    let allowed = allows(&config.allow, &host);
+    if let Some(tx) = &config.observe {
+        let _ = tx.send(ConnectObservation { host: host.clone(), port, allowed });
+    }
+    if !allowed {
         deny(&mut client, config, request_id, &host).await;
         return Ok(());
     }
@@ -268,7 +284,7 @@ mod tests {
         let up = upstream().await;
         let (tx, mut rx) = unbounded_channel();
         let egress = start(
-            EgressConfig { allow: v(&["allowed.example"]), events: Some(tx), upstream_override: Some(up) },
+            EgressConfig { allow: v(&["allowed.example"]), events: Some(tx), upstream_override: Some(up), observe: None },
             "req-1",
         )
         .unwrap();
@@ -292,7 +308,7 @@ mod tests {
     // session 終了で proxy を閉じる: drop の後は port に繋がらない。
     #[tokio::test]
     async fn dropping_egress_closes_the_port() {
-        let egress = start(EgressConfig { allow: vec![], events: None, upstream_override: None }, "r").unwrap();
+        let egress = start(EgressConfig { allow: vec![], events: None, upstream_override: None, observe: None }, "r").unwrap();
         let port = egress.port;
         assert!(TcpStream::connect(("127.0.0.1", port)).await.is_ok());
         drop(egress);
@@ -303,7 +319,7 @@ mod tests {
     // AC-X3: 2 session は別 port。
     #[tokio::test]
     async fn two_sessions_get_two_ports() {
-        let cfg = EgressConfig { allow: vec![], events: None, upstream_override: None };
+        let cfg = EgressConfig { allow: vec![], events: None, upstream_override: None, observe: None };
         let a = start(cfg.clone(), "a").unwrap();
         let b = start(cfg, "b").unwrap();
         assert_ne!(a.port, b.port);

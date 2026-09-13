@@ -3,7 +3,7 @@
 // Connections の API key 型)・web(表示ラベル)・registry(catalog-build の `<id>-api` entry)は
 // 全部ここから導出する(4 箇所に散っていた重複を消す = 大きな部品 1 つ)。
 //
-// `baseUrl` の綴りは **この file 以外に現れない**(diagrams-check が数える)。baseUrl / defaultModel は
+// `baseUrl` の綴りは **この file 以外に現れない**(旧 diagrams-check が数える)。baseUrl / defaultModel は
 // **cutoff(2026-05)の外**なので推測で書かない —— 1 つずつ公式 doc を引いて実測した(出典 URL の一覧は
 // backlog/PBI-0210-generic-runtime-adapter.md「provider 表の出典」節)。default model 名はこの先も
 // 変わるので `--model` / `OPENROLY_AGENT_MODEL` で上書きできる(既存の型)。

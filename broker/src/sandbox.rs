@@ -140,8 +140,22 @@ pub fn profile(spec: &SandboxSpec) -> Result<String, String> {
     }
     out.push_str(")\n");
     out.push_str("(deny network*)\n");
+    // **host は `*`、protocol は `tcp`、port だけ pin**(PBI-0385)。`localhost:<port>` は profile の
+    // parse こそ通るが **1 接続も通さない** —— 2026-09-07 に macOS 14.5 で実測: 接続先を 127.0.0.1 に
+    // しても hostname `localhost` にしても deny、`network-bind` を足しても deny、`ip4` / `tcp` /
+    // `tcp4` に変えても deny。`127.0.0.1:<port>` と書くと sandbox-exec が profile を拒否する
+    // (host must be * or localhost)。通るのは host が `*` の時だけで、**別 port は deny のまま**。
+    //
+    // `remote ip` ではなく **`remote tcp`** なのは、`ip` が **UDP も一緒に開ける**から(有界レビュー
+    // 実測 2026-09-07: `ip *:<port>` だと sandbox の中から `/dev/udp/8.8.8.8/<port>` が通る =
+    // listener の要らない一方向の口が外へ空く)。proxy は HTTP over TCP なので `tcp` で何も失わない
+    // (同実測: `tcp *:<port>` は loopback TCP ok / UDP は loopback も外部も deny / IPv6 も deny)。
+    //
+    // 残る代償: その session の proxy port と同じ番号で **TCP を listen している外部 host** へは
+    // 直接繋げる。port は session ごとの ephemeral な乱数で、`(deny network*)` により他は全部
+    // 閉じたまま。seatbelt の粒度では loopback に絞る手段が無い(上の実測)。
     out.push_str(&format!(
-        "(allow network-outbound (remote ip \"localhost:{}\"))\n",
+        "(allow network-outbound (remote tcp \"*:{}\"))\n",
         spec.proxy_port
     ));
     Ok(out)
@@ -213,7 +227,15 @@ impl SandboxBackend for Seatbelt {
     fn self_test(&self) -> Result<(), String> {
         // TMPDIR(`/private/var/folders`)は profile が常に書けるので、「外」の probe には使えない。
         // `/tmp`(実体 `/private/tmp`)に自分の dir を作り、folder だけを許す。
-        let base = PathBuf::from("/tmp").join(format!("openroly-sandbox-selftest-{}", std::process::id()));
+        //
+        // pid だけだと同一 process 内で並行に self_test を呼ぶ複数 thread(cargo test の並列実行
+        // など)が同じ dir を取り合い、片方の `remove_dir_all` がもう片方の probe を巻き添えで
+        // 消す(PBI-0388 実装中に実測: `seatbelt_self_test_passes_on_this_mac` が
+        // "loopback to the allowed port failed" で fail した)。呼び出しごとに増える連番を足して
+        // 同一 process 内でも衝突しない dir にする。
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let base = PathBuf::from("/tmp").join(format!("openroly-sandbox-selftest-{}-{seq}", std::process::id()));
         let folder = base.join("folder");
         let outside = base.join("outside");
         let session_dir = base.join("session");
@@ -329,7 +351,11 @@ mod tests {
         let real = fs::canonicalize(&dir).unwrap();
         assert!(text.starts_with("(version 1)\n(deny default)\n"));
         assert!(text.contains("(deny network*)\n"));
-        assert!(text.contains("(allow network-outbound (remote ip \"localhost:18238\"))"));
+        // PBI-0385: host は `*`・protocol は `tcp`・port だけ pin(`localhost:` は seatbelt が 1 接続も
+        // 通さない / `remote ip` は UDP まで開けてしまう。どちらも有界レビューで実測)
+        assert!(text.contains("(allow network-outbound (remote tcp \"*:18238\"))"));
+        assert!(!text.contains("remote ip "), "`remote ip` は UDP も開ける(PBI-0385)");
+        assert!(!text.contains("localhost:"), "localhost 指定は seatbelt では機能しない(PBI-0385)");
         // 実 path(macOS の /var → /private/var)で書く
         assert!(text.contains(&format!("(subpath \"{}/folder\")", real.display())));
         assert!(text.contains(&format!("(deny file-read* (subpath \"{}/secret\"))", real.display())));

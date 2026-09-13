@@ -93,7 +93,7 @@ export function fromEnvelopePlaintext(p: EnvelopePlaintext): MessageContent {
 // ---------- item 種別(EP-0013 W1 / 要件 v0.7 §14) ----------
 // message は chat(既存の全経路)と notification(外部 source の着信を持ち込む行)に分かれる。
 // digest は W4(まとめ配信)で使うため先に値集合だけ固定 — DB の check 制約と同じ集合を
-// ここが正本として持つ(diagrams-check.sh が migration 022 との一致を機械検査する)
+// ここが正本として持つ(scripts/value-sets-check.ts が migration 022 との一致を機械検査する)
 
 export const MESSAGE_KINDS = ["chat", "notification", "digest"] as const;
 export type MessageKind = (typeof MESSAGE_KINDS)[number];
@@ -150,7 +150,7 @@ export function deriveSource(thread: {
 export const CAPTURE_SOURCE_KINDS = ["webhook", "android", "windows", "macos", "ios"] as const;
 export type CaptureSourceKind = (typeof CAPTURE_SOURCE_KINDS)[number];
 
-/** sources.status の値集合。DB の check 制約と同じ集合をここが正本として持つ(diagrams-check が機械検査) */
+/** sources.status の値集合。DB の check 制約と同じ集合をここが正本として持つ(scripts/value-sets-check.ts が機械検査) */
 export const SOURCE_STATUSES = ["active", "paused", "revoked"] as const;
 export type SourceStatus = (typeof SOURCE_STATUSES)[number];
 
@@ -177,7 +177,7 @@ export interface NotificationPayload {
 // ---------- triage の 3 軸(EP-0013 W3 / PBI-0117・要件 v0.7 §15) ----------
 // 対処状態の軸 2(triage label)と軸 3(handling)。既読(軸 1)は既存 read_states のまま。
 // 値集合の正本はここ — DB の check 制約(migration 024)と同じ集合を
-// diagrams-check.sh が機械検査する。triage session は triage_label と summary だけを
+// scripts/value-sets-check.ts が機械検査する。triage session は triage_label と summary だけを
 // 変える(handling は rule engine / 実行 agent / 人が担う・REQ-64)
 
 /** triage label の値集合。none = 未対処( triage pending の対象) */
@@ -197,7 +197,7 @@ export type HandlingState = (typeof HANDLING_STATES)[number];
 
 // ---------- 自然言語 rule(EP-0013 W4 / PBI-0119・要件 v0.7 §16) ----------
 // rule = NL 原文つき JSON。値集合の正本はここ — migration 025 の check 制約と同じ集合を
-// diagrams-check.sh が機械検査する。layer の導出規則(REQ-55): scope に sender / keywords
+// scripts/value-sets-check.ts が機械検査する。layer の導出規則(REQ-55): scope に sender / keywords
 // (本文・送信者の語)を含む → content(server は評価しない・sealed 保管)、それ以外 →
 // metadata(source_kind / app_id / time_window の平文一致・server が ingest で評価)
 

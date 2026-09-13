@@ -1,0 +1,58 @@
+# Detector Registry が起こしてよくない program(PBI-0244)。1 行 1 語・小文字・`#` は comment。
+# 署名鍵 1 本で全 broker の任意コマンド実行にならないための床 —— shell / interpreter / 起動代理は
+# registry の id・detect.binaries・launch のどこにも書けない。broker(include_str!)と
+# Cloud(apps/server/src/registry.ts)が **この 1 file だけ** を読む(2 箇所に写さない)。
+# 判定は basename を小文字化し、末尾の版(数字 . -)を落として比較する(`python3.12` → `python`)。
+# 足す時はここに 1 行足すだけ。catalog(detectors.v1.json)の binaries と衝突しないことを確かめる。
+sh
+bash
+zsh
+dash
+fish
+ksh
+csh
+tcsh
+python
+python3
+node
+bun
+deno
+ruby
+perl
+php
+lua
+rscript
+java
+pwsh
+powershell
+osascript
+open
+env
+xargs
+nohup
+setsid
+sudo
+su
+doas
+launchctl
+systemctl
+curl
+wget
+npx
+bunx
+uvx
+pipx
+# GTFOBins 系: shell / interpreter ではないが、自分の引数だけで任意コマンドを実行できる program
+# (PBI-0244 レビュー 2026-09-07: `find -maxdepth 0 -exec <cmd> \;` / `awk 'BEGIN{system("<cmd>")}'` /
+# `ssh -o ProxyCommand=<cmd>` / `scp -o ProxyCommand=<cmd>` / `rsync -e <cmd>` を、この macOS で
+# 実 spawn して任意ファイル書き込みが起きることを確認した。`-c`/`-e`/`--eval` の launch arg 検査は
+# これらの固有 flag(`-exec` / `-o` / `BEGIN{...}` 自体が program 引数)を 1 つも捕まえない)
+find
+awk
+gawk
+mawk
+nawk
+ssh
+scp
+sftp
+rsync

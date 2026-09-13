@@ -15,7 +15,7 @@ import { binaryTarget, ensureBinary } from "@openroly/adapter";
 // black-box に spawn すると、その実 binary を先に拾ってしまい検証にならない
 // (REPO_ROOT は openroly.ts 自身の実ファイル位置から固定で計算される)。build artifact を
 // 一時退避して検証する手も検討したが、並行 session が同じ tree で cargo build を走らせている
-// 可能性がある(前例あり)ため避け、配線自体は diagrams-check.sh の grep 規則(PBI-0154)で
+// 可能性がある(前例あり)ため避け、配線自体は 旧 diagrams-check の grep 規則(PBI-0154)で
 // 静的に固定する
 
 const VERSION = "9.9.9";

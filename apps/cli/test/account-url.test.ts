@@ -124,7 +124,7 @@ describe("PBI-0246: 全 command が account の URL を継ぐ", () => {
     expect(account.state.pairStarts).toBe(1);
     expect(other.state.pairStarts).toBe(0);
     // 名乗る先(whoami)も同じ server —— 繋ぐ先だけ直して名乗る先が残るのが最悪
-    expect(r.out).toContain("is now connected to @account");
+    expect(r.out).toContain("@account now has ");
     expect((await readStore(env)).runtimes.claude.base_url).toBe(account.base);
   }, 30_000);
 
@@ -137,7 +137,7 @@ describe("PBI-0246: 全 command が account の URL を継ぐ", () => {
     expect(r.code).toBe(0);
     expect(other.state.pairStarts).toBe(1);
     expect(account.state.pairStarts).toBe(0);
-    expect(r.out).toContain("is now connected to @other");
+    expect(r.out).toContain("@other now has ");
   }, 30_000);
 
   test("AC-3: `$OPENROLY_URL` の明示も account の既定に勝つ", async () => {
@@ -209,7 +209,7 @@ describe("PBI-0246: login が URL を account の既定として書き戻す", (
 
     const login = await openroly(["login", "--url", `${account.base}/`], env);
     expect(login.code).toBe(0);
-    expect(login.out).toContain("This machine is now connected to @account");
+    expect(login.out).toContain("@account now has This machine attached.");
 
     // 末尾の `/` は 1 箇所で落とす(保存された綴りが 2 通りにならない)
     expect((await readStore(env)).account_url).toBe(account.base);
@@ -237,7 +237,7 @@ describe("PBI-0246: login が URL を account の既定として書き戻す", (
     // 失効した credential を消した後も、その base_url が行き先として残る
     expect(account.state.pairStarts).toBe(1);
     expect(other.state.pairStarts).toBe(0);
-    expect(r.out).toContain("This machine is now connected to @account");
+    expect(r.out).toContain("@account now has This machine attached.");
     expect(r.err).not.toContain("localhost:8787");
     expect((await readStore(env)).account_url).toBe(account.base);
   }, 180_000);

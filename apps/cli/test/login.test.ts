@@ -268,7 +268,7 @@ describe("openroly login / openroly broker (PBI-0046)", () => {
     const { env, home, brokerLog, brokerPid } = await freshEnv();
     const res = await openroly(["login", "--no-open"], env);
     expect(res.code).toBe(0);
-    expect(res.out).toContain("This machine is now connected to @aya");
+    expect(res.out).toContain("@aya now has This machine attached.");
     expect(res.out).toContain("appear under Your AI");
 
     const file = await readJson(join(home, "credentials.json"));
@@ -324,7 +324,7 @@ describe("openroly login / openroly broker (PBI-0046)", () => {
     );
     const res = await openroly(["login", "--no-open"], env);
     expect(res.code).toBe(0);
-    expect(res.out).toContain("This machine is now connected to @aya");
+    expect(res.out).toContain("@aya now has This machine attached.");
     expect(pairStartCalls).toBe(0);
   }, 120_000);
 

@@ -4,6 +4,8 @@ export * from "./native.ts";
 export * from "./skill.ts";
 export * from "./instructions.ts";
 export * from "./credentials.ts";
+export * from "./checkpoint-cas.ts";
+export * from "./work-context.ts";
 export * from "./pairing.ts";
 export * from "./brief.ts";
 export * from "./install.ts";

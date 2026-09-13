@@ -49,6 +49,9 @@ export interface AccountDelegationPolicy {
   /** Connection-scoped ASK の Always grant(PBI-0055 / W7)。
    * connection_grants[runtimeId][provider] === true で以後 resolve が gate を通らず即座に許可される */
   connection_grants?: Record<string, Record<string, boolean>>;
+  /** v0 Authority(PBI-0413 / CAP-3 V10・CAP-9 の v0 部分集合)の policy 段。
+   * 未設定 = 拒否(fail-closed。AC-5)。CAP-9 が後で同じ表に乗る(不確実性 #3) */
+  work_authority?: Partial<Record<"start_review" | "fork_work", boolean>>;
 }
 
 /**

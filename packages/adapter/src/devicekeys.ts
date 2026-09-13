@@ -133,7 +133,7 @@ export async function hasDeviceKey(kind: string, env: Env = process.env): Promis
  * 人が Revoke を押した device の鍵は server 側で二度と登録できない(409 device_revoked)が、
  * 秘密鍵は手元に残るので、作り直す口が無いとその runtime は永久に詰む。
  * agent が自分の判断でここを呼ぶと、押した Revoke が新しい id で黙って取り消される —— 呼び出し元を増やさない
- * (diagrams-check が `reconnectOwnDevice` 以外の呼び出しを数える)。
+ * (旧 diagrams-check が `reconnectOwnDevice` 以外の呼び出しを数える)。
  */
 export async function rotateDeviceKey(kind: string, env: Env = process.env): Promise<DeviceKeyRecord> {
   return withLock(env, async () => {

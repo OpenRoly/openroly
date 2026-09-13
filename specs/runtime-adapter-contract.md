@@ -1,6 +1,8 @@
 # Runtime Adapter Contract (draft)
 
-Status: **draft** — derived from `packages/adapter/src/contract.ts` (Stage 0 implementation).
+Status: **draft** — derived from `packages/adapter/src/contract.ts`.
+This file lives in the main repository as of 2026-09-11 (PBI-0422): the commit that changes the
+contract and the document that describes it are now in the same tree.
 This document describes the boundary a runtime integration must implement to attach an
 Agent Account to a runtime (Claude Code, Codex, and future runtimes). It is not a promise
 of API stability yet; treat field/method names as the current reference implementation,
@@ -8,7 +10,7 @@ not a frozen wire format.
 
 ## Why this boundary exists
 
-PAA is runtime-neutral: the Account (identity, mailbox, delegation policy) is owned by the
+OpenRoly is runtime-neutral: the Account (identity, mailbox, delegation policy) is owned by the
 Account layer, not by any single runtime. A `RuntimeAdapter` is the only place that knows
 how to talk to one specific runtime's CLI/config. Everything else (pairing engine,
 credential store, extension reconciliation) is runtime-agnostic and lives outside the

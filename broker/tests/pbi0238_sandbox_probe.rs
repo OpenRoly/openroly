@@ -21,6 +21,12 @@ mod launch;
 mod egress;
 #[path = "../src/sandbox.rs"]
 mod sandbox;
+// PBI-0403 有界レビューで実測: launch.rs の test が `crate::sessions::` を参照するようになった
+// ため、sessions.rs も一緒に取り込まないとこのバイナリはコンパイルできない(E0433)。
+#[path = "../src/procgroup.rs"]
+mod procgroup;
+#[path = "../src/sessions.rs"]
+mod sessions;
 
 use std::fs;
 use std::net::{SocketAddr, TcpListener};
@@ -149,7 +155,7 @@ async fn fake_runtime_inside_seatbelt_can_only_write_its_folder_and_talk_to_its_
     let folder_str = folder.to_string_lossy().to_string();
     let iso = Isolation {
         sandbox: &Seatbelt,
-        egress: EgressConfig { allow: vec!["allowed.example".to_string()], events: Some(tx), upstream_override: Some(up) },
+        egress: EgressConfig { allow: vec!["allowed.example".to_string()], events: Some(tx), upstream_override: Some(up), observe: None },
         folder: Some(&folder_str),
         user_home: user_home.clone(),
     };
@@ -182,7 +188,7 @@ async fn fake_runtime_inside_seatbelt_can_only_write_its_folder_and_talk_to_its_
     // 記録は session_dir に残る(stdout.log / profile)
     let session = home.join("sessions").join("req-probe");
     assert!(session.join("sandbox.sb").exists());
-    assert!(fs::read_to_string(session.join("sandbox.sb")).unwrap().contains(&format!("localhost:{}", egress.port)));
+    assert!(fs::read_to_string(session.join("sandbox.sb")).unwrap().contains(&format!("remote tcp \"*:{}\"", egress.port)));
     drop(egress);
     let _ = fs::remove_dir_all(&dir);
 }
@@ -210,7 +216,7 @@ async fn a_session_cannot_reach_another_sessions_port_or_folder() {
     let folder_b_str = folder_b.to_string_lossy().to_string();
     let iso_b = Isolation {
         sandbox: &Seatbelt,
-        egress: EgressConfig { allow: vec![], events: None, upstream_override: None },
+        egress: EgressConfig { allow: vec![], events: None, upstream_override: None, observe: None },
         folder: Some(&folder_b_str),
         user_home: user_home.clone(),
     };
@@ -234,7 +240,7 @@ async fn a_session_cannot_reach_another_sessions_port_or_folder() {
     let folder_a_str = folder_a.to_string_lossy().to_string();
     let iso_a = Isolation {
         sandbox: &Seatbelt,
-        egress: EgressConfig { allow: vec![], events: None, upstream_override: None },
+        egress: EgressConfig { allow: vec![], events: None, upstream_override: None, observe: None },
         folder: Some(&folder_a_str),
         user_home: user_home.clone(),
     };
@@ -249,8 +255,8 @@ async fn a_session_cannot_reach_another_sessions_port_or_folder() {
     assert!(has(&out, "own=ok"), "A が自分の proxy port に繋げない(対照)\n{out}");
     // profile は session ごと(B の port は A の profile に無い)
     let prof_a = fs::read_to_string(home.join("sessions").join("req-a").join("sandbox.sb")).unwrap();
-    assert!(prof_a.contains(&format!("localhost:{}", egress_a.port)));
-    assert!(!prof_a.contains(&format!("localhost:{port_b}")));
+    assert!(prof_a.contains(&format!("remote tcp \"*:{}\"", egress_a.port)));
+    assert!(!prof_a.contains(&format!("remote tcp \"*:{port_b}\"")));
     drop(egress_a);
     drop(egress_b);
     let _ = fs::remove_dir_all(&dir);

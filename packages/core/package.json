@@ -5,9 +5,11 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./node": "./src/node.ts",
     "./registry/detectors.v1.json": "./registry/detectors.v1.json"
   },
   "dependencies": {
+    "@openclaw/workboard-contract": "workspace:*",
     "uuid": "^11.0.0"
   }
 }

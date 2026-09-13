@@ -19,6 +19,12 @@ mod launch;
 mod egress;
 #[path = "../src/sandbox.rs"]
 mod sandbox;
+// PBI-0403 有界レビューで実測: launch.rs の test が `crate::sessions::` を参照するようになった
+// ため、sessions.rs も一緒に取り込まないとこのバイナリはコンパイルできない(E0433)。
+#[path = "../src/procgroup.rs"]
+mod procgroup;
+#[path = "../src/sessions.rs"]
+mod sessions;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;

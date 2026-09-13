@@ -176,7 +176,11 @@ describe("reconcile()", () => {
       baseUrl,
       token: "par_x",
       runtimeId: "rt_1",
-      env: { GITHUB_TOKEN: "ghp_realvalue" },
+      // OPENROLY_HOME を隔離する: GITHUB_TOKEN は env から直接解決されるので値には効かないが、
+      // resolveCredentialRef は毎回 loadSecrets(env) を先に呼ぶ(未使用でも)ので、指さないと
+      // 開発機の本物の secrets.json を読みに行ってしまう(review: PBI-0414 で openrolyHome() に
+      // 足した test-mode 検知ガードがこの読み忘れを実際に検出した)
+      env: { GITHUB_TOKEN: "ghp_realvalue", OPENROLY_HOME: emptyHome },
     });
     expect(state.applyCalls).toMatchObject([{ env: { GITHUB_TOKEN: "ghp_realvalue" } }]);
     expect(result.failed).toEqual([]);

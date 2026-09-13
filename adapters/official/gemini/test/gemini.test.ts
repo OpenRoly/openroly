@@ -12,8 +12,12 @@ let root = "";
 let bin = "";
 let marker = "";
 let geminiHome = "";
+let openrolyHome = "";
 
-const ctx = () => ({ env: { PATH: bin, HOME: root, GEMINI_CLI_HOME: geminiHome } });
+// PBI-0414 review が openrolyHome() に足したガード(OPENROLY_HOME 未設定 + bun test なら throw
+// — 実 ~/.openroly への誤書き込みを防ぐ)を register() 経由(resolveMcpServerCommand)で踏むので、
+// 専用の置き場を渡す(PBI-0419 AC-2。ガード自体は外さない)
+const ctx = () => ({ env: { PATH: bin, HOME: root, GEMINI_CLI_HOME: geminiHome, OPENROLY_HOME: openrolyHome } });
 const settingsPath = () => join(geminiHome, ".gemini", "settings.json");
 
 beforeEach(async () => {
@@ -21,6 +25,7 @@ beforeEach(async () => {
   bin = join(root, "bin");
   marker = join(root, "argv.log");
   geminiHome = join(root, "gemini-home");
+  openrolyHome = join(root, "openroly-home");
   await mkdir(bin, { recursive: true });
   await mkdir(join(geminiHome, ".gemini"), { recursive: true });
   await writeFile(marker, "");

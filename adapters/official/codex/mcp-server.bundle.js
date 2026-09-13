@@ -5030,15 +5030,15 @@ var require_cst_scalar = __commonJS((exports) => {
     }
     return null;
   }
-  function createScalarToken(value, context) {
-    const { implicitKey = false, indent, inFlow = false, offset = -1, type = "PLAIN" } = context;
+  function createScalarToken(value, context2) {
+    const { implicitKey = false, indent, inFlow = false, offset = -1, type = "PLAIN" } = context2;
     const source = stringifyString.stringifyString({ type, value }, {
       implicitKey,
       indent: indent > 0 ? " ".repeat(indent) : "",
       inFlow,
       options: { blockQuote: true, lineWidth: -1 }
     });
-    const end = context.end ?? [
+    const end = context2.end ?? [
       { type: "newline", offset: -1, indent, source: `
 ` }
     ];
@@ -5066,8 +5066,8 @@ var require_cst_scalar = __commonJS((exports) => {
         return { type: "scalar", offset, indent, source, end };
     }
   }
-  function setScalarValue(token, value, context = {}) {
-    let { afterKey = false, implicitKey = false, inFlow = false, type } = context;
+  function setScalarValue(token, value, context2 = {}) {
+    let { afterKey = false, implicitKey = false, inFlow = false, type } = context2;
     let indent = "indent" in token ? token.indent : null;
     if (afterKey && typeof indent === "number")
       indent += 2;
@@ -8669,7 +8669,7 @@ var require_code2 = __commonJS((exports) => {
     return allSchemaProperties(schemaMap).filter((p) => !(0, util_1.alwaysValidSchema)(it, schemaMap[p]));
   }
   exports.schemaProperties = schemaProperties;
-  function callValidateCode({ schemaCode, data, it: { gen, topSchemaRef, schemaPath, errorPath }, it }, func, context, passSchema) {
+  function callValidateCode({ schemaCode, data, it: { gen, topSchemaRef, schemaPath, errorPath }, it }, func, context2, passSchema) {
     const dataAndSchema = passSchema ? (0, codegen_1._)`${schemaCode}, ${data}, ${topSchemaRef}${schemaPath}` : data;
     const valCxt = [
       [names_1.default.instancePath, (0, codegen_1.strConcat)(names_1.default.instancePath, errorPath)],
@@ -8680,7 +8680,7 @@ var require_code2 = __commonJS((exports) => {
     if (it.opts.dynamicRef)
       valCxt.push([names_1.default.dynamicAnchors, names_1.default.dynamicAnchors]);
     const args = (0, codegen_1._)`${dataAndSchema}, ${gen.object(...valCxt)}`;
-    return context !== codegen_1.nil ? (0, codegen_1._)`${func}.call(${context}, ${args})` : (0, codegen_1._)`${func}(${args})`;
+    return context2 !== codegen_1.nil ? (0, codegen_1._)`${func}.call(${context2}, ${args})` : (0, codegen_1._)`${func}(${args})`;
   }
   exports.callValidateCode = callValidateCode;
   var newRegExp = (0, codegen_1._)`new RegExp`;
@@ -10730,49 +10730,49 @@ var require_fast_uri = __commonJS((exports, module) => {
     schemelessOptions.skipEscape = true;
     return serialize(resolved, schemelessOptions);
   }
-  function resolveComponent(base, relative, options, skipNormalization) {
+  function resolveComponent(base, relative2, options, skipNormalization) {
     const target = {};
     if (!skipNormalization) {
       base = parse8(serialize(base, options), options);
-      relative = parse8(serialize(relative, options), options);
+      relative2 = parse8(serialize(relative2, options), options);
     }
     options = options || {};
-    if (!options.tolerant && relative.scheme) {
-      target.scheme = relative.scheme;
-      target.userinfo = relative.userinfo;
-      target.host = relative.host;
-      target.port = relative.port;
-      target.path = removeDotSegments(relative.path || "");
-      target.query = relative.query;
+    if (!options.tolerant && relative2.scheme) {
+      target.scheme = relative2.scheme;
+      target.userinfo = relative2.userinfo;
+      target.host = relative2.host;
+      target.port = relative2.port;
+      target.path = removeDotSegments(relative2.path || "");
+      target.query = relative2.query;
     } else {
-      if (relative.userinfo !== undefined || relative.host !== undefined || relative.port !== undefined) {
-        target.userinfo = relative.userinfo;
-        target.host = relative.host;
-        target.port = relative.port;
-        target.path = removeDotSegments(relative.path || "");
-        target.query = relative.query;
+      if (relative2.userinfo !== undefined || relative2.host !== undefined || relative2.port !== undefined) {
+        target.userinfo = relative2.userinfo;
+        target.host = relative2.host;
+        target.port = relative2.port;
+        target.path = removeDotSegments(relative2.path || "");
+        target.query = relative2.query;
       } else {
-        if (!relative.path) {
+        if (!relative2.path) {
           target.path = base.path;
-          if (relative.query !== undefined) {
-            target.query = relative.query;
+          if (relative2.query !== undefined) {
+            target.query = relative2.query;
           } else {
             target.query = base.query;
           }
         } else {
-          if (relative.path[0] === "/") {
-            target.path = removeDotSegments(relative.path);
+          if (relative2.path[0] === "/") {
+            target.path = removeDotSegments(relative2.path);
           } else {
             if ((base.userinfo !== undefined || base.host !== undefined || base.port !== undefined) && !base.path) {
-              target.path = "/" + relative.path;
+              target.path = "/" + relative2.path;
             } else if (!base.path) {
-              target.path = relative.path;
+              target.path = relative2.path;
             } else {
-              target.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative.path;
+              target.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative2.path;
             }
             target.path = removeDotSegments(target.path);
           }
-          target.query = relative.query;
+          target.query = relative2.query;
         }
         target.userinfo = base.userinfo;
         target.host = base.host;
@@ -10780,7 +10780,7 @@ var require_fast_uri = __commonJS((exports, module) => {
       }
       target.scheme = base.scheme;
     }
-    target.fragment = relative.fragment;
+    target.fragment = relative2.fragment;
     return target;
   }
   function equal(uriA, uriB, options) {
@@ -13863,6 +13863,7 @@ var require_dist = __commonJS((exports, module) => {
 });
 // packages/adapter/src/credentials.ts
 import { chmod, mkdir, open, readFile, rename, rm, stat, writeFile } from "fs/promises";
+import { existsSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 // packages/core/src/handle.ts
@@ -13931,6 +13932,8 @@ ${body}` : title ?? body;
     c.urls = urls;
   return c;
 }
+// packages/core/src/mail-identity.ts
+var GMAIL_DOMAINS = new Set(["gmail.com", "googlemail.com"]);
 // packages/core/src/providers.ts
 var API_PROVIDERS = [
   { id: "openai", label: "OpenAI", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-5.6", auth: "key" },
@@ -13960,8 +13963,254 @@ var API_PROVIDERS = [
 ];
 var API_PROVIDER_IDS = API_PROVIDERS.map((p) => p.id);
 var API_KEY_PROVIDER_IDS = API_PROVIDERS.filter((p) => p.auth === "key").map((p) => p.id);
+// third_party/openclaw/packages/workboard-contract/src/index.ts
+var WORKBOARD_STATUSES = [
+  "triage",
+  "backlog",
+  "todo",
+  "scheduled",
+  "ready",
+  "running",
+  "review",
+  "blocked",
+  "done"
+];
+
+// packages/core/src/work.ts
+var WORK_STATUSES = [...WORKBOARD_STATUSES, "needs_user"];
+var CHECKPOINT_TICK_INTERVAL_SECS = 30;
+// packages/core/src/capsule.ts
+var CAPSULE_FIELDS = [
+  "goal",
+  "current_state",
+  "decisions",
+  "unresolved_questions",
+  "relevant_artifacts",
+  "relevant_memory",
+  "git_state",
+  "capability_requirements"
+];
+var FORBIDDEN_KEYS = ["conversation", "messages", "transcript"];
+function findConversationKeys(value) {
+  return FORBIDDEN_KEYS.filter((k) => hasKeyDeep(value, k));
+}
+
+class CapsuleConversationError extends Error {
+  foundKeys;
+  code = "capsule_rejects_conversation";
+  constructor(foundKeys) {
+    super(`capsule_rejects_conversation: ${foundKeys.join(", ")}`);
+    this.foundKeys = foundKeys;
+    this.name = "CapsuleConversationError";
+  }
+}
+function buildCapsule(input) {
+  if (input == null || typeof input !== "object" || Array.isArray(input)) {
+    throw new TypeError("buildCapsule: input must be a plain object");
+  }
+  const forbiddenFound = findConversationKeys(input);
+  if (forbiddenFound.length > 0)
+    throw new CapsuleConversationError(forbiddenFound);
+  const allowed = new Set(CAPSULE_FIELDS);
+  const body = {};
+  const droppedKeys = [];
+  for (const key of Object.keys(input)) {
+    if (allowed.has(key)) {
+      body[key] = input[key];
+    } else {
+      droppedKeys.push(key);
+    }
+  }
+  validateCredentialRefs(body);
+  return { body, hash: hashCapsuleBody(body), droppedKeys };
+}
+var CREDENTIAL_REF_KEY = "credential_ref";
+var ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+class CapsuleCredentialRefError extends Error {
+  value;
+  code = "capsule_invalid_credential_ref";
+  constructor(value) {
+    super(`capsule_invalid_credential_ref: ${JSON.stringify(value)}`);
+    this.value = value;
+    this.name = "CapsuleCredentialRefError";
+  }
+}
+function isValidCredentialRef(value) {
+  if (typeof value !== "string" || !value.startsWith("env:"))
+    return false;
+  const names = value.slice("env:".length).split(",").filter(Boolean);
+  return names.length > 0 && names.every((n) => ENV_NAME_RE.test(n));
+}
+function collectInvalidCredentialRefs(value, found) {
+  if (Array.isArray(value)) {
+    for (const v of value)
+      collectInvalidCredentialRefs(v, found);
+    return;
+  }
+  if (value !== null && typeof value === "object") {
+    const obj = value;
+    for (const [k, v] of Object.entries(obj)) {
+      if (k === CREDENTIAL_REF_KEY) {
+        if (!isValidCredentialRef(v))
+          found.push(v);
+      } else {
+        collectInvalidCredentialRefs(v, found);
+      }
+    }
+  }
+}
+function validateCredentialRefs(body) {
+  const found = [];
+  collectInvalidCredentialRefs(body, found);
+  if (found.length > 0)
+    throw new CapsuleCredentialRefError(found[0]);
+}
+function hasKeyDeep(value, key) {
+  if (Array.isArray(value))
+    return value.some((v) => hasKeyDeep(v, key));
+  if (value !== null && typeof value === "object") {
+    const obj = value;
+    if (key in obj)
+      return true;
+    return Object.values(obj).some((v) => hasKeyDeep(v, key));
+  }
+  return false;
+}
+function hashCapsuleBody(body) {
+  return new Bun.CryptoHasher("sha256").update(stableStringify(body)).digest("hex");
+}
+function stableStringify(value) {
+  if (Array.isArray(value))
+    return `[${value.map(stableStringify).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+var CAS_HASH_RE = /^[0-9a-f]{64}$/;
+function isValidCasHash(hash) {
+  return CAS_HASH_RE.test(hash);
+}
+function collectCredentialRefNames(value, names) {
+  if (Array.isArray(value)) {
+    for (const v of value)
+      collectCredentialRefNames(v, names);
+    return;
+  }
+  if (value !== null && typeof value === "object") {
+    const obj = value;
+    for (const [k, v] of Object.entries(obj)) {
+      if (k === CREDENTIAL_REF_KEY && typeof v === "string" && v.startsWith("env:")) {
+        for (const n of v.slice("env:".length).split(",").filter(Boolean))
+          names.add(n);
+      } else {
+        collectCredentialRefNames(v, names);
+      }
+    }
+  }
+}
+function buildManifest(body, payload) {
+  const names = new Set;
+  collectCredentialRefNames(body, names);
+  return { payload_hash: payload.hash, size: payload.size, mode: payload.mode, refs: [...names].sort() };
+}
+// packages/core/src/work-context.ts
+var WORK_CONTEXT_KEY_MAX = 128;
+var WORK_SOURCE_PATH_MAX = 512;
+var CONTEXT_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9_.:/-]*$/;
+var hasControlChar = (s) => [...s].some((ch) => ch.charCodeAt(0) < 32 || ch.charCodeAt(0) === 127);
+function validateContextKey(kind, key) {
+  if (kind === "source") {
+    return isRepoRelativePath(key) ? { ok: true } : { ok: false, reason: "invalid_source_path" };
+  }
+  if (typeof key !== "string" || key.length === 0 || key.length > WORK_CONTEXT_KEY_MAX) {
+    return { ok: false, reason: "invalid_key" };
+  }
+  if (!CONTEXT_KEY_RE.test(key) || key.includes(".."))
+    return { ok: false, reason: "invalid_key" };
+  if (FORBIDDEN_KEYS.includes(key.toLowerCase())) {
+    return { ok: false, reason: "conversation_key" };
+  }
+  return { ok: true };
+}
+function isRepoRelativePath(path) {
+  if (typeof path !== "string" || path.length === 0 || path.length > WORK_SOURCE_PATH_MAX)
+    return false;
+  if (path.startsWith("/") || path.includes("\\") || hasControlChar(path) || /^[A-Za-z]:/.test(path)) {
+    return false;
+  }
+  return path.split("/").every((seg) => seg !== "" && seg !== "." && seg !== "..");
+}
+var ENTRY_FIELDS = new Set(["kind", "key", "value_hash", "size", "expected_version"]);
+class ContextValueError extends Error {
+  code;
+  key;
+  constructor(code, key) {
+    super(`${code}: ${key}`);
+    this.code = code;
+    this.key = key;
+    this.name = "ContextValueError";
+  }
+}
+function buildContextValue(key, value) {
+  const decision = validateContextKey("context", key);
+  if (!decision.ok)
+    throw new ContextValueError(decision.reason, key);
+  if (value === undefined)
+    throw new ContextValueError("value_required", key);
+  if (findConversationKeys(value).length > 0)
+    throw new ContextValueError("context_rejects_conversation", key);
+  const payload = { key, value };
+  validateCredentialRefs(payload);
+  return { payload, hash: hashCapsuleBody(payload) };
+}
+var WORK_CONTEXT_WELL_KNOWN_KEYS = [
+  "goal",
+  "next_step",
+  "decisions",
+  "open_questions",
+  "failed_attempts",
+  "verified_findings"
+];
+var WORK_CONTEXT_RESERVED_PREFIXES = ["auto/", "inbox/"];
+function findReservedContextKeys(keys) {
+  return keys.filter((k) => WORK_CONTEXT_RESERVED_PREFIXES.some((p) => k.startsWith(p)));
+}
+function summarizeContextIndex(rows) {
+  const contextKeys = [...new Set(rows.filter((r) => r.kind === "context").map((r) => r.key))];
+  const sources = new Set(rows.filter((r) => r.kind === "source").map((r) => r.key)).size;
+  const present = new Set(contextKeys);
+  const known = WORK_CONTEXT_WELL_KNOWN_KEYS.filter((k) => present.has(k));
+  const auto = contextKeys.filter((k) => k.startsWith("auto/")).map((k) => k.slice("auto/".length)).sort();
+  const inbox = contextKeys.filter((k) => k.startsWith("inbox/")).length;
+  const other = contextKeys.filter((k) => !WORK_CONTEXT_WELL_KNOWN_KEYS.includes(k) && findReservedContextKeys([k]).length === 0).length;
+  const parts = [];
+  if (known.length > 0)
+    parts.push(`context: ${known.join(", ")}`);
+  if (auto.length > 0)
+    parts.push(`auto: ${auto.join(", ")}`);
+  if (other > 0)
+    parts.push(`+${other} key${other === 1 ? "" : "s"}`);
+  if (sources > 0)
+    parts.push(`${sources} source${sources === 1 ? "" : "s"}`);
+  if (inbox > 0)
+    parts.push(`inbox ${inbox}`);
+  return parts.length > 0 ? parts.join(" \xB7 ") : "context: (empty)";
+}
+// packages/core/src/context.ts
+var CJK = /[\u3000-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF66-\uFF9F]/gu;
+var DENSE_CHARS_PER_TOKEN = 4;
+function estimateTokens(text) {
+  const cjk = text.match(CJK);
+  const cjkCount = cjk === null ? 0 : cjk.length;
+  const words = text.replace(CJK, " ").split(/\s+/).filter((w) => w.length > 0).length;
+  const byWord = Math.ceil(words * 1.3 + cjkCount);
+  const dense = Math.ceil(text.replace(/\s+/gu, "").length / DENSE_CHARS_PER_TOKEN);
+  return Math.max(byWord, dense);
+}
 // packages/core/src/env.ts
-import { existsSync } from "fs";
 var ENV_PREFIX = "OPENROLY_";
 var LEGACY_ENV_PREFIX = "PAA_";
 var STATE_DIR = ".openroly";
@@ -13991,7 +14240,7 @@ function adoptLegacyEnv(env = process.env, warn = onceWarn()) {
   }
   return adopted;
 }
-function legacyDir(fresh, legacy, exists = existsSync, warn = onceWarn()) {
+function legacyDir(fresh, legacy, exists, warn = onceWarn()) {
   if (exists(fresh) || !exists(legacy))
     return fresh;
   warn(`[openroly] legacy state directory ${legacy} is in use \u2014 move it to ${fresh} (support ends in a future release)`);
@@ -13999,7 +14248,11 @@ function legacyDir(fresh, legacy, exists = existsSync, warn = onceWarn()) {
 }
 // packages/adapter/src/credentials.ts
 function openrolyHome(env2 = process.env) {
-  return env2.OPENROLY_HOME ?? legacyDir(join(homedir(), STATE_DIR), join(homedir(), LEGACY_STATE_DIR));
+  const nodeEnvKey = "NODE_ENV";
+  if (env2.OPENROLY_HOME === undefined && process.env[nodeEnvKey] === "test") {
+    throw new Error("openrolyHome: OPENROLY_HOME is not set while running under `bun test`. " + "This would fall back to the real ~/.openroly. Set OPENROLY_HOME (e.g. via mkdtemp) before this code runs.");
+  }
+  return env2.OPENROLY_HOME ?? legacyDir(join(homedir(), STATE_DIR), join(homedir(), LEGACY_STATE_DIR), existsSync);
 }
 function credentialsPath(env2 = process.env) {
   return join(openrolyHome(env2), "credentials.json");
@@ -14019,6 +14272,23 @@ async function loadCredentials(env2 = process.env) {
 }
 async function getCredential(kind, env2 = process.env) {
   return (await loadCredentials(env2)).runtimes[kind];
+}
+async function writeFileAtomic(path, text, mode) {
+  const keep = mode ?? await stat(path).then((s) => s.mode & 4095).catch(() => {
+    return;
+  });
+  const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+  try {
+    await writeFile(tmp, text, keep !== undefined ? { mode: keep } : {});
+    if (keep !== undefined)
+      await chmod(tmp, keep);
+    await rename(tmp, path);
+  } catch (e) {
+    await rm(tmp, { force: true });
+    throw e;
+  }
+  if (keep !== undefined)
+    await chmod(path, keep);
 }
 
 // node_modules/.bun/jsonc-parser@3.3.1/node_modules/jsonc-parser/lib/esm/impl/scanner.js
@@ -16574,7 +16844,7 @@ async function loadFile(env2) {
     throw e;
   }
 }
-async function writeFileAtomic(file, env2) {
+async function writeFileAtomic2(file, env2) {
   const path = deviceKeysPath(env2);
   await mkdir2(dirname2(path), { recursive: true, mode: 448 });
   const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
@@ -16638,7 +16908,7 @@ async function getOrCreateDeviceKey(kind, env2 = process.env) {
       return found;
     const record = await freshRecord();
     file.devices[kind] = record;
-    await writeFileAtomic(file, env2);
+    await writeFileAtomic2(file, env2);
     return record;
   });
 }
@@ -16783,6 +17053,194 @@ var MCP_SERVER_ENTRY = fileURLToPath(new URL("../../mcp/src/server.ts", import.m
 // packages/adapter/src/skill.ts
 var MAX_SKILL_FILE_BYTES = 64 * 1024;
 var MAX_SKILL_TOTAL_BYTES = 256 * 1024;
+// packages/adapter/src/checkpoint-cas.ts
+import { mkdir as mkdir3, readdir, readFile as readFile3, rm as rm3, stat as stat3 } from "fs/promises";
+import { join as join3 } from "path";
+function checkpointsDir(env2 = process.env) {
+  return join3(openrolyHome(env2), "checkpoints");
+}
+async function writeCasPayload(body, env2 = process.env) {
+  const hash = hashCapsuleBody(body);
+  const dir = checkpointsDir(env2);
+  await mkdir3(dir, { recursive: true, mode: 448 });
+  const path = join3(dir, hash);
+  const text = JSON.stringify(body);
+  const size = Buffer.byteLength(text, "utf8");
+  const existing = await stat3(path).catch(() => null);
+  if (existing)
+    return { hash, size: existing.size };
+  await writeFileAtomic(path, text, 384);
+  return { hash, size };
+}
+async function readCasPayload(hash, env2 = process.env) {
+  if (!isValidCasHash(hash)) {
+    throw new Error(`checkpoint-cas: refused to read invalid hash: ${JSON.stringify(hash)}`);
+  }
+  try {
+    const text = await readFile3(join3(checkpointsDir(env2), hash), "utf8");
+    return JSON.parse(text);
+  } catch (e) {
+    if (e.code === "ENOENT")
+      return null;
+    throw e;
+  }
+}
+var CAS_MAX_BYTES = 512 * 1024 * 1024;
+var CAS_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+async function gcCheckpoints(opts = {}, env2 = process.env) {
+  const maxBytes = opts.maxBytes ?? CAS_MAX_BYTES;
+  const maxAgeMs = opts.maxAgeMs ?? CAS_MAX_AGE_MS;
+  const now = opts.now ?? Date.now();
+  const dir = checkpointsDir(env2);
+  let names;
+  try {
+    names = await readdir(dir);
+  } catch (e) {
+    if (e.code === "ENOENT")
+      return { removed: [], removedBytes: 0, remainingBytes: 0 };
+    throw e;
+  }
+  const entries = [];
+  for (const name of names) {
+    if (!isValidCasHash(name))
+      continue;
+    const path = join3(dir, name);
+    const st = await stat3(path).catch(() => null);
+    if (st)
+      entries.push({ name, path, size: st.size, mtimeMs: st.mtimeMs });
+  }
+  entries.sort((a, b) => a.mtimeMs - b.mtimeMs);
+  const removed = [];
+  let removedBytes = 0;
+  let totalBytes = entries.reduce((sum, e) => sum + e.size, 0);
+  for (const e of entries) {
+    const tooOld = now - e.mtimeMs > maxAgeMs;
+    const tooBig = totalBytes > maxBytes;
+    if (!tooOld && !tooBig)
+      break;
+    await rm3(e.path, { force: true });
+    removed.push(e.name);
+    removedBytes += e.size;
+    totalBytes -= e.size;
+  }
+  return { removed, removedBytes, remainingBytes: totalBytes };
+}
+// packages/adapter/src/work-context.ts
+import { createHash } from "crypto";
+import { readFile as readFile4, realpath } from "fs/promises";
+import { join as join4, relative } from "path";
+var CONTEXT_SEARCH_DEFAULT_MAX_TOKENS = 2000;
+var CONTEXT_SEARCH_MAX_TOKENS = 20000;
+var CONTEXT_SEARCH_OMITTED_MAX = 50;
+var PREVIEW_CHARS = 80;
+var priorityOf = (e) => {
+  const known = WORK_CONTEXT_WELL_KNOWN_KEYS.indexOf(e.key);
+  const group = e.kind === "source" ? 2 : e.key.startsWith("auto/") ? 3 : e.key.startsWith("inbox/") ? 4 : known >= 0 ? 0 : 1;
+  return [e.scope === "project" ? 1 : 0, group, group === 0 ? known : 0];
+};
+var costOf = (e) => estimateTokens(JSON.stringify(e));
+async function prepareContextValue(key, value, env2 = process.env) {
+  const built = buildContextValue(key, value);
+  const written = await writeCasPayload(built.payload, env2);
+  return { kind: "context", key, value_hash: written.hash, size: written.size };
+}
+async function hashSourceFile(cwd, path) {
+  const decision = validateContextKey("source", path);
+  if (!decision.ok)
+    throw new Error(`${decision.reason}: ${path}`);
+  const abs = join4(cwd, path);
+  let real;
+  try {
+    real = await realpath(abs);
+  } catch (e) {
+    if (isMissing(e))
+      return null;
+    throw e;
+  }
+  const rel = relative(await realpath(cwd), real);
+  if (rel === ".." || rel.startsWith("../") || rel.startsWith("/")) {
+    throw new Error(`invalid_source_path: ${path} resolves outside the working directory`);
+  }
+  try {
+    const bytes = await readFile4(real);
+    return { sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.byteLength };
+  } catch (e) {
+    if (isMissing(e))
+      return null;
+    throw e;
+  }
+}
+var isMissing = (e) => {
+  const code = e.code;
+  return code === "ENOENT" || code === "EISDIR" || code === "ENOTDIR";
+};
+async function prepareSource(cwd, path) {
+  const hashed = await hashSourceFile(cwd, path);
+  if (!hashed)
+    throw new Error(`source_not_found: ${path}`);
+  return { kind: "source", key: path, value_hash: hashed.sha256, size: hashed.size };
+}
+async function resolveContextEntries(rows, opts) {
+  const maxTokens = opts.maxTokens ?? CONTEXT_SEARCH_DEFAULT_MAX_TOKENS;
+  if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > CONTEXT_SEARCH_MAX_TOKENS) {
+    throw new Error(`invalid_max_tokens: ${opts.maxTokens} \u2014 an integer from 1 to ${CONTEXT_SEARCH_MAX_TOKENS}`);
+  }
+  const entries = [];
+  for (const r of rows) {
+    const base = {
+      kind: r.kind,
+      key: r.key,
+      version: r.version,
+      written_by: { actor: r.actor, runtime_id: r.runtime_id, run_id: r.run_id },
+      updated_at: String(r.updated_at),
+      ...r.scope ? { scope: r.scope } : {}
+    };
+    if (r.kind === "source") {
+      const hashed = await hashSourceFile(opts.cwd, r.key).catch(() => null);
+      const status = hashed == null ? "missing" : hashed.sha256 === r.value_hash ? "same" : "changed";
+      entries.push({ ...base, source_status: status });
+      continue;
+    }
+    const payload = await readCasPayload(r.value_hash, opts.env);
+    if (payload == null || payload.key !== r.key) {
+      entries.push({ ...base, value: null, missing_on_device: true });
+      continue;
+    }
+    entries.push({ ...base, value: payload.value });
+  }
+  const q = opts.query?.toLowerCase();
+  const hits = q ? entries.filter((e) => e.key.toLowerCase().includes(q) || e.value != null && JSON.stringify(e.value).toLowerCase().includes(q)) : entries;
+  const ordered = hits.map((e, i) => ({ e, i, p: priorityOf(e) })).sort((a, b) => a.p[0] - b.p[0] || a.p[1] - b.p[1] || a.p[2] - b.p[2] || a.i - b.i).map(({ e }) => e);
+  const shaped = opts.indexOnly ? ordered.map((e) => {
+    const { value, ...rest } = e;
+    if (e.kind === "source")
+      return { ...rest, est_tokens: costOf(e) };
+    const text = value == null ? null : typeof value === "string" ? value : JSON.stringify(value);
+    return { ...rest, est_tokens: costOf(e), preview: text == null ? null : text.slice(0, PREVIEW_CHARS) };
+  }) : ordered;
+  const kept = [];
+  const omitted = [];
+  let used = 0;
+  for (const e of shaped) {
+    const cost = costOf(e);
+    if (used + cost <= maxTokens) {
+      kept.push(e);
+      used += cost;
+    } else {
+      omitted.push({ kind: e.kind, key: e.key, ...e.scope ? { scope: e.scope } : {}, est_tokens: e.est_tokens ?? cost });
+    }
+  }
+  const budget = {
+    max_tokens: maxTokens,
+    used_tokens: used,
+    omitted_count: omitted.length,
+    omitted: omitted.slice(0, CONTEXT_SEARCH_OMITTED_MAX),
+    ...omitted.length > 0 ? {
+      hint: `${omitted.length} entr${omitted.length === 1 ? "y" : "ies"} did not fit max_tokens ${maxTokens} and ${omitted.length === 1 ? "was" : "were"} left out whole (values are never cut). ` + `Pull what you need with keys: [...] and a larger max_tokens (up to ${CONTEXT_SEARCH_MAX_TOKENS}), or index_only: true to see sizes first`
+    } : {}
+  };
+  return { entries: kept, missing_on_device: hits.filter((e) => e.missing_on_device).length, budget };
+}
 // node_modules/.bun/zod@3.25.76/node_modules/zod/v3/external.js
 var exports_external = {};
 __export(exports_external, {
@@ -29780,9 +30238,9 @@ class StdioServerTransport {
 // packages/mcp-mask/src/masking.ts
 import { existsSync as existsSync2, readFileSync, statSync } from "fs";
 import { homedir as homedir2 } from "os";
-import { join as join3 } from "path";
-var FRESH_SECRETS = join3(homedir2(), ".openroly", "secrets.json");
-var LEGACY_SECRETS = join3(homedir2(), ".atn", "secrets.json");
+import { join as join5 } from "path";
+var FRESH_SECRETS = join5(homedir2(), ".openroly", "secrets.json");
+var LEGACY_SECRETS = join5(homedir2(), ".atn", "secrets.json");
 var legacyDirWarned = false;
 var secretsPath = () => {
   const override = process.env.OPENROLY_SECRETS_PATH;
@@ -29792,7 +30250,7 @@ var secretsPath = () => {
     return FRESH_SECRETS;
   if (!legacyDirWarned) {
     legacyDirWarned = true;
-    console.error(`[openroly-mask] legacy state directory ${join3(homedir2(), ".atn")} is in use \u2014 move it to ${join3(homedir2(), ".openroly")} (support ends in a future release)`);
+    console.error(`[openroly-mask] legacy state directory ${join5(homedir2(), ".atn")} is in use \u2014 move it to ${join5(homedir2(), ".openroly")} (support ends in a future release)`);
   }
   return LEGACY_SECRETS;
 };
@@ -29892,13 +30350,76 @@ var rulesPutInputShape = {
     visibility: exports_external.enum(["full", "masked", "local_only", "none"]).optional().describe("for cloud_visibility")
   })
 };
+var workProofInputShape = {
+  work_id: exports_external.string().describe("work id (wrk_...)"),
+  run_id: exports_external.string().describe("the id of the run that is doing the work (the run that holds the lease)"),
+  status: exports_external.enum(["passed", "failed", "skipped", "unknown"]).describe("whether the check passed. Do not parse test output into anything finer"),
+  passed: exports_external.number().int().nonnegative().optional(),
+  failed: exports_external.number().int().nonnegative().optional(),
+  detail: exports_external.string().max(2000).optional().describe("one line of context (e.g. the command that was run)")
+};
+var workCapsuleInputShape = {
+  work_id: exports_external.string().describe("work id (wrk_...)"),
+  run_id: exports_external.string().describe("the id of the run that is doing the work (the run that holds the lease)"),
+  goal: exports_external.unknown().optional(),
+  current_state: exports_external.unknown().optional(),
+  decisions: exports_external.unknown().optional(),
+  unresolved_questions: exports_external.unknown().optional(),
+  relevant_artifacts: exports_external.unknown().optional(),
+  relevant_memory: exports_external.unknown().optional(),
+  git_state: exports_external.unknown().optional(),
+  capability_requirements: exports_external.unknown().optional()
+};
+var contextShape = exports_external.record(exports_external.string(), exports_external.unknown()).optional().describe("key \u2192 value facts for the next agent. Prefer the well-known keys, which the next agent reads first: goal, next_step, decisions, open_questions, failed_attempts, verified_findings (other names are allowed). auto/ and inbox/ are reserved for the machine. Key: letters, digits and _ . : / -, up to 128 chars");
+var sourcesShape = exports_external.array(exports_external.string()).optional().describe("repo-relative paths of files the next agent should read (e.g. docs/plan.md)");
+var expectedVersionsShape = exports_external.record(exports_external.string(), exports_external.number().int().nonnegative()).optional().describe("key \u2192 the version you last saw (0 = must not exist yet). A newer value makes the whole call fail with stale_version");
+var workHandoffInputShape = {
+  work_id: exports_external.string().describe("work id (wrk_...)"),
+  to: exports_external.string().optional().describe("runtime id or kind that should carry this work from now on"),
+  note: exports_external.string().optional().describe("what the next runtime needs to know"),
+  context: contextShape,
+  sources: sourcesShape,
+  run_id: exports_external.string().optional().describe("your own run id, recorded as the writer"),
+  expected_versions: expectedVersionsShape
+};
+var workContextPutInputShape = {
+  work_id: exports_external.string().describe("work id (wrk_...)"),
+  context: contextShape,
+  sources: sourcesShape,
+  run_id: exports_external.string().optional().describe("your own run id, recorded as the writer"),
+  expected_versions: expectedVersionsShape
+};
+var workContextSearchInputShape = {
+  work_id: exports_external.string().describe("work id (wrk_...)"),
+  keys: exports_external.array(exports_external.string()).optional().describe('exact keys to pull (e.g. ["A", "B"])'),
+  prefix: exports_external.string().optional().describe("pull keys that start with this"),
+  kind: exports_external.enum(["context", "source"]).optional(),
+  query: exports_external.string().optional().describe("substring matched against key and value on this device"),
+  index_only: exports_external.boolean().optional().describe("step 1: return every matching key with est_tokens and a short preview instead of its value"),
+  max_tokens: exports_external.number().int().min(1).max(CONTEXT_SEARCH_MAX_TOKENS).optional().describe(`the most this call returns (default ${CONTEXT_SEARCH_DEFAULT_MAX_TOKENS}). Entries that do not fit are left out whole and listed in budget.omitted`)
+};
+var workTaskCreateInputShape = {
+  parent_work_id: exports_external.string().describe("the Work Project (a work id) this task belongs to"),
+  title: exports_external.string().describe("what this task is"),
+  to: exports_external.string().optional().describe("runtime id or kind that should carry this task"),
+  note: exports_external.string().optional().describe("what that runtime needs to know"),
+  context: contextShape,
+  sources: sourcesShape,
+  run_id: exports_external.string().optional().describe("your own run id, recorded as the writer")
+};
+var workMessageInputShape = {
+  to_work_id: exports_external.string().describe("the other agent's address = their task's work id (from work_team)"),
+  from_work_id: exports_external.string().describe("your own task's work id \u2014 replies come back to it"),
+  text: exports_external.string().max(4000).describe("what they need to know")
+};
 
 // packages/mcp/src/peek.ts
-import { appendFileSync, chmodSync, mkdirSync } from "fs";
+import { appendFileSync, chmodSync, existsSync as existsSync3, mkdirSync } from "fs";
 import { homedir as homedir3 } from "os";
-import { join as join4 } from "path";
+import { createConnection } from "net";
+import { join as join6 } from "path";
 var SESSION_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
-var brokerHome = (env2 = process.env) => env2.OPENROLY_BROKER_HOME ?? legacyDir(join4(homedir3(), STATE_DIR, "broker"), join4(homedir3(), LEGACY_STATE_DIR, "broker"));
+var brokerHome = (env2 = process.env) => env2.OPENROLY_BROKER_HOME ?? legacyDir(join6(homedir3(), STATE_DIR, "broker"), join6(homedir3(), LEGACY_STATE_DIR, "broker"), existsSync3);
 var warn = (e) => console.error(`peek: ${e instanceof Error ? e.message : String(e)}`);
 function openPeek(env2 = process.env, home = brokerHome(env2)) {
   const id2 = env2.OPENROLY_SESSION_ID;
@@ -29908,8 +30429,8 @@ function openPeek(env2 = process.env, home = brokerHome(env2)) {
     console.error("peek: invalid session id");
     return null;
   }
-  const dir = join4(home, "sessions", id2);
-  const path = join4(dir, "peek.jsonl");
+  const dir = join6(home, "sessions", id2);
+  const path = join6(dir, "peek.jsonl");
   const line = (v) => JSON.stringify(v) + `
 `;
   try {
@@ -29930,6 +30451,27 @@ function openPeek(env2 = process.env, home = brokerHome(env2)) {
       } catch (e) {
         warn(e);
       }
+    }
+  };
+}
+var HOOK_SOCKET_NAME = "broker.sock";
+function openSessionUpdate(env2 = process.env, home = brokerHome(env2)) {
+  const id2 = env2.OPENROLY_SESSION_ID;
+  if (!id2)
+    return null;
+  if (!SESSION_ID_RE.test(id2))
+    return null;
+  const sockPath = join6(home, HOOK_SOCKET_NAME);
+  return (tool) => {
+    try {
+      const client = createConnection(sockPath);
+      client.on("error", () => {});
+      client.on("connect", () => {
+        client.write(JSON.stringify({ type: "tool", session: id2, tool }) + `
+`, () => client.end());
+      });
+    } catch (e) {
+      warn(e);
     }
   };
 }
@@ -29962,6 +30504,52 @@ async function call(config2, path, init) {
 }
 var e2eeCall = (config2) => (path, init) => call(config2, path, init);
 var deviceKindOf = (config2) => config2.deviceKind ?? "default";
+var isLeaseLive = (w, now) => w.lease_holder_run != null && (w.lease_expires_at == null || new Date(w.lease_expires_at).getTime() > now);
+var leaseTime = (w) => w.lease_acquired_at == null ? 0 : new Date(w.lease_acquired_at).getTime();
+var pushCapsule = async (config2, workId, w, runId, fields) => {
+  const built = buildCapsule(fields);
+  const written = await writeCasPayload(built.body);
+  const manifest = buildManifest(built.body, { hash: written.hash, size: written.size, mode: "0600" });
+  const result = await call(config2, `/v1/works/${encodeURIComponent(workId)}/capsules`, {
+    body: { runId, expectedWriteEpoch: w.lease_epoch, ...manifest }
+  });
+  return { ...result, dropped_keys: built.droppedKeys };
+};
+var assertNoReservedKeys = (context2) => {
+  const reserved = findReservedContextKeys(Object.keys(context2 ?? {}));
+  if (reserved.length === 0)
+    return;
+  throw new Error(`reserved_key: ${reserved.join(", ")} \u2014 auto/ is written by the 30-second checkpoint tick and inbox/ by work_message. ` + "Use your own keys (goal, next_step, decisions, open_questions, failed_attempts, verified_findings)");
+};
+var prepareEntries = async (config2, input, allowReserved = false) => {
+  if (!allowReserved)
+    assertNoReservedKeys(input.context);
+  const cwd = config2.cwd ?? process.cwd();
+  const out = [];
+  for (const [key, value] of Object.entries(input.context ?? {}))
+    out.push(await prepareContextValue(key, value));
+  for (const path of input.sources ?? [])
+    out.push(await prepareSource(cwd, path));
+  const expected = input.expected_versions ?? {};
+  return out.map((e) => expected[e.key] !== undefined ? { ...e, expected_version: expected[e.key] } : e);
+};
+var handoffCall = async (config2, workId, input) => {
+  const entries = input.context || input.sources ? await prepareEntries(config2, input) : [];
+  return call(config2, `/v1/works/${encodeURIComponent(workId)}/handoff`, {
+    body: {
+      ...input.to !== undefined ? { runtimeId: input.to } : {},
+      ...input.note !== undefined ? { note: input.note } : {},
+      ...entries.length > 0 ? { entries } : {},
+      ...input.run_id ? { runId: input.run_id } : {}
+    }
+  });
+};
+var resolveMe = async (config2) => {
+  const agents = await call(config2, "/v1/agents");
+  const runtimeId = agents.me.runtime_id;
+  return { runtimeId, kind: runtimeId ? agents.runtimes.find((r) => r.id === runtimeId)?.kind ?? null : null };
+};
+var isMine = (handled, me) => handled != null && me.runtimeId != null && (handled === me.runtimeId || handled === me.kind);
 function createAccountTools(config2) {
   let ownHandle = null;
   const resolveOwnHandle = () => ownHandle ??= (async () => {
@@ -30045,6 +30633,474 @@ function createAccountTools(config2) {
           return rule;
         }
       }));
+    },
+    work_current: async () => {
+      const works = await call(config2, "/v1/works");
+      const now = Date.now();
+      const held = works.filter((w2) => isLeaseLive(w2, now)).sort((a, b) => leaseTime(b) - leaseTime(a));
+      const w = held[0];
+      if (!w)
+        return null;
+      return {
+        work_id: w.id,
+        title: w.title,
+        status: w.status,
+        lease: { epoch: w.lease_epoch, holder_run: w.lease_holder_run },
+        handled_runtime_id: w.handled_runtime_id ?? null,
+        ambiguous: held.length > 1
+      };
+    },
+    work_get: (workId) => call(config2, `/v1/works/${encodeURIComponent(workId)}`),
+    work_events: (workId, after) => call(config2, `/v1/works/${encodeURIComponent(workId)}/events${after != null ? `?after=${encodeURIComponent(String(after))}` : ""}`),
+    work_proof: async (workId, input) => {
+      const w = await call(config2, `/v1/works/${encodeURIComponent(workId)}`);
+      if (!w.lease_holder_run) {
+        throw new Error(`no run holds work ${workId} \u2014 claim it first (openroly work claim ${workId} --run <runId>)`);
+      }
+      return call(config2, `/v1/works/${encodeURIComponent(workId)}/proofs`, {
+        body: {
+          runId: input.run_id,
+          expectedWriteEpoch: w.lease_epoch,
+          status: input.status,
+          ...input.passed !== undefined ? { passed: input.passed } : {},
+          ...input.failed !== undefined ? { failed: input.failed } : {},
+          ...input.detail !== undefined ? { detail: input.detail } : {}
+        }
+      });
+    },
+    work_capsule: async (workId, input) => {
+      const w = await call(config2, `/v1/works/${encodeURIComponent(workId)}`);
+      if (!w.lease_holder_run) {
+        throw new Error(`no run holds work ${workId} \u2014 claim it first (openroly work claim ${workId} --run <runId>)`);
+      }
+      const { run_id, ...fields } = input;
+      return pushCapsule(config2, workId, w, run_id, fields);
+    },
+    work_capsules: (workId) => call(config2, `/v1/works/${encodeURIComponent(workId)}/capsules`),
+    work_promote: async (threadId) => {
+      try {
+        const work2 = await call(config2, "/v1/works/promote", { body: { threadId } });
+        return { work_id: work2.id, already_promoted: false, work: work2 };
+      } catch (e) {
+        if (e instanceof OpenRolyApiError && e.status === 409) {
+          const workId = e.body?.work_id;
+          if (typeof workId === "string")
+            return { work_id: workId, already_promoted: true, work: null };
+        }
+        throw e;
+      }
+    },
+    work_handoff: (workId, input) => handoffCall(config2, workId, input),
+    work_context_put: async (workId, input, opts = {}) => {
+      const entries = await prepareEntries(config2, input, opts.allowReserved === true);
+      if (entries.length === 0)
+        throw new Error("nothing to put \u2014 pass context and/or sources");
+      return call(config2, `/v1/works/${encodeURIComponent(workId)}/context`, {
+        method: "PUT",
+        body: { entries, ...input.run_id ? { runId: input.run_id } : {} }
+      });
+    },
+    work_context_search: async (workId, input = {}) => {
+      const params = new URLSearchParams;
+      if (input.kind)
+        params.set("kind", input.kind);
+      if (input.prefix)
+        params.set("prefix", input.prefix);
+      for (const key of input.keys ?? [])
+        params.append("key", key);
+      const qs = params.toString();
+      const res = await call(config2, `/v1/works/${encodeURIComponent(workId)}/context${qs ? `?${qs}` : ""}`);
+      const resolved = await resolveContextEntries(res.entries, {
+        cwd: config2.cwd ?? process.cwd(),
+        query: input.query,
+        indexOnly: input.index_only,
+        maxTokens: input.max_tokens
+      });
+      return { work_id: workId, ...resolved };
+    },
+    work_assigned: async () => {
+      const [me, works] = await Promise.all([resolveMe(config2), call(config2, "/v1/works")]);
+      const now = Date.now();
+      const mine = works.filter((w) => isMine(w.handled_runtime_id, me));
+      return Promise.all(mine.map(async (w) => {
+        const index = await call(config2, `/v1/works/${encodeURIComponent(w.id)}/context`);
+        return {
+          work_id: w.id,
+          title: w.title,
+          status: w.status,
+          handoff_note: w.handoff_note ?? null,
+          project_id: w.parent_work_id ?? null,
+          lease_live: isLeaseLive(w, now),
+          context_index: summarizeContextIndex(index.entries)
+        };
+      }));
+    },
+    work_task_create: async (parentWorkId, input) => {
+      const { title, ...handoff } = input;
+      assertNoReservedKeys(handoff.context);
+      const task = await call(config2, "/v1/works", { body: { title, parent_work_id: parentWorkId } });
+      const wants = handoff.to !== undefined || handoff.note !== undefined || handoff.context !== undefined || handoff.sources !== undefined;
+      if (!wants)
+        return { task_id: task.id, task, handed_off: null };
+      try {
+        return { task_id: task.id, task, handed_off: await handoffCall(config2, task.id, handoff) };
+      } catch (e) {
+        throw new Error(`task ${task.id} was created under ${parentWorkId}, but handing it off failed \u2014 retry work_handoff on ${task.id}: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
+      }
+    },
+    work_team: async (workId) => {
+      const [team, me] = await Promise.all([
+        call(config2, `/v1/works/${encodeURIComponent(workId)}/team`),
+        resolveMe(config2)
+      ]);
+      const now = Date.now();
+      return {
+        project: { work_id: team.project.id, title: team.project.title, status: team.project.status },
+        tasks: team.tasks.map((t) => ({
+          address: t.id,
+          title: t.title,
+          status: t.status,
+          assigned_to: t.handled_runtime_id ?? null,
+          is_you: isMine(t.handled_runtime_id, me),
+          lease_live: isLeaseLive(t, now)
+        }))
+      };
+    },
+    work_message: async (toWorkId, input) => {
+      const team = await call(config2, `/v1/works/${encodeURIComponent(input.from_work_id)}/team`);
+      const members = new Set([team.project.id, ...team.tasks.map((t) => t.id)]);
+      if (!members.has(toWorkId)) {
+        throw new Error(`not_on_team: ${toWorkId} is not in the same Work Project as ${input.from_work_id} \u2014 nothing was sent`);
+      }
+      const key = `inbox/${input.from_work_id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const entry = await prepareContextValue(key, { from: input.from_work_id, text: input.text, sent_at: new Date().toISOString() });
+      const sent = await call(config2, `/v1/works/${encodeURIComponent(toWorkId)}/context`, {
+        method: "PUT",
+        body: { entries: [entry] }
+      });
+      return { to: toWorkId, key, delivered: sent.entries.length === 1 };
+    },
+    work_freeze: (workId, input = {}) => call(config2, `/v1/works/${encodeURIComponent(workId)}/freeze`, {
+      body: { intent: input.intent ?? null }
+    })
+  };
+}
+
+// packages/mcp/src/git-state.ts
+import { execFileSync } from "child_process";
+import { lstatSync, readlinkSync, statSync as statSync2 } from "fs";
+import { join as join7 } from "path";
+
+// packages/core/src/git-checkpoint.ts
+var CHECKPOINT_MAX_UNTRACKED_BYTES = 1024 * 1024;
+var CHECKPOINT_MAX_UNTRACKED_FILES = 64;
+// packages/mcp/src/git-state.ts
+function parsePorcelainZ(output) {
+  const tokens = output.split("\x00");
+  const entries = [];
+  let i = 0;
+  while (i < tokens.length) {
+    const tok = tokens[i];
+    if (tok === undefined || tok === "") {
+      i++;
+      continue;
+    }
+    const code = tok.slice(0, 2);
+    entries.push({ code, path: tok.slice(3) });
+    i += code[0] === "R" || code[0] === "C" || code[1] === "R" || code[1] === "C" ? 2 : 1;
+  }
+  return entries;
+}
+function computeGitState(cwd) {
+  try {
+    execFileSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd, stdio: ["ignore", "ignore", "ignore"] });
+  } catch {
+    return null;
+  }
+  let baseCommit;
+  try {
+    baseCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd, stdio: ["pipe", "pipe", "ignore"] }).toString("utf8").trim();
+  } catch {
+    baseCommit = null;
+  }
+  const porcelain = execFileSync("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
+    cwd,
+    encoding: "utf8"
+  });
+  const entries = parsePorcelainZ(porcelain);
+  const dirty = entries.length;
+  if (dirty === 0)
+    return { baseCommit, dirty };
+  const { trackedPatch, stagedPatch } = buildTrackedPatch(cwd);
+  const { untrackedFiles, hashes, omitted } = buildUntracked(cwd, entries);
+  return { baseCommit, dirty, trackedPatch, stagedPatch, untrackedFiles, hashes, omitted };
+}
+var DETERMINISTIC_COMMIT_ENV = { GIT_AUTHOR_DATE: "@0 +0000", GIT_COMMITTER_DATE: "@0 +0000" };
+function buildTrackedPatch(cwd) {
+  let sha;
+  try {
+    sha = execFileSync("git", ["stash", "create"], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, ...DETERMINISTIC_COMMIT_ENV }
+    }).trim();
+  } catch {
+    return { trackedPatch: null, stagedPatch: null };
+  }
+  if (!sha)
+    return { trackedPatch: null, stagedPatch: null };
+  let stagedPatch;
+  try {
+    stagedPatch = execFileSync("git", ["rev-parse", `${sha}^2`], { cwd, encoding: "utf8" }).trim();
+  } catch {
+    stagedPatch = null;
+  }
+  return { trackedPatch: sha, stagedPatch };
+}
+function buildUntracked(cwd, entries) {
+  const untrackedFiles = [];
+  const hashes = [];
+  const omitted = [];
+  const candidates = entries.filter((e) => e.code === "??");
+  for (let i = 0;i < candidates.length; i++) {
+    const candidate = candidates[i];
+    if (!candidate)
+      continue;
+    const path = candidate.path;
+    if (i >= CHECKPOINT_MAX_UNTRACKED_FILES) {
+      omitted.push({ path, reason: "too_many" });
+      continue;
+    }
+    const abs = join7(cwd, path);
+    let mode;
+    let size;
+    let symlinkTarget = null;
+    try {
+      const lst = lstatSync(abs);
+      if (lst.isSymbolicLink()) {
+        symlinkTarget = readlinkSync(abs);
+        mode = "120000";
+        size = Buffer.byteLength(symlinkTarget, "utf8");
+      } else {
+        const st = statSync2(abs);
+        mode = st.mode & 73 ? "100755" : "100644";
+        size = st.size;
+      }
+    } catch {
+      continue;
+    }
+    if (size > CHECKPOINT_MAX_UNTRACKED_BYTES) {
+      omitted.push({ path, reason: "too_large" });
+      continue;
+    }
+    let hash;
+    try {
+      hash = symlinkTarget !== null ? execFileSync("git", ["hash-object", "-w", "--stdin"], { cwd, input: symlinkTarget, encoding: "utf8" }).trim() : execFileSync("git", ["hash-object", "-w", "--", path], { cwd, encoding: "utf8" }).trim();
+    } catch {
+      continue;
+    }
+    untrackedFiles.push({ path, mode });
+    hashes.push(hash);
+  }
+  return { untrackedFiles, hashes, omitted };
+}
+
+// packages/mcp/src/auto-context.ts
+import { execFileSync as execFileSync2 } from "child_process";
+import { existsSync as existsSync4, readdirSync, readFileSync as readFileSync2, statSync as statSync3 } from "fs";
+import { homedir as homedir4 } from "os";
+import { isAbsolute, join as join8, relative as relative2, resolve } from "path";
+var AUTO_KEYS = {
+  git: "auto/git",
+  filesTouched: "auto/files_touched",
+  tests: "auto/tests"
+};
+var AUTO_FILES_MAX = 50;
+var AUTO_TESTS_MAX = 10;
+var AUTO_DIRTY_MAX = 50;
+var AUTO_COMMAND_MAX = 200;
+var TRANSCRIPT_RECENT_MS = 10 * 60 * 1000;
+var TEST_COMMAND_RE = /(^|[\s;&|(])(bun (run )?test|npm (run )?test|pnpm (run )?test|yarn test|pytest|python -m pytest|cargo test|go test|vitest|jest|mix test|rspec)(\s|$)/;
+var FILE_TOOLS = new Set(["Edit", "Write", "MultiEdit"]);
+function claudeProjectDir(cwd, home = homedir4()) {
+  return join8(home, ".claude", "projects", cwd.replace(/[^A-Za-z0-9]/g, "-"));
+}
+function pickTranscript(cwd, opts = {}) {
+  const dir = claudeProjectDir(cwd, opts.home);
+  if (!existsSync4(dir))
+    return { path: null, reason: "no_transcript_dir" };
+  const sid = (opts.env ?? process.env).CLAUDE_CODE_SESSION_ID;
+  if (sid && /^[A-Za-z0-9-]{1,100}$/.test(sid)) {
+    const path = join8(dir, `${sid}.jsonl`);
+    return existsSync4(path) ? { path, by: "session_env" } : { path: null, reason: "no_transcript" };
+  }
+  const now = opts.now ?? Date.now();
+  const recent = readdirSync(dir).filter((f) => f.endsWith(".jsonl")).map((f) => join8(dir, f)).filter((p) => now - statSync3(p).mtimeMs <= TRANSCRIPT_RECENT_MS);
+  if (recent.length === 0)
+    return { path: null, reason: "no_transcript" };
+  if (recent.length > 1)
+    return { path: null, reason: "ambiguous_transcript" };
+  return { path: recent[0], by: "only_recent" };
+}
+function insideCwd(cwd, p) {
+  const abs = isAbsolute(p) ? p : resolve(cwd, p);
+  const rel = relative2(cwd, abs);
+  if (!rel || rel === ".." || rel.startsWith("../") || isAbsolute(rel))
+    return null;
+  return rel;
+}
+function readTranscriptFacts(text, cwd) {
+  const files = new Map;
+  const pending = new Map;
+  const tests = [];
+  for (const line of text.split(`
+`)) {
+    if (!line.trim())
+      continue;
+    let row;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (row?.cwd !== cwd)
+      continue;
+    const at = typeof row.timestamp === "string" ? row.timestamp : null;
+    const content2 = row.message?.content;
+    if (!Array.isArray(content2))
+      continue;
+    for (const part of content2) {
+      if (part?.type === "tool_use") {
+        const input = part.input ?? {};
+        if (FILE_TOOLS.has(part.name) && typeof input.file_path === "string") {
+          const rel = insideCwd(cwd, input.file_path);
+          if (rel) {
+            files.delete(rel);
+            files.set(rel, { path: rel, tool: part.name, at });
+          }
+        } else if (part.name === "Bash" && typeof input.command === "string" && typeof part.id === "string") {
+          if (TEST_COMMAND_RE.test(input.command)) {
+            pending.set(part.id, { command: input.command.slice(0, AUTO_COMMAND_MAX), at });
+          }
+        }
+      } else if (part?.type === "tool_result" && typeof part.tool_use_id === "string") {
+        const run2 = pending.get(part.tool_use_id);
+        if (run2) {
+          tests.push({ command: run2.command, ok: part.is_error !== true, at: run2.at });
+          pending.delete(part.tool_use_id);
+        }
+      }
+    }
+  }
+  for (const run2 of pending.values())
+    tests.push({ command: run2.command, ok: null, at: run2.at });
+  tests.sort((a, b) => (b.at ?? "").localeCompare(a.at ?? ""));
+  return {
+    files_touched: [...files.values()].reverse().slice(0, AUTO_FILES_MAX),
+    tests: tests.slice(0, AUTO_TESTS_MAX)
+  };
+}
+function readGitFacts(cwd) {
+  const git = (args) => {
+    try {
+      return execFileSync2("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    } catch {
+      return null;
+    }
+  };
+  if (git(["rev-parse", "--is-inside-work-tree"]) !== "true")
+    return null;
+  const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]);
+  const porcelain = execFileSync2("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
+    cwd,
+    encoding: "utf8"
+  });
+  const paths = parsePorcelainZ(porcelain).map((e) => e.path).sort();
+  return {
+    branch: branch === "HEAD" ? null : branch,
+    head: git(["rev-parse", "HEAD"]),
+    dirty: paths.slice(0, AUTO_DIRTY_MAX),
+    dirty_total: paths.length
+  };
+}
+function buildAutoContext(cwd, opts = {}) {
+  const git = readGitFacts(cwd);
+  if (!git)
+    return { context: {}, transcript: "not_a_git_worktree" };
+  const context2 = { [AUTO_KEYS.git]: git };
+  const pick2 = pickTranscript(cwd, opts);
+  if (pick2.path === null)
+    return { context: context2, transcript: pick2.reason };
+  const facts = readTranscriptFacts(readFileSync2(pick2.path, "utf8"), cwd);
+  context2[AUTO_KEYS.filesTouched] = facts.files_touched;
+  context2[AUTO_KEYS.tests] = facts.tests;
+  return { context: context2, transcript: pick2.by };
+}
+async function runAutoContext(tools, workId, cwd, opts = {}) {
+  const auto = buildAutoContext(cwd, opts);
+  const keys = Object.keys(auto.context);
+  if (keys.length === 0)
+    return { written: [], transcript: auto.transcript };
+  await tools.work_context_put(workId, { context: auto.context }, { allowReserved: true });
+  return { written: keys, transcript: auto.transcript };
+}
+
+// packages/mcp/src/checkpoint.ts
+async function runCheckpointTick(tools, cwd) {
+  const current = await tools.work_current();
+  if (!current || !current.lease.holder_run)
+    return { pushed: false, reason: "no_active_work" };
+  if (current.ambiguous)
+    return { pushed: false, reason: "ambiguous_work" };
+  const gitState = computeGitState(cwd);
+  if (!gitState)
+    return { pushed: false, reason: "not_a_git_worktree" };
+  await tools.work_capsule(current.work_id, {
+    run_id: current.lease.holder_run,
+    git_state: gitState
+  });
+  return { pushed: true, workId: current.work_id };
+}
+async function pushCheckpointAfterProof(tools, workId, runId, cwd) {
+  try {
+    const gitState = computeGitState(cwd);
+    if (gitState)
+      await tools.work_capsule(workId, { run_id: runId, git_state: gitState });
+  } catch {}
+}
+var GC_EVERY_N_TICKS = 120;
+function startCheckpointTicker(tools, opts) {
+  let stopped = false;
+  let inFlight = false;
+  let tickCount = 0;
+  const gcEvery = opts.gcEveryNTicks ?? GC_EVERY_N_TICKS;
+  const tick = async () => {
+    if (stopped || inFlight)
+      return;
+    inFlight = true;
+    try {
+      const result = await runCheckpointTick(tools, opts.cwd);
+      tickCount += 1;
+      if (result.pushed && opts.autoContext !== false) {
+        await runAutoContext(tools, result.workId, opts.cwd, opts.autoContext ?? {}).catch((e) => opts.onError?.(e));
+      }
+      if (result.pushed && tickCount % gcEvery === 0) {
+        await gcCheckpoints().catch((e) => opts.onError?.(e));
+      }
+    } catch (e) {
+      opts.onError?.(e);
+    } finally {
+      inFlight = false;
+    }
+  };
+  const timer = setInterval(() => {
+    tick();
+  }, opts.intervalMs);
+  timer.unref?.();
+  return {
+    stop: () => {
+      stopped = true;
+      clearInterval(timer);
     }
   };
 }
@@ -30073,10 +31129,12 @@ try {
   process.exit(1);
 }
 var peek = openPeek(process.env);
+var reportTool = openSessionUpdate(process.env);
 var server = new McpServer({ name: "openroly-account", version: "0.2.0" });
 var json = (tool, input, v) => {
   const text = JSON.stringify(maskValue(v, secrets), null, 2);
   peek?.record({ tool, input: maskValue(input, secrets), output: text });
+  reportTool?.(tool);
   return { content: [{ type: "text", text }] };
 };
 server.tool("whoami", "Identity of the attached agent account and its unread count", {}, async () => json("whoami", {}, await tools.whoami()));
@@ -30098,4 +31156,33 @@ server.tool("approval_get", "Status of an approval you raised (a send/reply awai
 server.tool("notification_label", "Put a triage label on a notification item (action = needs handling / fyi = for information / discard = not needed). The summary is sealed with the device key before sending", labelInputShape, async ({ message_id, label, summary }) => json("notification_label", { message_id, label, summary }, await tools.notification_label(message_id, label, summary)));
 server.tool("rules_put", "Save how the owner asked to handle things as a rule (nl = their words verbatim, scope = what it applies to, action = what to do). The server normalizes it, picks the layer (metadata / content) and returns the normalized rule \u2014 echo it back to the owner in one sentence. Putting the same nl again updates in place (no duplicate rules). sender / keywords in scope make it a content rule, stored encrypted on the server", rulesPutInputShape, async (input) => json("rules_put", input, await tools.rules_put(input)));
 server.tool("rules_list", "List saved rules. The scope of content rules is restored with the device key", {}, async () => json("rules_list", {}, await tools.rules_list()));
+server.tool("work_capsule", `Push one immutable snapshot (a 'capsule') of this work's state \u2014 goal, current_state, decisions, unresolved_questions, relevant_artifacts, relevant_memory, git_state, capability_requirements. Only the run that holds the lease can: pass your own run id. Pushing the exact same content as the last capsule does not create a new version (dedupe: deduped:true in the reply). Never pass conversation/messages/transcript here \u2014 that call is rejected. The actual content is stored only on this device (~/.openroly/checkpoints), never sent to the server \u2014 the server only keeps a small manifest (hash/size). To reference a secret, use {credential_ref: "env:NAME"} \u2014 never write a raw secret value into any field, it will be rejected`, workCapsuleInputShape, async ({ work_id, ...input }) => json("work_capsule", { work_id, ...input }, await tools.work_capsule(work_id, input)));
+server.tool("work_capsules", "List every capsule version pushed for this work, oldest first \u2014 each entry has the full body (goal / current_state / decisions / ...) plus version, content_hash, and created_at", { work_id: exports_external.string() }, async ({ work_id }) => json("work_capsules", { work_id }, await tools.work_capsules(work_id)));
+server.tool("work_current", "The work this account has a live run on right now (null if none). Picked by the lease alone; handled_runtime_id is the standing owner and is reported separately - never read it as 'running now'. ambiguous:true means more than one work is leased and this is the most recent one", {}, async () => json("work_current", {}, await tools.work_current()));
+server.tool("work_get", "One work item by id (status, lease, the standing owner)", { work_id: exports_external.string() }, async ({ work_id }) => json("work_get", { work_id }, await tools.work_get(work_id)));
+server.tool("work_events", "The event log of one work, oldest first. after = the work_sequence you already have (pass it to get only what is new)", { work_id: exports_external.string(), after: exports_external.number().int().nonnegative().optional() }, async ({ work_id, after }) => json("work_events", { work_id, after }, await tools.work_events(work_id, after)));
+server.tool("work_proof", "Record what a check actually said on this work (e.g. 32 passed / 2 failed). Only the run that holds the lease can: pass your own run id, not the one you read off the work", workProofInputShape, async ({ work_id, ...input }) => {
+  const result = await tools.work_proof(work_id, input);
+  await pushCheckpointAfterProof(tools, work_id, input.run_id, process.cwd());
+  return json("work_proof", { work_id, ...input }, result);
+});
+server.tool("work_promote", "Turn a thread you labelled 'action' into a work item. Calling it again on the same thread returns the same work_id (already_promoted: true) instead of making a second one", { thread_id: exports_external.string() }, async ({ thread_id }) => json("work_promote", { thread_id }, await tools.work_promote(thread_id)));
+server.tool("work_handoff", `Hand the work to another runtime (to = its runtime id or kind) and/or leave a note \u2014 and in the same call publish what the next agent needs into this work's Work Project: context = key/value facts, preferably the well-known keys goal / next_step / decisions / open_questions / failed_attempts / verified_findings (e.g. {"next_step": "make the reconnect test deterministic"}), sources = repo-relative file paths (e.g. docs/plan.md). Values are stored only on this device (the server keeps the key, a hash and who wrote it); sources are recorded by path + sha256, not copied. Either all of it lands or none of it does. Never put conversation/messages/transcript into context; reference a secret as {credential_ref: "env:NAME"}. This sets the standing owner, not the live lease`, workHandoffInputShape, async ({ work_id, ...input }) => json("work_handoff", { work_id, ...input }, await tools.work_handoff(work_id, input)));
+server.tool("work_context_put", `Publish key/value context and/or source file paths into this work's Work Project without handing it off (e.g. while working in parallel). Writing a key again with different content makes a new version; pass expected_versions {key: n} to refuse overwriting a newer value (409 stale_version \u2014 nothing in the call is written). Values stay on this device; the server only keeps key, hash and writer. Never put conversation/messages/transcript here; reference a secret as {credential_ref: "env:NAME"}`, workContextPutInputShape, async ({ work_id, ...input }) => json("work_context_put", { work_id, ...input }, await tools.work_context_put(work_id, input)));
+server.tool("work_context_search", "Pull only what you need from this work's Work Project before you start, in two steps: index_only:true lists every key with est_tokens and a short preview (no values), then pull the keys you chose. Each call returns at most max_tokens (default 2000, up to 20000), highest priority first \u2014 goal, next_step, decisions, open_questions, failed_attempts, verified_findings, then other keys, sources, auto/, inbox/ \u2014 and entries that do not fit are left out whole and named in budget.omitted. Filter by exact keys, a key prefix or kind (context / source); query matches key and value text on this device. Each context entry comes with its value \u2014 or value null + missing_on_device:true when it was written on another device. Each source comes with source_status same / changed / missing (re-hashed against the file here). work_assigned already shows each work's key index \u2014 pull goal and next_step first. auto/ keys (git, files_touched, tests) are machine-recorded facts: read them, never write them", workContextSearchInputShape, async ({ work_id, ...input }) => json("work_context_search", { work_id, ...input }, await tools.work_context_search(work_id, input)));
+server.tool("work_assigned", "Works whose standing owner is this runtime (handed to you by runtime id or by kind) \u2014 where to look when you start and nothing is leased yet. Returns work_id, title, status, handoff_note, project_id, lease_live and context_index (which keys exist, without their values). Then pull what you need with work_context_search", {}, async () => json("work_assigned", {}, await tools.work_assigned()));
+server.tool("work_task_create", "Split a Work Project: create one task under it (parent_work_id) and, if you pass to/note/context/sources, hand it to a runtime in the same call. A task cannot itself have tasks. If the task is created but handing it off fails, the error names the task id so you can retry work_handoff on it", workTaskCreateInputShape, async ({ parent_work_id, ...input }) => json("work_task_create", { parent_work_id, ...input }, await tools.work_task_create(parent_work_id, input)));
+server.tool("work_team", "Who else is working on the same Work Project: the project and every task under it, each with its address (the task's work id), who it is assigned to, whether a run is live on it, and is_you. Use an address with work_message to reach that agent", { work_id: exports_external.string().describe("any task or the project itself") }, async ({ work_id }) => json("work_team", { work_id }, await tools.work_team(work_id)));
+server.tool("work_message", `Send a note to another agent on the same Work Project (to_work_id = their address from work_team, from_work_id = your own task). It lands in their task's Work Project context under inbox/<your task>/..., which they read with work_context_search prefix "inbox/" \u2014 agents coordinate through work state, not a chat. The text stays on this device like other context values. Refused (nothing sent) when the address is not on your project`, workMessageInputShape, async ({ to_work_id, ...input }) => json("work_message", { to_work_id, ...input }, await tools.work_message(to_work_id, { ...input, text: restoreText(input.text, secrets) })));
+server.tool("work_freeze", "Release the live lease (stop_primary) \u2014 the previous epoch is rejected forever after this. This always requires a one-time intent token a human already issued out-of-band (openroly work intent <id> --action stop_primary); without it this call is rejected with explicit_user_intent_required, no matter who calls it", {
+  work_id: exports_external.string(),
+  intent: exports_external.string().optional().describe("one-time token from `openroly work intent <id> --action stop_primary`")
+}, async ({ work_id, intent }) => json("work_freeze", { work_id }, await tools.work_freeze(work_id, { intent })));
+var checkpointTicker = startCheckpointTicker(tools, {
+  cwd: process.cwd(),
+  intervalMs: CHECKPOINT_TICK_INTERVAL_SECS * 1000,
+  onError: (e) => console.error(`checkpoint tick failed: ${e instanceof Error ? e.message : String(e)}`)
+});
+process.stdin.on("end", () => checkpointTicker.stop());
+process.stdin.on("close", () => checkpointTicker.stop());
 await server.connect(new StdioServerTransport);

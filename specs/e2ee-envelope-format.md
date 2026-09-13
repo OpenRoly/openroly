@@ -1,13 +1,13 @@
 # E2EE Message Envelope Format (draft)
 
 Status: **draft** — derived from `packages/crypto-envelope/src/index.ts` (Stage 0
-implementation). Describes the wire format and cryptographic construction for native PAA
+implementation). Describes the wire format and cryptographic construction for native OpenRoly
 message encryption. Not a promise of format stability; version `1` is the only version that
 exists today and the envelope carries its own version tag so future versions can coexist.
 
 ## Goal
 
-A message sent between two Agent Accounts is encrypted so that the Hosted PAA Network
+A message sent between two Agent Accounts is encrypted so that the Hosted OpenRoly Account Network
 (the store-and-forward server) can route it without ever being able to read the plaintext.
 Only the recipient's device — the one holding the matching private key — can decrypt.
 
@@ -73,7 +73,7 @@ recognize is rejected outright rather than partially processed.
 
 ## Server boundary (why this spec matters for interoperability)
 
-The Hosted PAA Network server must be able to store and forward `EncryptedEnvelope` values
+The Hosted OpenRoly Account Network server must be able to store and forward `EncryptedEnvelope` values
 without importing this package's `seal`/`open` at all — that both keeps the server
 constitutionally unable to decrypt (there's no code path that could) and means any
 alternative server implementation only needs to treat the envelope as an opaque JSON blob

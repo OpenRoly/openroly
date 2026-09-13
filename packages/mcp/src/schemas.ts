@@ -1,3 +1,4 @@
+import { CONTEXT_SEARCH_DEFAULT_MAX_TOKENS, CONTEXT_SEARCH_MAX_TOKENS } from "@openroly/adapter";
 import { z } from "zod";
 
 // server.ts の各 tool 登録で使う zod shape。副作用(credential 解決・process.exit・stdio connect)を
@@ -63,4 +64,107 @@ export const rulesPutInputShape = {
     tz: z.string().optional().describe("IANA timezone for digests (e.g. America/Los_Angeles; default UTC)"),
     visibility: z.enum(["full", "masked", "local_only", "none"]).optional().describe("for cloud_visibility"),
   }),
+};
+
+// Work Core の proof(PBI-0400 / CAP-3 V9)。**run_id は必須** —— work の lease_holder_run を
+// 黙って写すと、lease を持たない Run の proof が holder の名前で残る(誰が打ったかが嘘になる)。
+// 名乗りとして受け取り、server の 1 文が lease holder と照合して落とす
+export const workProofInputShape = {
+  work_id: z.string().describe("work id (wrk_...)"),
+  run_id: z.string().describe("the id of the run that is doing the work (the run that holds the lease)"),
+  status: z
+    .enum(["passed", "failed", "skipped", "unknown"])
+    .describe("whether the check passed. Do not parse test output into anything finer"),
+  passed: z.number().int().nonnegative().optional(),
+  failed: z.number().int().nonnegative().optional(),
+  detail: z.string().max(2000).optional().describe("one line of context (e.g. the command that was run)"),
+};
+
+// Immutable Work Capsule(PBI-0406 / CAP-3 V2). **run_id は必須**(work_proof と同じ理由 —
+// lease holder を黙って写さない)。8 要素はどれも optional — 打ちたい分だけ渡す。それ以外の
+// key(conversation / messages / transcript を含む)は server の buildCapsule が壁を持つ
+// (会話は throw、他の未知 key は黙って落として dropped_keys で返す)
+export const workCapsuleInputShape = {
+  work_id: z.string().describe("work id (wrk_...)"),
+  run_id: z.string().describe("the id of the run that is doing the work (the run that holds the lease)"),
+  goal: z.unknown().optional(),
+  current_state: z.unknown().optional(),
+  decisions: z.unknown().optional(),
+  unresolved_questions: z.unknown().optional(),
+  relevant_artifacts: z.unknown().optional(),
+  relevant_memory: z.unknown().optional(),
+  git_state: z.unknown().optional(),
+  capability_requirements: z.unknown().optional(),
+};
+
+// Work Project context(PBI-0433・手描き 1 枚目)。value は MCP が端末の CAS に書き、server には索引だけが行く
+const contextShape = z
+  .record(z.string(), z.unknown())
+  .optional()
+  .describe(
+    "key → value facts for the next agent. Prefer the well-known keys, which the next agent reads first: goal, next_step, decisions, open_questions, failed_attempts, verified_findings (other names are allowed). auto/ and inbox/ are reserved for the machine. Key: letters, digits and _ . : / -, up to 128 chars",
+  );
+const sourcesShape = z
+  .array(z.string())
+  .optional()
+  .describe("repo-relative paths of files the next agent should read (e.g. docs/plan.md)");
+const expectedVersionsShape = z
+  .record(z.string(), z.number().int().nonnegative())
+  .optional()
+  .describe("key → the version you last saw (0 = must not exist yet). A newer value makes the whole call fail with stale_version");
+
+export const workHandoffInputShape = {
+  work_id: z.string().describe("work id (wrk_...)"),
+  to: z.string().optional().describe("runtime id or kind that should carry this work from now on"),
+  note: z.string().optional().describe("what the next runtime needs to know"),
+  context: contextShape,
+  sources: sourcesShape,
+  run_id: z.string().optional().describe("your own run id, recorded as the writer"),
+  expected_versions: expectedVersionsShape,
+};
+
+export const workContextPutInputShape = {
+  work_id: z.string().describe("work id (wrk_...)"),
+  context: contextShape,
+  sources: sourcesShape,
+  run_id: z.string().optional().describe("your own run id, recorded as the writer"),
+  expected_versions: expectedVersionsShape,
+};
+
+export const workContextSearchInputShape = {
+  work_id: z.string().describe("work id (wrk_...)"),
+  keys: z.array(z.string()).optional().describe("exact keys to pull (e.g. [\"A\", \"B\"])"),
+  prefix: z.string().optional().describe("pull keys that start with this"),
+  kind: z.enum(["context", "source"]).optional(),
+  query: z.string().optional().describe("substring matched against key and value on this device"),
+  index_only: z
+    .boolean()
+    .optional()
+    .describe("step 1: return every matching key with est_tokens and a short preview instead of its value"),
+  max_tokens: z
+    .number()
+    .int()
+    .min(1)
+    .max(CONTEXT_SEARCH_MAX_TOKENS)
+    .optional()
+    .describe(
+      `the most this call returns (default ${CONTEXT_SEARCH_DEFAULT_MAX_TOKENS}). Entries that do not fit are left out whole and listed in budget.omitted`,
+    ),
+};
+
+// Work Project の task と住所(PBI-0434・手描き 2 枚目)
+export const workTaskCreateInputShape = {
+  parent_work_id: z.string().describe("the Work Project (a work id) this task belongs to"),
+  title: z.string().describe("what this task is"),
+  to: z.string().optional().describe("runtime id or kind that should carry this task"),
+  note: z.string().optional().describe("what that runtime needs to know"),
+  context: contextShape,
+  sources: sourcesShape,
+  run_id: z.string().optional().describe("your own run id, recorded as the writer"),
+};
+
+export const workMessageInputShape = {
+  to_work_id: z.string().describe("the other agent's address = their task's work id (from work_team)"),
+  from_work_id: z.string().describe("your own task's work id — replies come back to it"),
+  text: z.string().max(4000).describe("what they need to know"),
 };

@@ -1,0 +1,8 @@
+# version probe(`<binary> <args>`)に許す引数(PBI-0244)。1 行 1 語・`#` は comment。
+# これ以外を registry の `version.args` に書くと registry ごと拒否する ——
+# probe は heartbeat 15 秒ごとに全 detector 分走るので、ここが「署名鍵で任意の引数を実行する口」になる。
+--version
+-v
+-V
+version
+--help

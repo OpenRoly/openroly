@@ -6,7 +6,7 @@ use tokio::process::{Child, Command};
 use crate::discovery::Found;
 use crate::egress::{self, Egress, EgressConfig};
 use crate::openroly_cli::cli_argv;
-use crate::registry::Registry;
+use crate::registry::{self, Registry};
 use crate::sandbox::{SandboxBackend, SandboxSpec, default_deny_read, default_writable_extra};
 
 /// dedicated session の instruction の上限(argv 1 要素)。これを超えると OS の argv 上限で
@@ -507,13 +507,29 @@ pub fn launch_with_scope(
     scope: Option<&str>,
     session_id: Option<&str>,
 ) -> Result<Child, String> {
+    check_program(program)?;
     launch_in(runtime, program, args, allowlist, session_dir, scope, session_id, None)
+}
+
+/// PBI-0244 の二重の 2 本目。**registry 由来の program**(id の bare name / scan で見つけた path)は
+/// spawn の直前でもう一度 deny を見る —— `parse` を迂回する経路(cache の読み方が変わる・
+/// 別の口が生える)が将来できても、shell / interpreter は起きない。
+///
+/// **`launch_api` はここを通さない**: あれが起こすのは registry の program ではなく
+/// `OPENROLY_CLI` の argv(dev / E2E では `bun <path>`)で、env を握れる者は既に何でも起こせる。
+/// 表で `bun` を止めても安全は 1mm も増えず、代わりに開発と E2E の API provider 経路が全部死ぬ。
+fn check_program(program: &str) -> Result<(), String> {
+    if registry::is_forbidden_program(program) {
+        eprintln!("broker: refused to launch a forbidden program {program:?}");
+        return Err("forbidden_program".to_string());
+    }
+    Ok(())
 }
 
 /// spawn の唯一の口。`contained` が有る時(= dedicated session。PBI-0238)は spawn の前に
 /// **必ず** `sandbox.wrap` を通し、cwd を lane の folder にし、egress proxy の env を載せる。
 /// `Command::new` から `spawn` までがここ 1 箇所なので、dedicated 経路に「wrap を通らない spawn」は無い
-/// (diagrams-check の規則 (a) が固定する)。Manual(`launch`)/ API provider(`launch_api`)は None。
+/// (旧 diagrams-check の規則 (a) が固定する)。Manual(`launch`)/ API provider(`launch_api`)は None。
 fn launch_in(
     runtime: &str,
     program: &str,
@@ -557,9 +573,20 @@ fn launch_in(
         // 閉じ込め無しで session_dir を渡す経路(test の cwd / env probe)。cwd は session_dir。
         cmd.current_dir(dir);
     }
+    // **止める単位を process group にする**(PBI-0403)。起こす子は `claude` / `codex` の CLI で、
+    // その下に tool 実行 / MCP server / node が付く —— 直の子だけに signal を送ると孫が孤児で
+    // 生き残るのに `reap_once` は直の子の `try_wait()` しか見ないので、`session_result` は
+    // 「終わった」と報告する(止めたと言って止まっていない)。`process_group(0)` = 子を新しい
+    // group の leader にする(pgid == 子の pid)ので、`sessions::cancel_with_escalate` が
+    // `kill(-pgid)` で group ごと落とせる。**wrap の後に置く**(stdio と同じ理由 ——
+    // `sandbox.wrap` は SANDBOX_EXEC を新しい起点にして cmd を丸ごと作り直すので、
+    // program / args / env / cwd 以外はここで付けないと sandboxed 経路(dedicated session
+    // = 孫を持つ経路そのもの)でだけ消える。unix だけ(broker は macOS / Linux)。
+    #[cfg(unix)]
+    cmd.process_group(0);
     // 両 CLI とも非 TTY stdin を読みに行って hang するため null に落とす(実測 — codex exec は
-    // "Reading additional input from stdin..." で待つ / claude -p も同様)。stdio は wrap の後に付ける
-    // (wrap は program / args / env / cwd しか写せない)。
+    // "Reading additional input from stdin..." で待つ / claude -p も同様)。stdio も同じ理由で
+    // wrap の後に付ける(wrap は program / args / env / cwd しか写せない)。
     cmd.stdin(std::process::Stdio::null());
     if let Some(dir) = session_dir {
         // dedicated session の出力は session_dir に残す(Cloud へは送らない — cost/内容の集計は
@@ -639,7 +666,8 @@ pub fn launch_api(
     } else {
         registry.allowlist()
     };
-    launch_with_allowlist(runtime, program, &args, &allowlist, None)
+    // `check_program` を通す `launch_with_allowlist` ではなく launch_in を直に呼ぶ(理由は check_program の doc)。
+    launch_in(runtime, program, &args, &allowlist, None, None, None, None)
 }
 
 /// 持ち込みの endpoint(PBI-0276)の runtime か。名前は account ごとに決まるので**署名済み
@@ -799,6 +827,9 @@ pub fn launch_session_scoped_in(
         "session_dir_failed".to_string()
     })?;
     check_launchable(registry, runtime)?;
+    // PBI-0244: dedicated 経路は launch_in を直に呼ぶので、ここで deny を見る(spawn 直前の 2 本目)
+    let program = resolve_program(found, runtime);
+    check_program(&program).inspect_err(|_| discard_session_dir(&session_dir))?;
     // lane の folder(AC-4)。rule に無い path は起こさない(半端な session_dir も残さない)。
     let folder = resolve_folder(isolation.folder, scope, &session_dir, home, &isolation.user_home)
         .inspect_err(|_| discard_session_dir(&session_dir))?;
@@ -831,7 +862,6 @@ pub fn launch_session_scoped_in(
         deny_read: default_deny_read(&isolation.user_home),
         proxy_port: egress.port,
     };
-    let program = resolve_program(found, runtime);
     let child = launch_in(
         runtime,
         &program,
@@ -878,6 +908,25 @@ mod tests {
     async fn name_outside_allowlist_is_rejected_without_spawning() {
         let result = launch_with_allowlist("not-allowed", "not-allowed", &[], &allow(&["allowed-name"]), None);
         assert_eq!(result.err(), Some("unknown_runtime".to_string()));
+    }
+
+    // PBI-0244 AC-3: **allowlist を通っていても** shell / interpreter は spawn しない。
+    // registry の parse を迂回した Found(`id:"bash"`)を直接渡す = 二重の 2 本目だけを裸で測る。
+    // 「spawn していない」は marker file で見る(Err を返しても子が動いていたら意味が無い)。
+    #[tokio::test]
+    async fn forbidden_program_is_not_spawned_even_if_allowlisted() {
+        let marker = std::env::temp_dir().join(format!("openroly-pbi0244-launch-{}", std::process::id()));
+        let _ = fs::remove_file(&marker);
+        let args = allow(&["-c", &format!("touch {}", marker.display())]);
+        let result = launch_with_allowlist("bash", "/bin/bash", &args, &allow(&["bash"]), None);
+        assert_eq!(result.err(), Some("forbidden_program".to_string()));
+        // bare name(PATH 解決)でも、版付きでも、大文字でも同じ
+        for program in ["bash", "sh", "python3.12", "/usr/bin/env", "ZSH"] {
+            let r = launch_with_allowlist("bash", program, &args, &allow(&["bash"]), None);
+            assert_eq!(r.err(), Some("forbidden_program".to_string()), "{program} が通った");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!marker.exists(), "forbidden な program を実際に spawn した");
     }
 
     #[tokio::test]
@@ -932,18 +981,25 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let dir_str = dir.to_string_lossy().to_string();
-        let print_scope = vec!["-c".to_string(), "printenv OPENROLY_SESSION_SCOPE".to_string()];
+        // **`sh -c` は使えない**(PBI-0244 の deny が spawn 直前で止める。それが正しい)。
+        // env を印字するだけの実行ファイルを 1 本置いて、それを program にする
+        let probe = dir.join("env-probe");
+        fs::write(&probe, "#!/bin/sh\nprintenv OPENROLY_SESSION_SCOPE\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&probe, fs::Permissions::from_mode(0o755)).unwrap();
+        let probe_path = probe.to_string_lossy().to_string();
+        let print_scope: Vec<String> = vec![];
 
         let mut child = launch_with_scope(
             "env-probe",
-            "sh",
+            &probe_path,
             &print_scope,
             &allow(&["env-probe"]),
             Some(&dir_str),
             Some("pst_test_scope_token"),
             None,
         )
-        .expect("sh should spawn");
+        .expect("env-probe should spawn");
         assert!(child.wait().await.unwrap().success());
         assert_eq!(
             fs::read_to_string(dir.join("stdout.log")).unwrap().trim(),
@@ -953,14 +1009,14 @@ mod tests {
 
         let mut child = launch_with_scope(
             "env-probe",
-            "sh",
+            &probe_path,
             &print_scope,
             &allow(&["env-probe"]),
             Some(&dir_str),
             None,
             None,
         )
-        .expect("sh should spawn");
+        .expect("env-probe should spawn");
         // printenv は未設定の変数で非 0 終了する = env に載っていない
         assert!(!child.wait().await.unwrap().success());
         assert_eq!(fs::read_to_string(dir.join("stdout.log")).unwrap().trim(), "");
@@ -1514,7 +1570,7 @@ mod tests {
     fn test_isolation() -> Isolation<'static> {
         Isolation {
             sandbox: &NO_SANDBOX,
-            egress: EgressConfig { allow: vec![], events: None, upstream_override: None },
+            egress: EgressConfig { allow: vec![], events: None, upstream_override: None, observe: None },
             folder: None,
             user_home: std::env::temp_dir(),
         }
@@ -1575,7 +1631,89 @@ mod tests {
         assert_eq!(lines.next().unwrap(), format!("http://127.0.0.1:{}||1", egress.port), "proxy env");
         assert!(marker.exists());
         assert!(fs::read_dir(session.join("scratch")).unwrap().next().is_none(), "scratch は空");
-        assert!(fs::read_to_string(session.join("sandbox.sb")).unwrap().contains(&format!("localhost:{}", egress.port)));
+        assert!(fs::read_to_string(session.join("sandbox.sb")).unwrap().contains(&format!("remote tcp \"*:{}\"", egress.port)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // **PBI-0403 AC-2 の不確実性#2**: sandbox(seatbelt)配下の子でも process group が効くか。
+    // `sandbox.wrap` は SANDBOX_EXEC を新しい起点にして cmd を丸ごと作り直すので、`process_group(0)`
+    // を wrap の**前**に置くと sandboxed(= dedicated session。孫を持つ経路そのもの)でだけ黙って
+    // 消える —— この test を書く前に実際にそれを踏んだ(wrap 前の位置では孫が生き残った)。
+    // dedicated 経路の実 spawn(`launch_session_scoped_in`)で測る: fake claude が孫を fork し、
+    // sessions::Sessions 経由の cancel で group ごと落ちるかを見る。
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn dedicated_session_cancel_kills_grandchild_through_sandbox() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::Duration;
+        let dir = tmp("grandchild-sandbox");
+        let pidfile = dir.join("grandchild.pid"); // TMPDIR 配下は profile が常に書ける(sandbox.rs:228)
+        let bin = dir.join("claude");
+        fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\nsleep 120 &\necho $! > \"{p}.tmp\"\nmv \"{p}.tmp\" \"{p}\"\nexec sleep 120\n",
+                p = pidfile.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        let found = vec![Found {
+            id: "claude".into(),
+            version: None,
+            source: "dir".into(),
+            path: bin.to_string_lossy().into(),
+            models: vec![],
+        }];
+        let iso = Isolation { sandbox: &crate::sandbox::Seatbelt, ..test_isolation() };
+        let (child, _egress) = launch_session_scoped_in(
+            &dir.join("home"),
+            &registry::builtin(),
+            &found,
+            "claude",
+            "instr",
+            "req-sandbox-grandchild",
+            None,
+            &test_env(),
+            &iso,
+        )
+        .expect("fake claude should spawn under seatbelt");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let gpid = loop {
+            if let Some(p) = fs::read_to_string(&pidfile).ok().and_then(|s| s.trim().parse::<u32>().ok()) {
+                break p;
+            }
+            assert!(std::time::Instant::now() < deadline, "sandboxed 経路で孫が起きない");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        let alive = |pid: u32| unsafe { libc::kill(pid as i32, 0) == 0 };
+        assert!(alive(gpid), "孫が起きていない = 何も測っていない");
+
+        let sessions = crate::sessions::Sessions::new(None);
+        sessions.insert(crate::sessions::Session {
+            request_id: "req-sandbox-grandchild".to_string(),
+            lane: "owner".to_string(),
+            account_id: "acc-1".to_string(),
+            thread_id: String::new(),
+            runtime: "claude".to_string(),
+            started_at: 0,
+            child: Some(child),
+            egress: None,
+            last_tool: None,
+            tool_count: 0,
+            exit: None,
+            cancel_reason: None,
+        });
+        assert!(sessions.cancel("req-sandbox-grandchild", "cancelled"));
+        let cancel_deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while alive(gpid) {
+            assert!(
+                std::time::Instant::now() < cancel_deadline,
+                "sandbox-exec 配下で起きた孫({gpid})が group kill で死なない(PBI-0403 AC-2 不確実性#2)"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 

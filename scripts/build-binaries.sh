@@ -57,8 +57,10 @@ done
 # glob は既に作った atn-* も拾うので、`*atn-mcp*` は飛ばす(2 回目の実行で self-copy しない)。
 for f in "$out"/openroly-mcp*; do
   [ -e "$f" ] || continue
-  case "$f" in *atn-mcp*) continue ;; esac
-  cp "$f" "${f/openroly-mcp/atn-mcp}"
+  # ${var/pat/rep} は POSIX sh に無い（ubuntu の /bin/sh = dash で Bad substitution 死 → exit 2・PBI-0380）
+  base=${f##*/}
+  case "$base" in *atn-mcp*) continue ;; esac
+  cp "$f" "$out/atn-mcp${base#openroly-mcp}"
 done
 if [ -e "$out/openroly" ]; then cp "$out/openroly" "$out/atn"; fi
 

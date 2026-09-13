@@ -1,5 +1,5 @@
 // Account-scoped Extension Sync(PBI-0005)の pure domain。
-// 判定順序は docs/diagrams.md 図8 と一致させる(diagrams-check.sh が検査):
+// 判定順序は docs/diagrams.md 図8 と一致させる(旧 diagrams-check が検査):
 // 1. kind が runtime の supportedKinds に無い → unsupported(ただし deleted_at 有りなら
 //    2 と同じ扱いで uninstall/noop、既に unsupported 記録済みなら再送せず noop — 冪等性)
 // 2. deleted_at あり → materialization 行が有る時だけ uninstall(無ければ noop)

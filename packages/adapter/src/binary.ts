@@ -10,7 +10,7 @@ import { openrolyHome } from "./credentials.ts";
 //
 // 同じ取得は launcher(`packages/mcp/openroly-mcp`)にも sh で在る —— bun も binary も無い環境では
 // TypeScript を動かす手段自体が無いため。URL の形・checksum の必須・tmp → rename は
-// 両方で同じ(diagrams-check の PBI-0137 規則が version と URL の形を両側で固定する)。
+// 両方で同じ(旧 diagrams-check の PBI-0137 規則が version と URL の形を両側で固定する)。
 
 /** Release の tag。`v${OPENROLY_BINARY_VERSION}` が tag 名になる(plugin.json の version と一致させる) */
 export const OPENROLY_BINARY_VERSION = "0.2.3";

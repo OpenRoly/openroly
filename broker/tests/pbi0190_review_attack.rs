@@ -11,6 +11,8 @@
 //! `broker` は lib crate を持たない（bin のみ）ので、`#[path]` で src を直接取り込む
 //! （`pbi0033_review_attack.rs` / `pbi0070_review_attack.rs` と同じ回避策）。
 
+#[path = "../src/procgroup.rs"]
+mod procgroup;
 #[path = "../src/env_compat.rs"]
 mod env_compat;
 #[path = "../src/registry.rs"]
@@ -63,7 +65,7 @@ fn strip_comments(source: &str, marker: &str) -> String {
 
 /// AC-X1: 「証明書が検証できない相手には繋がらない」を、**source と依存の両方**から撃つ。
 ///
-/// grep 1 本（`danger_accept_invalid` / `dangerous()`）は `diagrams-check.sh` に在るが、
+/// grep 1 本（`danger_accept_invalid` / `dangerous()`）は `旧 diagrams-check` に在るが、
 /// 逃げ道はそれだけではない: 独自の verifier を実装する・`native-tls` の
 /// `accept_invalid_hostnames` を使う・**自前で `ClientConfig` を組んで**
 /// `connect_async_tls_with_config` に渡す、でも同じ穴が開く。ここは

@@ -26,6 +26,12 @@ mod launch;
 mod egress;
 #[path = "../src/sandbox.rs"]
 mod sandbox;
+// PBI-0403 有界レビューで実測: launch.rs の test が `crate::sessions::` を参照するようになった
+// ため、sessions.rs も一緒に取り込まないとこのバイナリはコンパイルできない(E0433)。
+#[path = "../src/procgroup.rs"]
+mod procgroup;
+#[path = "../src/sessions.rs"]
+mod sessions;
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -52,7 +58,7 @@ async fn every_named_runtime_reaches_its_model_host_through_the_proxy() {
         let iso = launch::Isolation {
             sandbox: &sandbox::Seatbelt,
             // allowlist 空 = 全部 403。token 消費 0 で「どこへ出ようとしたか」だけを見る
-            egress: egress::EgressConfig { allow: vec![], events: Some(tx), upstream_override: None },
+            egress: egress::EgressConfig { allow: vec![], events: Some(tx), upstream_override: None, observe: None },
             folder: None,
             user_home: user_home.clone(),
         };

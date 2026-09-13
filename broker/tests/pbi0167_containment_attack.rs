@@ -24,6 +24,12 @@ mod launch;
 mod egress;
 #[path = "../src/sandbox.rs"]
 mod sandbox;
+// PBI-0403 有界レビューで実測: launch.rs の test が `crate::sessions::` を参照するようになった
+// ため、sessions.rs も一緒に取り込まないとこのバイナリはコンパイルできない(E0433)。
+#[path = "../src/procgroup.rs"]
+mod procgroup;
+#[path = "../src/sessions.rs"]
+mod sessions;
 
 use std::fs;
 use std::path::PathBuf;
@@ -72,7 +78,7 @@ async fn attacker_written_body_cannot_run_shell_in_any_runtime() {
             &env,
             &launch::Isolation {
                 sandbox: &sandbox::Seatbelt,
-                egress: egress::EgressConfig { allow: egress_allow(runtime), events: None, upstream_override: None },
+                egress: egress::EgressConfig { allow: egress_allow(runtime), events: None, upstream_override: None, observe: None },
                 folder: None,
                 user_home: std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())),
             },

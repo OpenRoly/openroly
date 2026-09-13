@@ -26,7 +26,12 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
-      - run: bun install --frozen-lockfile
+      # `bun.lock` は正本 repo で作られるので `apps/server` / `apps/web` の workspace 項を持つ。
+      # 公開 repo にその 2 つは無いので **公開側では frozen が原理的に通らない**
+      # (2026-09-07 実測: 公開 clone 4/4 で `lockfile had changes`・正本の fresh clone は pass。
+      # 2 つの package.json を戻すと通る = 機序は workspace 集合のずれ)。ここが赤いと binaries job が
+      # 落ち、`openroly install` / launcher が取りに来る asset が 1 つも出ない(PBI-0303 有界レビュー)。
+      - run: bun install --frozen-lockfile || bun install
 
       # cross target の runtime は bun が自分で download するので、3 target とも 1 job で作れる
       - name: build binaries
@@ -49,13 +54,15 @@ jobs:
       - uses: actions/checkout@v7
       - run: rustup target add x86_64-apple-darwin
 
-      # OPENROLY_REGISTRY_PUBLIC_KEY は compile-time pin(broker/src/registry.rs)。本番の署名鍵は
-      # dev と同一(shibubu-manager/secrets/REGISTRY.md 実測)なので、broker/registry.pub の
-      # 値がそのまま本番向けの正しい public key ——secret ではないのでそのまま焼く
+      # OPENROLY_REGISTRY_PUBLIC_KEY は compile-time pin(broker/src/registry.rs)。**本番は
+      # broker/registry.prod.pub**(PBI-0244) —— dev 鍵(registry.pub = apps/server/.env.local の
+      # 平文 seed の対)で署名した registry は、配った binary には通らない。public key なので
+      # secret ではなくそのまま焼く。file が無い / 中身が壊れていれば `set -e` で job が落ちる
+      # (cargo test の prod_pinned_key_parses_and_differs_from_dev が CI で先に落とす)
       - name: build broker (darwin-arm64 / darwin-x64)
         working-directory: broker
         run: |
-          key="$(cat registry.pub)"
+          key="$(cat registry.prod.pub)"
           OPENROLY_REGISTRY_PUBLIC_KEY="$key" cargo build --release
           OPENROLY_REGISTRY_PUBLIC_KEY="$key" cargo build --release --target x86_64-apple-darwin
           mkdir -p ../dist
@@ -75,7 +82,7 @@ jobs:
       - name: build broker (linux-x64)
         working-directory: broker
         run: |
-          key="$(cat registry.pub)"
+          key="$(cat registry.prod.pub)"
           OPENROLY_REGISTRY_PUBLIC_KEY="$key" cargo build --release
           mkdir -p ../dist
           cp target/release/openroly-broker ../dist/openroly-broker-linux-x64
