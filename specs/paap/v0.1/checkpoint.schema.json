@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:paap:v0.1:checkpoint",
+  "title": "PAAP v0.1 Checkpoint",
+  "description": "An immutable snapshot of where a work stands. The body is work state, never a conversation. Invariants the schema cannot express (I-1 to I-4, I-8) are in the specification.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["work_id", "version", "write_epoch", "content_hash", "body", "created_at"],
+  "properties": {
+    "work_id": { "$ref": "#/$defs/text" },
+    "version": { "type": "integer", "minimum": 1 },
+    "write_epoch": { "type": "integer", "minimum": 0 },
+    "run_id": { "$ref": "#/$defs/text" },
+    "content_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "based_on": {
+      "description": "The checkpoint this one was derived from (I-12). Without work_id: an earlier version of the same work (rollback). With work_id: a version of another work in the capsule (fork, clone).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version"],
+      "properties": {
+        "work_id": { "$ref": "#/$defs/text" },
+        "version": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "goal": {},
+        "current_state": {},
+        "decisions": {},
+        "unresolved_questions": {},
+        "failed_attempts": {},
+        "relevant_artifacts": {},
+        "relevant_memory": {},
+        "git_state": {},
+        "capability_requirements": {}
+      }
+    },
+    "created_at": { "$ref": "#/$defs/timestamp" },
+    "ext": { "$ref": "#/$defs/ext" }
+  },
+  "$defs": {
+    "text": { "type": "string", "minLength": 1 },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^(?:[0-9]{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)-02-29)T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{1,9})?Z$"
+    },
+    "ext": {
+      "type": "object",
+      "propertyNames": { "type": "string", "pattern": "^[a-z0-9-]+\\.[A-Za-z0-9_.-]+$" }
+    }
+  }
+}

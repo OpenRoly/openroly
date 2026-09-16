@@ -77,8 +77,9 @@ pub struct Detector {
     /// `verify` 前に読まない(allowlist と同じ不変条件 = 署名不一致の `native` は捨てる)。
     #[serde(default)]
     pub native: Option<serde_json::Value>,
-    /// session の egress proxy の allowlist 追加分(PBI-0240 / 図84)。`builtin_hosts` との union で
-    /// 使う —— catalog が古くても内蔵表が効く(撤去しない = この file の built-in と同じ不変条件)。
+    /// session の egress proxy の allowlist(PBI-0240 / 図84)。**PBI-0616 以降ここが正本** ——
+    /// `egress::builtin_hosts` との union ではなく、registry を読めた機ではこの値だけを使う
+    /// (読めない機だけ内蔵表へ退避する。内蔵表は撤去しない = この file の built-in と同じ不変条件)。
     #[serde(default)]
     pub egress: Option<EgressSpec>,
     /// sandbox ごと実測した印(PBI-0240)。`launch.headless` が有ってもこれが無い entry は
@@ -155,9 +156,39 @@ pub struct LaunchArgs {
     /// dedicated wake を generic に起こす引数(PBI-0240 / 図84)。**program は含まない**
     /// (`resolve_program` が `detect.binaries` の path を解決する)。各要素の中の
     /// `${instruction}` / `${folder}` / `${session_dir}` を置換する(shell は経由しない)。
-    /// official 3 種(claude / codex / gemini)は hard-code の実測 argv が勝つ。
+    /// official 2 種(claude / codex)は hard-code の実測 argv が勝つ。
     #[serde(default)]
     pub headless: Option<HeadlessArgs>,
+    /// openroly の MCP server を**どう渡すか**(PBI-0617)。無い entry は「事前配線」扱い。
+    #[serde(default)]
+    pub mcp_inject: Option<McpInject>,
+}
+
+/// `launch.mcp_inject`(PBI-0617)。runtime ごとに違う「MCP の渡し方」を data で表す ——
+/// Rust に残すのは方式の**解決**だけで、新しい runtime は registry の 1 entry で閉じ込めた session に
+/// openroly の tool を持てる。
+///
+/// **中身の集め方は data にしない**(実測の塊なので Rust に残す): claude の user config / plugin 台帳、
+/// codex の他 server の列挙は config の場所も書式も runtime 固有で、data にすると「推測で埋める」余地が増える。
+///
+/// - `config_flag`   : `file` を session_dir に書き、`argv` の `${mcp_file}` をその path に置換して足す(claude)
+/// - `disable_others`: openroly 以外の MCP server 1 つにつき `argv_template` の `${name}` を置換して足す(codex)
+/// - `prewired`      : 何も足さない(端末側の native config に `openroly install` が書いた設定を使う)
+///
+/// 知らない strategy 名は**起こさない**(`mcp_inject_unresolved`)—— 推測で claude の方式を当てはめると、
+/// MCP が載っていない session を「載った」と思って起こす。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct McpInject {
+    pub strategy: String,
+    /// `config_flag` が session_dir に書く file 名(basename だけ。path は渡させない)
+    #[serde(default)]
+    pub file: String,
+    /// `config_flag` が足す argv(`${mcp_file}` をちょうど 1 回含む)
+    #[serde(default)]
+    pub argv: Vec<String>,
+    /// `disable_others` が server 1 つにつき足す argv(`${name}` を含む)
+    #[serde(default)]
+    pub argv_template: Vec<String>,
 }
 
 /// `launch.headless`(PBI-0240)。argv の要素内置換のみで、env の上乗せは持たない ——
@@ -261,8 +292,19 @@ fn validate(d: &Detector) -> Result<(), String> {
         .iter()
         .chain(d.launch.existing.iter())
         .chain(d.launch.headless.iter().flat_map(|h| h.argv.iter()))
+        // `launch.mcp_inject.argv`(PBI-0617)も `${mcp_argv}` の位置で spawn に直に渡る。
+        // ここを chain しないと、argv 側だけ deny を掛けて「渡し方」の側から同じ形を入れられる
+        // (有界レビュー 2026-09-16: 新しい argv の口に古い門が付いていなかった)
+        .chain(d.launch.mcp_inject.iter().flat_map(|m| m.argv.iter()))
     {
         if a == "-c" || a == "-e" || a == "--eval" || a.starts_with("--eval=") {
+            return Err(format!("registry: forbidden launch arg {a:?} (id {})", d.id));
+        }
+    }
+    // `argv_template` だけは `-c` を通す —— codex の `-c mcp_servers.<name>.enabled=false` が実測の形。
+    // 引数の中に別の言語を持ち込む `-e` / `--eval` は同じく通さない
+    for a in d.launch.mcp_inject.iter().flat_map(|m| m.argv_template.iter()) {
+        if a == "-e" || a == "--eval" || a.starts_with("--eval=") {
             return Err(format!("registry: forbidden launch arg {a:?} (id {})", d.id));
         }
     }
@@ -322,6 +364,14 @@ impl Registry {
 
     pub fn detector(&self, id: &str) -> Option<&Detector> {
         self.detectors.iter().find(|d| d.id == id)
+    }
+
+    /// 配布 registry を読めていない機か(PBI-0616)。`load` が built-in を返すのは cache が無い /
+    /// 壊れている / 署名不一致の時だけなので、`origin` がそのまま「registry が読めたか」になる。
+    /// egress の allowlist は registry が正本で、この時だけ内蔵表(`egress::builtin_hosts`)に退避する
+    /// —— 判定はここ 1 箇所(退避した事を session の記録に残す側も同じ答えを使う)。
+    pub fn is_builtin_only(&self) -> bool {
+        self.origin == "builtin"
     }
 
     /// launch allowlist = `adapter` を持つ id(署名検証済み registry ∪ built-in は merged 済み前提)。
@@ -531,6 +581,17 @@ mod tests {
         assert_eq!(reg.origin, "builtin");
     }
 
+    // PBI-0616: 「配布 registry を読めたか」の判定は 1 箇所 —— egress の allowlist(内蔵表へ退避するか)と、
+    // 退避を session の記録に残す側が同じ答えを使う
+    #[test]
+    fn is_builtin_only_says_whether_the_distributed_registry_was_readable() {
+        assert!(builtin().is_builtin_only());
+        assert!(!parse(r#"{"version":1,"detectors":[{"id":"claude","adapter":"x"}]}"#, "cache").unwrap().is_builtin_only());
+        assert!(!parse(r#"{"version":1,"detectors":[]}"#, "fetched").unwrap().is_builtin_only());
+        // built-in で欠けた entry を埋めても「読めた registry」のまま(埋めただけで出所は cache)
+        assert!(!parse(r#"{"version":1,"detectors":[]}"#, "cache").unwrap().merged_with_builtin().is_builtin_only());
+    }
+
     #[test]
     fn session_args_come_from_registry_launch_block() {
         // PBI-0017 AC-2 の翻訳が registry 駆動になっても同じ引数になること
@@ -703,7 +764,7 @@ mod tests {
     }
 
     // PBI-0240: `launch.headless` / `egress` / `sandbox_verified` を解釈せずに保持する
-    // (official 3 種は hard-code が勝つが、generic 経路と egress の union はここから読む)
+    // (PBI-0618 以降は official 2 種の argv もここから読む)
     #[test]
     fn parse_keeps_headless_egress_and_sandbox_verified() {
         let reg = parse(
@@ -722,7 +783,12 @@ mod tests {
         assert_eq!(d.egress.as_ref().unwrap().hosts, vec!["api.foo.example".to_string(), "*.foo-cdn.example".to_string()]);
         assert_eq!(d.sandbox_verified.as_deref(), Some("2026-09-12 foo 1.0"));
         // 無い entry は None(古い registry でも壊れない)
-        assert!(builtin().detector("claude").unwrap().launch.headless.is_none());
+        let bare = parse(r#"{"version":1,"detectors":[{"id":"bar","adapter":null}]}"#, "t").unwrap();
+        assert!(bare.detector("bar").unwrap().launch.headless.is_none());
+        assert!(bare.detector("bar").unwrap().egress.is_none());
+        // PBI-0618: built-in の official 2 種も起こし方を data で持つ(argv の正本が match arm から
+        // registry へ移った)。egress は今も持たない —— 通信先の正本は配布 catalog(PBI-0616)
+        assert!(builtin().detector("claude").unwrap().launch.headless.is_some());
         assert!(builtin().detector("claude").unwrap().egress.is_none());
     }
 

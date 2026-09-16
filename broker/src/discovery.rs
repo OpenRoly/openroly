@@ -134,14 +134,30 @@ impl VersionCache {
     }
 }
 
-/// `<path> <args>` を stdin null で実行し stdout の 1 行目(≤ 64 文字)を返す。3s で kill。
+/// `<path> <args>` を stdin null で実行し stdout の 1 行目(≤ 64 文字)を返す。`PROBE_TIMEOUT` で kill。
+fn run_version_probe(path: &Path, args: &[String]) -> Option<String> {
+    run_version_probe_with_timeout(path, args, PROBE_TIMEOUT)
+}
+
+/// `run_version_probe` の timeout を差し替え可能にした版(`adopt_one(cli, timeout, spec)` と同じ形
+/// —— 本番は `run_version_probe` が `PROBE_TIMEOUT` を渡す薄い wrapper)。
+///
+/// PBI-0468: `pbi0405_discovery_probe_grandchild_group_kill` が本番と同じ `PROBE_TIMEOUT`(3s)経由で
+/// group-kill を測っていたが、fork/exec 経路が詰まっている(他 test の同時 spawn 等)と、孫を fork する
+/// 所まで exec が届く前に timeout が発火し「孫が起きていない」で無 signal のまま test が red になって
+/// いた(2026-09-13 実測: 兄弟 test を同時 fork/exec 負荷として走らせると 6 回に 1 回 再現。CPU-bound な
+/// busy loop だけの負荷(load 13〜25)では 0/5 = CPU 時間の競合ではなく fork/exec 経路の詰まりが原因)。
+/// `read_pid_within` の待ち時間を延ばしても直らない —— `kill_group` は timeout 発火時点の子(まだ
+/// exec すら終えていないかもしれない)の group に SIGKILL するので、孫が現れる前に子ごと死ぬだけ。
+/// 検査したいのは「timeout が来たら group ごと死ぬ」であって「本番の 3 秒以内に孫が fork できる」
+/// ではないので、test 側にだけ猶予を持たせる(本番の `PROBE_TIMEOUT` は変えない — シグネチャ変更なし)。
 ///
 /// **pipe を使わない**: stdout を一時ファイルへ向け、子の終了を try_wait で待ってからファイルを読む。
 /// pipe 方式は write end が「別スレッドが同時に spawn した無関係な子プロセス」に継承されると
 /// EOF が来ずに読み手が固まる(macOS の std は pipe の FD_CLOEXEC 付与に隙間があり、broker 起動時の
 /// tokio worker / blocking pool の spawn と競合して実測で hang した)。ファイルなら継承の有無に
 /// 関係なく、子が exit した時点で内容が確定する。
-fn run_version_probe(path: &Path, args: &[String]) -> Option<String> {
+pub fn run_version_probe_with_timeout(path: &Path, args: &[String], timeout: Duration) -> Option<String> {
     // PBI-0244 の二重の 2 本目: parse の deny を迂回する経路が将来できても、**spawn の直前**で止める。
     // probe は heartbeat 15 秒ごとに全 detector 分走るので、ここが一番よく踏まれる spawn 口。
     if registry::is_forbidden_program(&path.to_string_lossy()) {
@@ -187,7 +203,7 @@ fn run_version_probe(path: &Path, args: &[String]) -> Option<String> {
         match child.try_wait() {
             Ok(Some(_)) => break true,
             Ok(None) => {
-                if start.elapsed() > PROBE_TIMEOUT {
+                if start.elapsed() > timeout {
                     // 見捨てる = group ごと落とす(PBI-0405 と同じ結論。孤児を積ませない)
                     let pid = child.id();
                     crate::procgroup::kill_group(pid, libc::SIGKILL);

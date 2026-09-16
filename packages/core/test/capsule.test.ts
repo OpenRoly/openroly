@@ -39,7 +39,7 @@ describe("buildCapsule(PBI-0406)", () => {
     }
   });
 
-  test("AC-4c: 8 要素以外の未知 key は黙って落とすのではなく droppedKeys で返す", () => {
+  test("AC-4c: CAPSULE_FIELDS 以外の未知 key は黙って落とすのではなく droppedKeys で返す", () => {
     const { body, droppedKeys } = buildCapsule({
       goal: "ship V2",
       current_state: "in progress",
@@ -50,9 +50,9 @@ describe("buildCapsule(PBI-0406)", () => {
     expect(droppedKeys.sort()).toEqual(["another_unknown", "totally_unknown"]);
   });
 
-  test("8 要素の名前は仕様どおり(CAPSULE_FIELDS)", () => {
+  test("9 要素の名前は仕様どおり(CAPSULE_FIELDS)", () => {
     expect(CAPSULE_FIELDS).toEqual([
-      "goal", "current_state", "decisions", "unresolved_questions",
+      "goal", "current_state", "decisions", "unresolved_questions", "failed_attempts",
       "relevant_artifacts", "relevant_memory", "git_state", "capability_requirements",
     ]);
   });

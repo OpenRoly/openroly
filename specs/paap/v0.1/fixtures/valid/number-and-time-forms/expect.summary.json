@@ -1,0 +1,28 @@
+{
+  "protocol": "paap/0.1",
+  "handle": "@alice",
+  "display_name": "Alice",
+  "current_work": {
+    "id": "wrk_01936b2a7c4e7a1b9f3d2e8c6a5b4d21",
+    "title": "Invoice CSV export",
+    "status": "running"
+  },
+  "latest_checkpoint": {
+    "version": 3,
+    "write_epoch": 1,
+    "content_hash": "6bdd557b9038577bbe4cdc73bbe4dc9da65edac79257372d82abb9f1133f5a01",
+    "brief_sections": [
+      "goal",
+      "current_state",
+      "failed_attempts",
+      "capability_requirements"
+    ]
+  },
+  "last_handoff": null,
+  "reenter": {
+    "credential_refs": [
+      "GITHUB_TOKEN"
+    ],
+    "devices": 1
+  }
+}

@@ -50,7 +50,6 @@ describe("openroly watch-dirs", () => {
     expect(lines).toEqual([join(home, ".claude.json"), join(home, ".claude", "skills")]);
     // **繋いでいない runtime は出さない**
     expect(res.stdout).not.toContain(".codex");
-    expect(res.stdout).not.toContain(".gemini");
   });
 
   test("2 つ繋がれば両方出て、全部が絶対 path(broker は相対を捨てる)", async () => {

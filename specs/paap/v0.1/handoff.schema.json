@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:paap:v0.1:handoff",
+  "title": "PAAP v0.1 Handoff",
+  "description": "Moving a work's write lease to another runtime in two phases. reserved_epoch = from_epoch + 1 (I-5) is checked by validators; the schema only fixes the shape.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "work_id",
+    "from_epoch",
+    "reserved_epoch",
+    "to_runtime",
+    "state",
+    "expires_at",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "id": { "$ref": "#/$defs/text" },
+    "work_id": { "$ref": "#/$defs/text" },
+    "from_run": { "$ref": "#/$defs/text" },
+    "from_epoch": { "$ref": "#/$defs/count" },
+    "reserved_epoch": { "$ref": "#/$defs/count" },
+    "to_runtime": { "$ref": "#/$defs/text" },
+    "source_state": { "type": "string", "enum": ["held", "lapsed"] },
+    "checkpoint_version": { "type": "integer", "minimum": 1 },
+    "state": { "type": "string", "enum": ["frozen", "capsule_ready", "routed", "committed", "failed"] },
+    "reason": { "$ref": "#/$defs/text" },
+    "note": { "$ref": "#/$defs/text" },
+    "expires_at": { "$ref": "#/$defs/timestamp" },
+    "created_at": { "$ref": "#/$defs/timestamp" },
+    "updated_at": { "$ref": "#/$defs/timestamp" },
+    "ext": { "$ref": "#/$defs/ext" }
+  },
+  "$defs": {
+    "text": { "type": "string", "minLength": 1 },
+    "count": { "type": "integer", "minimum": 0 },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^(?:[0-9]{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)-02-29)T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{1,9})?Z$"
+    },
+    "ext": {
+      "type": "object",
+      "propertyNames": { "type": "string", "pattern": "^[a-z0-9-]+\\.[A-Za-z0-9_.-]+$" }
+    }
+  }
+}

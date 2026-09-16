@@ -41,14 +41,15 @@ describe("runtime adapter contract", () => {
   test("id は一意で、未対応 runtime は解決できない", () => {
     expect(new Set(SUPPORTED_IDS).size).toBe(SUPPORTED_IDS.length);
     // 外部 API provider(PBI-0070 / EP-0009 C)は factory 1 つから 3 つ載る。実体は `openroly agent`
-    // PBI-0061 / W9c: gemini が 3 つ目の official CLI adapter(generic MCP-config の第 1 実例)
     // PBI-0210 AC-7: `<id>-api` は core の provider 表から導出(cli / api adapter / server / web で 1 つ)。
     // bundled catalog の generic entry(`adapter: "generic/native"` + `native`)はその後ろに並ぶ
     const apiIds = API_PROVIDERS.map((p) => `${p.id}-api`);
-    expect(SUPPORTED_IDS.slice(0, 3 + apiIds.length)).toEqual(["claude", "codex", "gemini", ...apiIds]);
+    expect(SUPPORTED_IDS.slice(0, 2 + apiIds.length)).toEqual(["claude", "codex", ...apiIds]);
     expect(apiIds).toContain("openrouter-api");
     expect(apiIds).toContain("ollama-local-api");
     expect(findAdapter("CLAUDE")?.id).toBe("claude");
+    // PBI-0543: Gemini CLI は対応から外した(Gemini API の `gemini-api` は別物で残る)
+    expect(findAdapter("gemini")?.id).toBeUndefined();
     // catalog に載っている generic entry は TS を 1 行も書かずに解決する(PBI-0210 の主張そのもの)
     expect(findAdapter("hermes")?.id).toBe("hermes");
     expect(findAdapter("kiro")?.id).toBe("kiro");

@@ -69,6 +69,7 @@ describe("MCP server の credential 解決", () => {
     const stderr = await new Response(proc.stderr).text();
     expect(await proc.exited).toBe(1);
     expect(stderr).toContain("credential was found");
-    expect(stderr).toContain("openroly install claude");
+    expect(stderr).toContain("openroly pair claude");
+    expect(stderr).not.toContain("openroly install");
   }, 30_000);
 });

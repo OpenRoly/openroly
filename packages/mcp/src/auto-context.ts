@@ -15,7 +15,7 @@ import { execFileSync } from "node:child_process";
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
-import { parsePorcelainZ } from "./git-state.ts";
+import { parsePorcelainZ } from "@openroly/core/node";
 import type { AccountTools } from "./tools.ts";
 
 export const AUTO_KEYS = {

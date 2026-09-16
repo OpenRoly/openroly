@@ -1,5 +1,6 @@
 {
-  "note": "catalog-build の入力その 2(PBI-0210)。上流一覧(upstream/agent-catalog/*.csv)は名前と検知 dir しか持たないので、`native`(config をどこにどう書くか)は **人が実機か公式 doc で確かめた物だけ** をここに書く。推測で書かない —— 分からない項目は省く(= unsupported / fail-closed)。`verified` は cli:<ver>(実 CLI の argv を叩いた) / file:<path>(実在する config を読んで key と形を確かめた) / docs(公式 doc のみ。sources に URL)。`aliases` は上流 CSV 側の id(その行の検知 dir と skills dir をこの entry が吸い上げる)。 層 B(desktop app / IDE)は MCP file を実測済みでも `adapter: null` のまま = 検知だけ —— `adapter ≠ null` は broker の launch allowlist と Manual routing の選択肢も同時に広げるので、`openroly wake` で起こせない物を generic に昇格させると「選べるのに起きない」を作る(PBI-0288 で分ける)。",
+  "note": "catalog-build の入力その 2(PBI-0210)。上流一覧(upstream/agent-catalog/*.csv)は名前と検知 dir しか持たないので、`native`(config をどこにどう書くか)は **人が実機か公式 doc で確かめた物だけ** をここに書く。推測で書かない —— 分からない項目は省く(= unsupported / fail-closed)。`verified` は cli:<ver>(実 CLI の argv を叩いた) / file:<path>(実在する config を読んで key と形を確かめた) / docs(公式 doc のみ。sources に URL)。`aliases` は上流 CSV 側の id(その行の検知 dir と skills dir をこの entry が吸い上げる)。 層 B(desktop app / IDE)は MCP file を実測済みでも `adapter: null` のまま = 検知だけ —— `adapter ≠ null` は broker の launch allowlist と Manual routing の選択肢も同時に広げるので、`openroly wake` で起こせない物を generic に昇格させると「選べるのに起きない」を作る(PBI-0288 で分ける)。 `exclude` は上流 CSV に在っても entry にしない上流 id —— 対応しないと owner が決めた物(gemini-cli = PBI-0543)。上流の recipe を引き直しても戻らないよう、CSV ではなくここで落とす。",
+  "exclude": ["gemini-cli"],
   "entries": [
     {
       "id": "claude",
@@ -30,8 +31,37 @@
         "new": [],
         "existing": [
           "--continue"
-        ]
+        ],
+        "headless": {
+          "argv": [
+            "-p",
+            "${instruction}",
+            "--tools",
+            "",
+            "--setting-sources",
+            "project",
+            "${mcp_argv}",
+            "--permission-mode",
+            "dontAsk",
+            "--allowedTools",
+            "mcp__openroly",
+            "--output-format",
+            "json",
+            "--max-turns",
+            "${max_turns}"
+          ]
+        },
+        "mcp_inject": {
+          "strategy": "config_flag",
+          "file": "openroly-mcp.json",
+          "argv": [
+            "--strict-mcp-config",
+            "--mcp-config",
+            "${mcp_file}"
+          ]
+        }
       },
+      "note": "dedicated wake の起こし方（PBI-0618 で broker の match arm から降ろした。実測 C = PBI-0019 / 実測 E = PBI-0167, 2026-09-02 Claude Code 2.1.258）。`--allowedTools mcp__openroly` **だけでは Bash が通る** —— `--permission-mode dontAsk` は「聞かずに実行する」であって allow list ではなく、user の settings.json に allow:[\"Bash\"] が有ろうと無かろうと Bash は動いた。組込み tool を落とすのは `--tools \"\"`（組込みを 1 つも積まない。MCP tool は別枠なので openroly は残る）。`--setting-sources project` は user / local の settings.json（allow 規則と hooks）を読ませないためだが、MCP の登録もそこに在るので openroly の定義は session_dir に複製して渡す（launch.mcp_inject = config_flag）。`--tools` / `--mcp-config` / `--allowedTools` は可変長引数なので **直後には必ず別の flag を置く** —— positional が続くと flag が食う（`--mcp-config <path> mcp list` が \"MCP config file not found: .../mcp\" に化けた）。catalog-build がこの並びを検証する。`${mcp_argv}` は launch.mcp_inject が組んだ引数の差し込み位置、`${max_turns}` は broker の定数（コスト上限。実測 C: 3 turn で $0.31〜0.39）—— 1 session の turn 上限を、catalog の署名し直し無しに動かせる所へ残す。",
       "capabilities": [
         "coding",
         "shell",
@@ -139,8 +169,30 @@
         "existing": [
           "resume",
           "--last"
-        ]
+        ],
+        "headless": {
+          "argv": [
+            "exec",
+            "--skip-git-repo-check",
+            "--sandbox",
+            "read-only",
+            "${mcp_argv}",
+            "-C",
+            "${folder}",
+            "-o",
+            "${session_dir}/result.txt",
+            "${instruction}"
+          ]
+        },
+        "mcp_inject": {
+          "strategy": "disable_others",
+          "argv_template": [
+            "-c",
+            "mcp_servers.${name}.enabled=false"
+          ]
+        }
       },
+      "note": "dedicated wake の起こし方（PBI-0618 で broker の match arm から降ろした。実測 C = PBI-0019 / PBI-0167 review, codex-cli 0.151.0, 2026-09-02）。`--sandbox read-only` は既定と同じでも **明示する** —— 既定は `~/.codex/config.toml` の sandbox_mode で user が上書きできるので、攻撃者が書いた本文を読ませる session の権限を user の設定 file 任せにしない。MCP server は sandbox の外の別プロセスなので `--sandbox read-only` が掛からない（本文から playwright / obsidian 越しに network も書込みも届く）。codex には `--strict-mcp-config` 相当が無いので、openroly 以外を `-c mcp_servers.<name>.enabled=false` で 1 つずつ落とす（launch.mcp_inject = disable_others）。落とす相手の列挙は broker 側 —— `codex mcp list` を引く形は採らない（実測 7.1 秒かかり、auth を見るために server を実際に起こしてしまう）。`${instruction}` は最後（可変長の `-c` の直後に positional を置かない）。`-C` は作業 folder、`-o` は結果 file。",
       "capabilities": [
         "coding",
         "shell",
@@ -157,55 +209,6 @@
         "https://developers.openai.com/codex/skills/"
       ],
       "verified": "cli:0.30"
-    },
-    {
-      "id": "gemini",
-      "display_name": "Gemini CLI",
-      "kind": "cli",
-      "aliases": [
-        "gemini-cli"
-      ],
-      "detect": {
-        "binaries": [
-          "gemini"
-        ],
-        "packages": {
-          "npm": [
-            "@google/gemini-cli"
-          ],
-          "brew": []
-        },
-        "apps": [],
-        "services": []
-      },
-      "version": {
-        "args": [
-          "--version"
-        ]
-      },
-      "launch": {
-        "new": [],
-        "existing": [
-          "--resume",
-          "latest"
-        ]
-      },
-      "capabilities": [
-        "coding",
-        "shell",
-        "files"
-      ],
-      "adapter": "official/gemini",
-      "egress": {
-        "hosts": [
-          "generativelanguage.googleapis.com",
-          "oauth2.googleapis.com"
-        ]
-      },
-      "sources": [
-        "https://github.com/google-gemini/gemini-cli"
-      ],
-      "verified": "cli:0.4"
     },
     {
       "id": "ollama",
@@ -534,6 +537,8 @@
         "headless": {
           "argv": [
             "run",
+            "--format",
+            "json",
             "${instruction}"
           ]
         }
@@ -575,7 +580,8 @@
       },
       "egress": {
         "hosts": [
-          "models.opencode.ai"
+          "models.opencode.ai",
+          "api.z.ai"
         ]
       },
       "sandbox_verified": "2026-09-04 opencode 1.18.10",

@@ -1,0 +1,21 @@
+{
+  "id": "wrk_01936b2a7c4e7a1b9f3d2e8c6a5b4d22",
+  "owner": "account:acc_01936b2a7c4e7a1b9f3d2e8c6a5b4d10",
+  "title": "Review: rate limiting",
+  "status": "running",
+  "visibility": "full",
+  "lease": {
+    "epoch": 1,
+    "holder_run": "run-b21c"
+  },
+  "profile": "reviewer_blind",
+  "created_at": "2026-09-14T10:05:00Z",
+  "updated_at": "2026-09-14T10:20:00Z",
+  "forked_from": {
+    "work_id": "wrk_01936b2a7c4e7a1b9f3d2e8c6a5b4d21",
+    "checkpoint_version": 1
+  },
+  "ext": {
+    "acme.review.round": 1
+  }
+}

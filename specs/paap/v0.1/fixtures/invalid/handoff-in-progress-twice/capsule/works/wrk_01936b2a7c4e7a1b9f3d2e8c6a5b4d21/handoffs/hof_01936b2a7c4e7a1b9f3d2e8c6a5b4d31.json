@@ -1,0 +1,14 @@
+{
+  "id": "hof_01936b2a7c4e7a1b9f3d2e8c6a5b4d31",
+  "work_id": "wrk_01936b2a7c4e7a1b9f3d2e8c6a5b4d21",
+  "from_run": "run-7f3a",
+  "from_epoch": 1,
+  "reserved_epoch": 2,
+  "to_runtime": "codex",
+  "source_state": "held",
+  "state": "frozen",
+  "note": "Write the fix and run the auth tests",
+  "expires_at": "2026-09-14T10:25:00Z",
+  "created_at": "2026-09-14T10:20:00Z",
+  "updated_at": "2026-09-14T10:20:00Z"
+}

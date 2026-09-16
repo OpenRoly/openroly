@@ -1,0 +1,49 @@
+{
+  "work_id": "wrk_01936b2a7c4e7a1b9f3d2e8c6a5b4d21",
+  "version": 2,
+  "write_epoch": 1,
+  "run_id": "run-7f3a",
+  "content_hash": "7a16b2d70c42c1c63e78d5f0f4aa2140c2d392d289fc28fc8a6aca3213922741",
+  "body": {
+    "goal": "Export invoices as CSV for the accounting team",
+    "current_state": {
+      "summary": "The exporter writes rows; the date column is still in local time.",
+      "notes": {
+        "messages": [
+          {
+            "role": "user",
+            "text": "keep going"
+          }
+        ]
+      }
+    },
+    "decisions": [
+      "Dates are written as RFC 3339 UTC",
+      "One row per invoice line"
+    ],
+    "unresolved_questions": [
+      "Should credit notes be negative rows or a separate file?"
+    ],
+    "failed_attempts": [
+      {
+        "tried": "Streaming rows through the ORM cursor",
+        "why_it_failed": "The cursor keeps a transaction open for minutes and blocks migrations"
+      }
+    ],
+    "relevant_artifacts": [
+      "src/billing/export.ts",
+      "test/billing/export.test.ts"
+    ],
+    "git_state": {
+      "baseCommit": "3f1c2a9d8e7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d",
+      "dirty": 2
+    },
+    "capability_requirements": [
+      {
+        "capability": "github.pr.create",
+        "credential_ref": "env:GITHUB_TOKEN"
+      }
+    ]
+  },
+  "created_at": "2026-09-14T11:00:00Z"
+}

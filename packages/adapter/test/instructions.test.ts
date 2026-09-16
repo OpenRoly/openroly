@@ -4,7 +4,6 @@
 // 片方が消えない」を実測する(頭の中で足りる話ではないので、必ず file を読み直す)。
 import { claudeAdapter } from "../../../adapters/official/claude/src/index.ts";
 import { codexAdapter } from "../../../adapters/official/codex/src/index.ts";
-import { geminiAdapter } from "../../../adapters/official/gemini/src/index.ts";
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -100,7 +99,7 @@ describe("AC-1〜3 file 形 — 人が書いた行を 1 byte も動かさない"
   });
 
   test("extensionKinds に instructions が入る(reconcile が unsupported にしない)", () => {
-    for (const a of [claudeAdapter, codexAdapter, geminiAdapter, kiro()]) {
+    for (const a of [claudeAdapter, codexAdapter, kiro()]) {
       expect(a.extensionKinds).toContain("instructions");
     }
     // instructions を持たない registry entry は unsupported のまま
@@ -136,15 +135,7 @@ describe("AC-4 dir 形(kiro steering)", () => {
   });
 });
 
-describe("AC-5 gemini / opencode(file 形)", () => {
-  test("AC-5: gemini は ~/.gemini/GEMINI.md に同じブロックが入る", async () => {
-    await seed(".gemini/GEMINI.md", HUMAN);
-    await install(geminiAdapter, "foo", "G");
-    expect(await read(".gemini/GEMINI.md")).toBe(`${HUMAN}\n${block("foo", "G")}\n`);
-    await uninstall(geminiAdapter, "foo");
-    expect(await read(".gemini/GEMINI.md")).toBe(HUMAN);
-  });
-
+describe("AC-5 opencode / codex(file 形)", () => {
   test("AC-5: opencode(registry entry の native.instructions)も同じブロック", async () => {
     const opencode = createNativeAdapter("opencode", "opencode", {
       home: { default: "~/.config/opencode" },

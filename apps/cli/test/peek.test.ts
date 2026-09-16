@@ -13,6 +13,7 @@ const SECRET = "山田太郎";
 
 async function openroly(args: string[], env: Record<string, string>) {
   const proc = Bun.spawn(["bun", CLI, ...args], {
+    // machine-ok: 子の bun / CLI 自身が HOME（bun の cache）を要る。製品の状態は OPENROLY_HOME / OPENROLY_BROKER_HOME で隔離済み
     env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", ...env },
     stdout: "pipe",
     stderr: "pipe",
@@ -47,7 +48,7 @@ beforeAll(async () => {
   const t = 1_700_000_000;
   await session("req_old", { runtime: "codex", started: "2026-09-04T00:00:00Z", mtimeSec: t, done: true });
   await session("req_a", { runtime: "claude", started: "2026-09-04T01:00:00Z", mtimeSec: t + 100, done: false });
-  await session("req_new", { runtime: "gemini", started: "2026-09-04T02:00:00Z", mtimeSec: t + 200, done: false });
+  await session("req_new", { runtime: "opencode", started: "2026-09-04T02:00:00Z", mtimeSec: t + 200, done: false });
 });
 afterAll(() => rm(brokerHome, { recursive: true, force: true }));
 
@@ -73,7 +74,7 @@ describe("openroly peek(PBI-0224)", () => {
     expect(r.exitCode).toBe(0);
     const rows = r.stdout.trimEnd().split("\n");
     expect(rows.slice(0, 3)).toEqual([
-      "req_new  gemini  2026-09-04T02:00:00Z  running",
+      "req_new  opencode  2026-09-04T02:00:00Z  running",
       "req_a  claude  2026-09-04T01:00:00Z  running",
       "req_old  codex  2026-09-04T00:00:00Z  done",
     ]);
@@ -83,7 +84,7 @@ describe("openroly peek(PBI-0224)", () => {
   test("AC-3: 引数無しは最新 1 件を AC-2 の形で出す", async () => {
     const r = await openroly(["peek"], { OPENROLY_BROKER_HOME: brokerHome });
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toContain("session req_new  runtime gemini");
+    expect(r.stdout).toContain("session req_new  runtime opencode");
     expect(r.stdout).toContain("(session req_new).");
     expect(r.stdout).not.toContain("session req_a ");
     expect(r.stdout).toContain(PEEK_FOOTER);
@@ -103,6 +104,7 @@ describe("openroly peek(PBI-0224)", () => {
     await writeFile(join(dir, "instruction.txt"), "follow me\n");
     await writeFile(join(dir, "peek.jsonl"), line({ session: "req_follow", runtime: "claude", started: "x" }));
     const proc = Bun.spawn(["bun", CLI, "peek", "req_follow", "--follow"], {
+      // machine-ok: 子の bun / CLI 自身が HOME（bun の cache）を要る。製品の状態は OPENROLY_HOME / OPENROLY_BROKER_HOME で隔離済み
       env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", OPENROLY_BROKER_HOME: brokerHome },
       stdout: "pipe",
       stderr: "pipe",
@@ -126,6 +128,49 @@ describe("openroly peek(PBI-0224)", () => {
     const traversal = await openroly(["peek", "../x"], { OPENROLY_BROKER_HOME: brokerHome });
     expect(traversal.exitCode).toBe(1);
     expect(traversal.stderr).toContain("Invalid session id");
+  }, 30_000);
+
+  test("PBI-0548: broker が起こさなかった session(skipped.txt)は --list で skipped・peek <id> で理由 1 行", async () => {
+    const dir = join(sessionsDir(), "req_skip");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "instruction.txt"), "triage m1\n");
+    await writeFile(
+      join(dir, "skipped.txt"),
+      'skipped: lane_not_contained — opencode is woken only for work you hand it (this wake\'s lane: "triage"); claude can take this lane\n',
+    );
+    const list = await openroly(["peek", "--list"], { OPENROLY_BROKER_HOME: brokerHome });
+    expect(list.stdout).toContain("req_skip  -  -  skipped");
+    const r = await openroly(["peek", "req_skip"], { OPENROLY_BROKER_HOME: brokerHome });
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("(not started) skipped: lane_not_contained");
+    expect(r.stdout).toContain("claude can take this lane");
+    expect(r.stdout).not.toContain("(no tool calls recorded)");
+  }, 30_000);
+
+  test("PBI-0558: masking.txt の 1 行が header の下に出る", async () => {
+    const dir = join(sessionsDir(), "req_mask");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "instruction.txt"), "triage m1\n");
+    await writeFile(join(dir, "peek.jsonl"), line({ session: "req_mask", runtime: "claude", started: "x" }));
+    await writeFile(join(dir, "masking.txt"), "masking: outside sandbox\n");
+    const r = await openroly(["peek", "req_mask"], { OPENROLY_BROKER_HOME: brokerHome });
+    expect(r.exitCode).toBe(0);
+    const lines = r.stdout.split("\n");
+    expect(lines[0]).toStartWith("session req_mask  runtime claude");
+    expect(lines[1]).toBe("masking: outside sandbox");
+  }, 30_000);
+
+  test("PBI-0616: egress.txt(allowlist の出所)の 1 行が header の下に出る", async () => {
+    const dir = join(sessionsDir(), "req_egress");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "instruction.txt"), "triage e1\n");
+    await writeFile(join(dir, "peek.jsonl"), line({ session: "req_egress", runtime: "claude", started: "x" }));
+    await writeFile(join(dir, "egress.txt"), "egress: registry_unavailable — the allowlist came from the broker's built-in table\n");
+    const r = await openroly(["peek", "req_egress"], { OPENROLY_BROKER_HOME: brokerHome });
+    expect(r.exitCode).toBe(0);
+    const lines = r.stdout.split("\n");
+    expect(lines[0]).toStartWith("session req_egress  runtime claude");
+    expect(lines[1]).toContain("registry_unavailable");
   }, 30_000);
 
   test("usage に peek が載る", async () => {

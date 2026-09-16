@@ -1,0 +1,12 @@
+{
+  "work_id": "wrk_01936b2a7c4e7a1b9f3d2e8c6a5b4d21",
+  "version": 1,
+  "write_epoch": 1,
+  "run_id": "run-7f3a",
+  "content_hash": "6b7b0bd059fd701124a718109ae2c7cc396cfa40fdd9bd3ffcdfb2f5e4e12848",
+  "body": {
+    "goal": "Fix the flaky login test",
+    "current_state": "Reproduced: fails when the clock crosses a second boundary."
+  },
+  "created_at": "2026-09-14T09:40:00Z"
+}

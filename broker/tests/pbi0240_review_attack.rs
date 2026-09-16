@@ -14,11 +14,18 @@
 mod c1;
 #[path = "../src/egress.rs"]
 mod egress;
+// egress.rs の Drop が外の masking server を group ごと落とす(PBI-0558)
+#[path = "../src/procgroup.rs"]
+mod procgroup;
 
 use egress::hosts_for;
 
+// PBI-0616 で `hosts_for` は (catalog_hosts, registry_ok, ..) の 5 引数 + Result になった。
+// この test が測るのは `base_url_env` の host 追加なので、registry は読めた事にして
+// catalog の値を 1 つ渡す(空だと `no_egress_hosts` で Err になり、測りたい面に届かない)。
 fn claude_allow(base_url: &str) -> Vec<String> {
-    hosts_for(&[], "claude", "", Some(base_url))
+    hosts_for(&["api.anthropic.com".to_string()], true, "claude", "", Some(base_url))
+        .expect("catalog host が 1 つ在るので allowlist は組める")
 }
 
 #[test]

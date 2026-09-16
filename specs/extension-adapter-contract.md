@@ -7,7 +7,7 @@ the code defines. Treat field and method names as the current reference implemen
 frozen wire format.
 
 This document describes the boundary a runtime integration must implement to attach an
-Agent Account to a runtime (Claude Code, Codex, Gemini CLI, API-key models, and future runtimes).
+Agent Account to a runtime (Claude Code, Codex, API-key models, and future runtimes).
 
 ## Why this boundary exists
 
@@ -39,7 +39,7 @@ interface ExtensionAdapter {
 ```
 
 Full type definitions: `packages/adapter/src/contract.ts`. Official implementations:
-`adapters/official/{claude,codex,gemini,api}`.
+`adapters/official/{claude,codex,api}`.
 
 ### `AdapterContext`
 

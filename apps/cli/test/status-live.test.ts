@@ -13,6 +13,7 @@ const CLI = fileURLToPath(new URL("../src/openroly.ts", import.meta.url));
 
 async function openroly(args: string[], env: Record<string, string>) {
   const proc = Bun.spawn(["bun", CLI, ...args], {
+    // machine-ok: 子の bun / CLI 自身が HOME（bun の cache）を要る。製品の状態は OPENROLY_HOME / OPENROLY_BROKER_HOME で隔離済み
     env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", ...env },
     stdout: "pipe",
     stderr: "pipe",

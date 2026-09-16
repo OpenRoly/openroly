@@ -6,7 +6,10 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { fileURLToPath } from "node:url";
 
-const SERVER = fileURLToPath(new URL("../src/server.ts", import.meta.url));
+// PBI-0639: C1(専用 uid)の session からは repo(`~/Downloads` は 700)が 1 byte も読めないので、
+// e2e は probe と server を **bundle** して読める所に置き、server の在処をここで渡す。
+// 渡されなければ今までどおり repo の source(手元で直に叩く時の道)
+const SERVER = process.env.OPENROLY_PEEK_PROBE_SERVER ?? fileURLToPath(new URL("../src/server.ts", import.meta.url));
 const env = Object.fromEntries(Object.entries(process.env).filter((kv): kv is [string, string] => kv[1] !== undefined));
 const client = new Client({ name: "e2e-peek-probe", version: "0.0.0" });
 await client.connect(new StdioClientTransport({ command: process.execPath, args: [SERVER], env, stderr: "inherit" }));

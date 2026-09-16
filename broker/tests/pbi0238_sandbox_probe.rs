@@ -60,7 +60,6 @@ fn containment(dir: &Path) -> ContainmentEnv {
         claude_config: config,
         claude_plugin_registry: dir.join("no-such-plugins.json"),
         codex_config,
-        gemini_admin_dirs: vec![dir.join("no-such-admin-policies")],
     }
 }
 
@@ -166,8 +165,8 @@ async fn fake_runtime_inside_seatbelt_can_only_write_its_folder_and_talk_to_its_
         user_home: user_home.clone(),
         c1: &C1_OFF,
     };
-    let (mut child, egress) =
-        launch_session_scoped_in(&home, &registry::builtin(), &found, "claude", "INSTR", "req-probe", None, &containment(&dir), &iso)
+    let (mut child, egress, _hub) =
+        launch_session_scoped_in(&home, &registry::builtin(), &found, "claude", "INSTR", "req-probe", None, &containment(&dir), &iso, None)
             .expect("spawn inside seatbelt");
     let status = child.wait().await.unwrap();
     let out = stdout_of(&home, "req-probe");
@@ -229,8 +228,8 @@ async fn a_session_cannot_reach_another_sessions_port_or_folder() {
         user_home: user_home.clone(),
         c1: &C1_OFF,
     };
-    let (mut child_b, egress_b) =
-        launch_session_scoped_in(&home, &registry::builtin(), &found_b, "claude", "B", "req-b", None, &env, &iso_b).expect("spawn B");
+    let (mut child_b, egress_b, _hub_b) =
+        launch_session_scoped_in(&home, &registry::builtin(), &found_b, "claude", "B", "req-b", None, &env, &iso_b, None).expect("spawn B");
     assert!(child_b.wait().await.unwrap().success());
     let port_b = egress_b.port;
 
@@ -255,8 +254,8 @@ async fn a_session_cannot_reach_another_sessions_port_or_folder() {
         user_home: user_home.clone(),
         c1: &C1_OFF,
     };
-    let (mut child_a, egress_a) =
-        launch_session_scoped_in(&home, &registry::builtin(), &found_a, "claude", "A", "req-a", None, &env, &iso_a).expect("spawn A");
+    let (mut child_a, egress_a, _hub_a) =
+        launch_session_scoped_in(&home, &registry::builtin(), &found_a, "claude", "A", "req-a", None, &env, &iso_a, None).expect("spawn A");
     assert!(child_a.wait().await.unwrap().success());
     assert_ne!(egress_a.port, port_b, "2 session が同じ proxy port");
     let out = stdout_of(&home, "req-a");
@@ -270,5 +269,68 @@ async fn a_session_cannot_reach_another_sessions_port_or_folder() {
     assert!(!prof_a.contains(&format!("remote tcp \"*:{port_b}\"")));
     drop(egress_a);
     drop(egress_b);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// PBI-0548 AC-4: catalog engine(opencode)の work lane session は、自分の config / data / state / cache には書けて、
+// Claude Code / Codex の設定(次の手動起動で sandbox の外で走る hooks)と `~/.config` の他所には書けない。
+#[tokio::test]
+async fn catalog_engine_writes_only_its_own_dirs() {
+    if !seatbelt_available() {
+        return;
+    }
+    let dir = fresh("oc-writable");
+    let home = dir.join("home");
+    let user_home = dir.join("userhome");
+    let folder = dir.join("proj");
+    for d in [".claude", ".codex", ".config/opencode", ".config/gh", ".local/share/opencode", ".local/state/opencode", ".cache/opencode"] {
+        fs::create_dir_all(user_home.join(d)).unwrap();
+    }
+    fs::create_dir_all(&folder).unwrap();
+    fs::write(user_home.join(".claude.json"), "{}").unwrap();
+    let h = user_home.display();
+    let probe = |n: &str, p: &str| format!("echo p > \"{h}/{p}\" 2>/dev/null && echo {n}=ok || echo {n}=deny\n");
+    let script = [
+        probe("claude_settings", ".claude/settings.json"),
+        probe("claude_json", ".claude.json"),
+        probe("codex", ".codex/config.toml"),
+        probe("other_config", ".config/gh/hosts.yml"),
+        probe("own_config", ".config/opencode/opencode.json"),
+        probe("own_data", ".local/share/opencode/x"),
+        probe("own_state", ".local/state/opencode/x"),
+        probe("own_cache", ".cache/opencode/x"),
+    ]
+    .concat();
+    let bin = dir.join("opencode");
+    fs::write(&bin, format!("#!/bin/sh\n{script}")).unwrap();
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    let found = vec![Found { id: "opencode".into(), version: None, source: "dir".into(), path: bin.to_string_lossy().into(), models: vec![] }];
+    let reg = registry::parse(
+        r#"{"version":1,"detectors":[{"id":"opencode","detect":{"binaries":["opencode"]},"adapter":"generic/native",
+           "launch":{"headless":{"argv":["run","${instruction}"]}},"sandbox_verified":"test"}]}"#,
+        "t",
+    )
+    .unwrap();
+    let folder_str = folder.to_string_lossy().to_string();
+    let iso = Isolation {
+        sandbox: &Seatbelt,
+        egress: EgressConfig { allow: vec![], events: None, upstream_override: None, observe: None },
+        folder: Some(&folder_str),
+        lane: "work",
+        user_home: user_home.clone(),
+        c1: &C1_OFF,
+    };
+    let (mut child, egress, _hub) =
+        launch_session_scoped_in(&home, &reg, &found, "opencode", "INSTR", "req-oc", None, &containment(&dir), &iso, None).expect("spawn");
+    assert!(child.wait().await.unwrap().success());
+    let out = stdout_of(&home, "req-oc");
+    for denied in ["claude_settings", "claude_json", "codex", "other_config"] {
+        assert!(has(&out, &format!("{denied}=deny")), "{denied} に書けた\n{out}");
+    }
+    for own in ["own_config", "own_data", "own_state", "own_cache"] {
+        assert!(has(&out, &format!("{own}=ok")), "{own} に書けない\n{out}");
+    }
+    assert!(!user_home.join(".claude/settings.json").exists());
+    drop(egress);
     let _ = fs::remove_dir_all(&dir);
 }

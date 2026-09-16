@@ -49,6 +49,7 @@ async function freshEnv() {
       runtime_id: "rt_broker_claim_attack",
       token: "par_claim_attack",
       base_url: "http://127.0.0.1:9",
+      // machine-ok: 実装側（openroly.ts の hostname()）と同じ値なので両辺が一緒に動く
       name: hostname(),
       paired_at: new Date().toISOString(),
     },
@@ -60,6 +61,7 @@ async function freshEnv() {
     lock: join(brokerHome, LOCK_NAME),
     env: {
       PATH: process.env.PATH ?? "",
+      // machine-ok: 子の bun / CLI 自身が HOME（bun の cache）を要る。製品の状態は OPENROLY_HOME / OPENROLY_BROKER_HOME で隔離済み
       HOME: process.env.HOME ?? "",
       OPENROLY_HOME: home,
       OPENROLY_BROKER_HOME: brokerHome,

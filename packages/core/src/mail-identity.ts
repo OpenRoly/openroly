@@ -2,6 +2,8 @@
 // 判定をここ 1 箇所に置く —— server(登録 API・inbound 解決)と test が同じ規則を見る。
 // DNS も DB も触らない(core は I/O を持たない)。
 
+import { LEADING_AT } from "./handle.ts";
+
 /**
  * 持ち込みの 2 種。**MX を自分で向けられるか**で割れる:
  *  - `domain`  = 自分の DNS を持つ(shibubu.ai)。MX を OpenRoly に向ければ任意 local-part が直接届く
@@ -72,7 +74,7 @@ export function normalizeMailIdentityValue(
   const s = input.trim().toLowerCase().replace(/\.+$/, "");
   if (s === "") return null;
   if (kind === "domain") {
-    const d = s.replace(/^@+/, "");
+    const d = s.replace(LEADING_AT, "");
     return isDomainLike(d) ? d : null;
   }
   if (s.length > ADDRESS_MAX) return null;

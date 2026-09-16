@@ -120,6 +120,7 @@ async function freshEnv(opts: { launchctl?: { list: number; load: number; unload
     brokerLog: join(brokerHome, "broker.log"),
     env: {
       PATH: `${fakeOpenDir}:${process.env.PATH ?? ""}`,
+      // machine-ok: 子の bun / CLI 自身が HOME（bun の cache）を要る。製品の状態は OPENROLY_HOME / OPENROLY_BROKER_HOME で隔離済み
       HOME: process.env.HOME ?? "",
       OPENROLY_HOME: home,
       OPENROLY_BROKER_HOME: brokerHome,

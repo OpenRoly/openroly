@@ -88,7 +88,7 @@ up a new runtime's dedicated wake is one entry:
 
 - `launch.headless.argv` is substituted element-wise: `${instruction}` (exactly once — the build
   fails otherwise), `${folder}`, `${session_dir}`. No shell is involved; one element stays one
-  argument. The official trio (claude / codex / gemini) keeps its measured argv in the broker and
+  argument. The official pair (claude / codex) keeps its measured argv in the broker and
   does **not** set `launch.headless`.
 - `egress.hosts` entries are hostnames: a leading `*.` wildcard is the only wildcard allowed; URLs
   and mid-label wildcards fail the build (and the broker's `validate` rejects them even in a signed

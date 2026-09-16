@@ -1,0 +1,22 @@
+{
+  "work_id": "wrk_01936b2a7c4e7a1b9f3d2e8c6a5b4d22",
+  "version": 1,
+  "write_epoch": 1,
+  "run_id": "run-7f3a",
+  "content_hash": "21ad958c4d8f25234e91264e0c1cb3e0846511584e620108217ea87350c2d1f4",
+  "based_on": {
+    "work_id": "wrk_01936b2a7c4e7a1b9f3d2e8c6a5b4d21",
+    "version": 1
+  },
+  "body": {
+    "goal": "Add rate limiting to the public API",
+    "relevant_artifacts": [
+      "src/api/rate-limit.ts"
+    ],
+    "git_state": {
+      "baseCommit": "c0ffee1234567890abcdef1234567890abcdef12",
+      "dirty": 0
+    }
+  },
+  "created_at": "2026-09-14T10:06:00Z"
+}

@@ -1,16 +1,61 @@
 import { describe, expect, test } from "bun:test";
 import { normalizeHandle, parseRecipient, validateHandle } from "../src/handle.ts";
+import { normalizeMailIdentityValue } from "../src/mail-identity.ts";
 
 describe("normalizeHandle", () => {
-  test("trim + 先頭@除去 + 小文字化", () => {
+  test("trim + 先頭@を 1 個だけ除去 + 小文字化", () => {
     expect(normalizeHandle(" @Aya ")).toBe("aya");
-    expect(normalizeHandle("@@AYA")).toBe("aya");
+    // PBI-0347: `@` が 2 個以上なら剥がさない(黙って直さず後段で弾かせる)
+    expect(normalizeHandle("@@AYA")).toBe("@@aya");
   });
-  test("冪等", () => {
-    for (const input of [" @Aya ", "aya_01", "@X_9"]) {
+  test("冪等(剥がした後に @ / 空白が先頭へ来る入力も)", () => {
+    for (const input of [" @Aya ", "aya_01", "@X_9", "@@alice", "@@@alice", "@ alice", "@ @alice", "@", "@@"]) {
       const once = normalizeHandle(input);
       expect(normalizeHandle(once)).toBe(once);
     }
+  });
+});
+
+// PBI-0347: 入力 → 期待 の 1 対 1 表
+describe("PBI-0347 handle の先頭 @ は 1 個だけ", () => {
+  const cases: [string, ReturnType<typeof validateHandle>][] = [
+    ["@alice", { ok: true, handle: "alice" }], // AC-1
+    ["alice", { ok: true, handle: "alice" }], // AC-3
+    ["@@alice", { ok: false, reason: "invalid_start" }], // AC-2
+    ["@@@alice", { ok: false, reason: "invalid_start" }], // AC-2
+    ["@ alice", { ok: false, reason: "invalid_start" }],
+  ];
+  for (const [input, want] of cases) {
+    test(`validateHandle(${JSON.stringify(input)})`, () => expect(validateHandle(input)).toEqual(want));
+  }
+  test("宛先判定でも `@@` は handle にも address にもならない", () => {
+    expect(parseRecipient("@@alice")).toBeNull();
+    expect(parseRecipient("@@@alice")).toBeNull();
+    expect(parseRecipient("@@alice@example.com")).toBeNull();
+    expect(parseRecipient("@alice")).toEqual({ kind: "handle", handle: "alice" });
+  });
+  test("持ち込み domain も同じ口(`@@example.com` を `example.com` に直さない)", () => {
+    expect(normalizeMailIdentityValue("domain", "@example.com")).toBe("example.com");
+    expect(normalizeMailIdentityValue("domain", "@@example.com")).toBeNull();
+  });
+});
+
+describe("PBI-0347 address は domain だけ小文字化", () => {
+  const domains = new Map([["openai.mail.example.com", "openai"]]);
+  const cases: [string, ReturnType<typeof parseRecipient>][] = [
+    ["Alice.Smith@Example.COM", { kind: "address", address: "Alice.Smith@example.com" }], // AC-4
+    [" @Alice.Smith@Example.COM ", { kind: "address", address: "Alice.Smith@example.com" }],
+    ["alice@example.com", { kind: "address", address: "alice@example.com" }],
+  ];
+  for (const [input, want] of cases) {
+    test(`parseRecipient(${JSON.stringify(input)})`, () => expect(parseRecipient(input, domains)).toEqual(want));
+  }
+  test("AC-6: provider 住所は今までどおり handle として小文字", () => {
+    expect(parseRecipient("TARO@OpenAI.Mail.Example.com", domains)).toEqual({
+      kind: "provider",
+      provider: "openai",
+      handle: "taro",
+    });
   });
 });
 

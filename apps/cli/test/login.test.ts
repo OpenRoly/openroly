@@ -163,6 +163,7 @@ async function freshEnv(
     launchctlLog,
     env: {
       PATH: `${fakeOpenDir}:${process.env.PATH ?? ""}`,
+      // machine-ok: 子の bun / CLI 自身が HOME（bun の cache）を要る。製品の状態は OPENROLY_HOME / OPENROLY_BROKER_HOME で隔離済み
       HOME: process.env.HOME ?? "",
       OPENROLY_HOME: home,
       OPENROLY_BROKER_HOME: brokerHome,
@@ -272,6 +273,7 @@ describe("openroly login / openroly broker (PBI-0046)", () => {
     expect(res.out).toContain("appear under Your AI");
 
     const file = await readJson(join(home, "credentials.json"));
+    // machine-ok: 実装側（openroly.ts の hostname()）と同じ値なので両辺が一緒に動く
     expect(file.runtimes.broker).toMatchObject({ name: hostname(), base_url: BASE_URL });
     expect(file.runtimes.broker.token).toMatch(/^par_login_/);
 
@@ -317,6 +319,7 @@ describe("openroly login / openroly broker (PBI-0046)", () => {
         runtime_id: "rt_broker_precreated",
         token,
         base_url: BASE_URL,
+        // machine-ok: 実装側（openroly.ts の hostname()）と同じ値なので両辺が一緒に動く
         name: hostname(),
         paired_at: new Date().toISOString(),
       },
@@ -338,6 +341,7 @@ describe("openroly login / openroly broker (PBI-0046)", () => {
         runtime_id: "rt_broker_other_server",
         token,
         base_url: BASE_URL,
+        // machine-ok: 実装側（openroly.ts の hostname()）と同じ値なので両辺が一緒に動く
         name: hostname(),
         paired_at: new Date().toISOString(),
       },
@@ -360,6 +364,7 @@ describe("openroly login / openroly broker (PBI-0046)", () => {
         runtime_id: "rt_broker_ac4",
         token,
         base_url: BASE_URL,
+        // machine-ok: 実装側（openroly.ts の hostname()）と同じ値なので両辺が一緒に動く
         name: hostname(),
         paired_at: new Date().toISOString(),
       },
@@ -568,6 +573,7 @@ describe("PBI-0046 再レビュー / PBI-0218: AC-X3 攻撃", () => {
             runtime_id: "rt_broker_other_actor",
             token: otherToken,
             base_url: BASE_URL,
+            // machine-ok: 実装側（openroly.ts の hostname()）と同じ値なので両辺が一緒に動く
             name: hostname(),
             paired_at: new Date().toISOString(),
           },

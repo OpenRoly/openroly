@@ -18,6 +18,7 @@
 //! 再接続直後の hello が snapshot を載せ、server 側の cache がそこから reconcile される。
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -31,6 +32,10 @@ use crate::procgroup::kill_group;
 pub const CANCEL_ESCALATE_MS: u64 = 5_000;
 /// reaper の生存確認間隔。`try_wait` は block しないので短くてよい。
 const REAP_POLL_MS: u64 = 250;
+/// PBI-0230: hub の resume 失敗と見なす窓。existing 起動(claude `--continue` 等)は続きの会話が
+/// 無いとこの内に非 0 で即終了する。窓の外の非 0 終了 = 作業の失敗であって rotate ではない。
+/// cancel(人の stop)は窓内でも失敗に数えない
+pub const HUB_RESUME_FAIL_MS: u64 = 30_000;
 
 /// registry の 1 行。`child` は reaper が `try_wait` する対象(所有は registry)。
 pub struct Session {
@@ -50,6 +55,12 @@ pub struct Session {
     pub exit: Option<i32>,
     /// cancel 済み(stopping 状態)。reaper の session_result に `reason` として載る
     pub cancel_reason: Option<String>,
+    /// PBI-0230: hub の runtime resume(`--continue` / `resume --last`)で起こった turn か。
+    /// 「30 秒内の非 0 終了 = resume 失敗」の quick-fail 判定に使う(hub 以外 / fresh は false)
+    pub resumed: bool,
+    /// PBI-0230: hub dir(`sessions/hub/<account_id>/<runtime>/`)。resume 失敗時に `turn` file を
+    /// 0 に書き戻す先。hub 以外は None
+    pub hub_dir: Option<PathBuf>,
 }
 
 impl Session {
@@ -264,12 +275,32 @@ impl Sessions {
         })?;
         let s = inner.sessions.remove(&rid)?;
         let reason = s.cancel_reason.clone();
-        Some(json!({
+        // PBI-0230: hub の resume 失敗 = 起動 HUB_RESUME_FAIL_MS 以内の非 0(または信号)終了で、
+        // cancel でない物。turn file を 0 に戻して次の wake が fresh に落ちるようにし(自己修復)、
+        // server への frame に印を載せる —— server は同じ wake を fresh で 1 回だけやり直す
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let resume_failed = s.hub_dir.is_some()
+            && s.resumed
+            && s.cancel_reason.is_none()
+            && now.saturating_sub(s.started_at) < HUB_RESUME_FAIL_MS
+            && s.exit.map_or(true, |c| c != 0);
+        let mut frame = json!({
             "type": "session_result",
             "requestId": s.request_id,
+            "runtime": s.runtime,
             "exit_code": s.exit,
             "reason": reason,
-        }))
+        });
+        if resume_failed {
+            if let Some(dir) = &s.hub_dir {
+                let _ = std::fs::write(dir.join("turn"), "0");
+            }
+            frame["resume_failed"] = json!(true);
+        }
+        Some(frame)
     }
 
     /// **spawn 前の同時実行上限**(PBI-0391 / AC-1)。admission((account, lane) の重複)とは別の門で、
@@ -331,10 +362,85 @@ impl Sessions {
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 interval.tick().await;
-                let Some(frame) = Sessions(sessions.clone()).reap_once() else { continue };
+                let Some(mut frame) = Sessions(sessions.clone()).reap_once() else { continue };
+                // 終わり方(PBI-0583)。lock の外で session の stdout.log を読む(launch_session_scoped_in と同じ置き場)
+                let dir = crate::launch::broker_home().join("sessions");
+                attach_session_end(&mut frame, &dir);
                 let _ = tx.send(frame);
             }
         });
+    }
+}
+
+/// 終わり方を読む stdout.log の末尾の上限。opencode の tool_use は read した file の中身を載せるので全体は読まない
+const SESSION_END_TAIL_BYTES: usize = 1 << 20;
+/// server へ運ぶ error の短い文の上限(本文は運ばない)
+const SESSION_END_ERROR_MAX: usize = 160;
+
+/// `session_result` に `last_part` / `last_tool` / `error` を足す(PBI-0583)。file が無い / 読めない = 3 つとも null
+fn attach_session_end(frame: &mut Value, sessions_dir: &std::path::Path) {
+    let rid = frame["requestId"].as_str().unwrap_or("").to_string();
+    let runtime = frame["runtime"].as_str().unwrap_or("").to_string();
+    // request id は file の path に入る。launch と同じく英数字・`-`・`_` だけ(`..` や `/` で sessions の外を読まない)
+    let safe = !rid.is_empty() && rid.len() <= 128 && rid.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    let text = if safe {
+        std::fs::read(sessions_dir.join(&rid).join("stdout.log"))
+            .map(|b| {
+                let tail = &b[b.len().saturating_sub(SESSION_END_TAIL_BYTES)..];
+                String::from_utf8_lossy(tail).into_owned()
+            })
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let (last_part, last_tool, error) = session_end_of(&runtime, &text);
+    frame["last_part"] = json!(last_part);
+    frame["last_tool"] = json!(last_tool);
+    frame["error"] = json!(error);
+}
+
+/// session の stdout から「最後の part が model の文か tool か」・最後の tool 名・error の短い文を読む(純関数)。
+/// - opencode(`run --format json`): 1 行 1 event。最後の step_finish / tool_use / text で決める
+///   (step_finish の reason `tool-calls` = その step は tool で終わり、次の step が来なかった)。`error` event は全部
+/// - claude(`-p --output-format json`): result の `stop_reason`(`tool_use` = tool)と `is_error`
+/// - 他の runtime / 読めない出力は (None, None, None) —— server は「proof 無しで 60 秒以内」で代える
+pub fn session_end_of(runtime: &str, stdout: &str) -> (Option<&'static str>, Option<String>, Option<String>) {
+    let short = |s: String| s.chars().take(SESSION_END_ERROR_MAX).collect::<String>();
+    let events = stdout.lines().filter_map(|l| serde_json::from_str::<Value>(l.trim()).ok());
+    match runtime {
+        "opencode" => {
+            let (mut part, mut tool, mut error) = (None, None, None);
+            for e in events {
+                match e["type"].as_str() {
+                    Some("step_finish") => {
+                        part = Some(if e["part"]["reason"] == "tool-calls" { "tool" } else { "text" });
+                    }
+                    Some("tool_use") => {
+                        part = Some("tool");
+                        tool = e["part"]["tool"].as_str().map(str::to_string);
+                    }
+                    Some("text") => part = Some("text"),
+                    Some("error") => {
+                        let err = &e["error"];
+                        let msg = err["data"]["message"].as_str().or(err["name"].as_str()).map(str::to_string);
+                        error = Some(short(msg.unwrap_or_else(|| err.to_string())));
+                    }
+                    _ => {}
+                }
+            }
+            (part, tool, error)
+        }
+        "claude" => {
+            let Some(r) = events.filter(|e| e["type"] == "result").last() else { return (None, None, None) };
+            let part = match r["stop_reason"].as_str() {
+                Some("tool_use") => Some("tool"),
+                Some(_) => Some("text"),
+                None => None,
+            };
+            let error = (r["is_error"] == true).then(|| short(r["subtype"].as_str().unwrap_or("error").to_string()));
+            (part, None, error)
+        }
+        _ => (None, None, None),
     }
 }
 
@@ -542,6 +648,8 @@ mod tests {
             tool_count: 0,
             exit: None,
             cancel_reason: None,
+            resumed: false,
+            hub_dir: None,
         }
     }
 
@@ -883,6 +991,87 @@ mod tests {
         assert!(!sessions.capacity_full("auto", 4));
     }
 
+    #[tokio::test]
+    async fn hub_resume_quick_fail_resets_turn_and_flags() {
+        // PBI-0230: resume で起こした hub session が起動直後に死んだら resume 失敗 ——
+        // turn を 0 に戻し(次の wake が fresh に落ちる)、frame に resume_failed を載せる。
+        // 4 つの対面: 窓内の非 0 終了(陽性)/ 窓外 / cancel による終了 / resume していない
+        let base = std::env::temp_dir().join(format!("pbi0230-reap-{}", std::process::id()));
+        let mk_dir = |name: &str| {
+            let d = base.join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("turn"), "3").unwrap();
+            d
+        };
+        let dir_hit = mk_dir("hit"); // 陽性: 窓内の非 0 終了
+        let dir_old = mk_dir("old"); // started_at: 0 = 30 秒窓の外
+        let dir_cancel = mk_dir("cancel"); // 人の cancel は rotate に数えない
+        let dir_fresh = mk_dir("fresh"); // resumed: false は対象外
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let mk = |rid: &str, child: Child| session(rid, "owner", child);
+        let mut hit = mk("rid-hit", Command::new("sh").arg("-c").arg("exit 1").spawn().unwrap());
+        hit.resumed = true;
+        hit.hub_dir = Some(dir_hit.clone());
+        hit.started_at = now;
+
+        let mut old = mk("rid-old", Command::new("sh").arg("-c").arg("exit 1").spawn().unwrap());
+        old.resumed = true;
+        old.hub_dir = Some(dir_old.clone());
+        old.started_at = 0; // 30 秒窓の外(エポック起点)
+
+        let mut cancelled = mk("rid-cancel", Command::new("sh").arg("-c").arg("exit 1").spawn().unwrap());
+        cancelled.resumed = true;
+        cancelled.hub_dir = Some(dir_cancel.clone());
+        cancelled.started_at = now;
+        cancelled.cancel_reason = Some("cancelled".to_string()); // 人の stop を rotate にしない
+
+        let mut fresh = mk("rid-fresh", Command::new("sh").arg("-c").arg("exit 1").spawn().unwrap());
+        fresh.hub_dir = Some(dir_fresh.clone()); // resumed: false → 対象外
+        fresh.started_at = now;
+
+        let sessions = Sessions::new(None);
+        for mut s in [hit, old, cancelled, fresh] {
+            // 終了を確定させてから載せる(reap_once は try_wait で見る)
+            let mut c = s.child.take().unwrap();
+            let _ = c.wait().await;
+            let mut s = s;
+            s.child = Some(c);
+            sessions.insert(s);
+        }
+
+        // 全行が掃れるまで reap(1 呼び出し = 1 行)。無限ルールを避けるため上限を置く
+        let mut frames = Vec::new();
+        for _ in 0..8 {
+            match sessions.reap_once() {
+                Some(f) => frames.push(f),
+                None => break,
+            }
+        }
+        assert_eq!(frames.len(), 4, "全行が reap される");
+
+        let by_rid = |rid: &str| {
+            frames
+                .iter()
+                .find(|f| f["requestId"] == json!(rid))
+                .unwrap_or_else(|| panic!("frame for {rid}"))
+                .clone()
+        };
+        // 陽性: 印が載り、turn は 0 に戻る(自己修復)
+        assert_eq!(by_rid("rid-hit")["resume_failed"], json!(true));
+        assert_eq!(std::fs::read_to_string(dir_hit.join("turn")).unwrap(), "0");
+        // 3 つの陰性: 印は載らず、turn は触られない
+        for rid in ["rid-old", "rid-cancel", "rid-fresh"] {
+            assert!(by_rid(rid).get("resume_failed").is_none(), "{rid} は resume 失敗でない");
+        }
+        assert_eq!(std::fs::read_to_string(dir_old.join("turn")).unwrap(), "3");
+        assert_eq!(std::fs::read_to_string(dir_cancel.join("turn")).unwrap(), "3");
+        assert_eq!(std::fs::read_to_string(dir_fresh.join("turn")).unwrap(), "3");
+    }
+
     #[test]
     fn hook_json_tool_line_produces_update_and_status_answers() {
         let sessions = Sessions::new(None);
@@ -901,5 +1090,87 @@ mod tests {
             Some(json!({"ok":false}).to_string())
         );
         let _ = rx.try_recv();
+    }
+
+    // ------------------------------------- PBI-0583: 終わり方(session_end_of)
+
+    /// opencode `run --format json` の 1 行 1 event(2026-09-15 の opencode run.ts の emit と同じ形)
+    fn oc(events: &[Value]) -> String {
+        events.iter().map(|e| format!("{e}\n")).collect()
+    }
+
+    #[test]
+    fn opencode_tool_calls_step_then_exit_is_tool() {
+        // AC-1 の形: read を呼んだ step が tool-calls で終わり、次の step が来ないまま exit
+        let out = oc(&[
+            json!({"type":"step_start","part":{}}),
+            json!({"type":"text","part":{"text":"I'll read the checkout file."}}),
+            json!({"type":"tool_use","part":{"tool":"read","state":{"status":"completed","output":"export const x = 429; // rate limit"}}}),
+            json!({"type":"step_finish","part":{"reason":"tool-calls","tokens":{"output":120}}}),
+        ]);
+        assert_eq!(session_end_of("opencode", &out), (Some("tool"), Some("read".to_string()), None));
+    }
+
+    #[test]
+    fn opencode_final_text_step_is_text() {
+        // AC-3 の形: tool の後に model が文で答えて stop
+        let out = oc(&[
+            json!({"type":"tool_use","part":{"tool":"bash","state":{"status":"completed"}}}),
+            json!({"type":"step_finish","part":{"reason":"tool-calls"}}),
+            json!({"type":"step_start","part":{}}),
+            json!({"type":"text","part":{"text":"tests pass, done"}}),
+            json!({"type":"step_finish","part":{"reason":"stop"}}),
+        ]);
+        assert_eq!(session_end_of("opencode", &out), (Some("text"), Some("bash".to_string()), None));
+    }
+
+    #[test]
+    fn opencode_error_event_and_garbage_lines() {
+        // 429 に限らず error event は全部。json でない行(status line 等)は読み飛ばす
+        let out = format!(
+            "{}not json at all\n{}",
+            oc(&[json!({"type":"tool_use","part":{"tool":"read"}})]),
+            oc(&[json!({"type":"error","error":{"name":"APIError","data":{"message":"Internal server error","statusCode":500}}})]),
+        );
+        assert_eq!(
+            session_end_of("opencode", &out),
+            (Some("tool"), Some("read".to_string()), Some("Internal server error".to_string()))
+        );
+        // 長い error は 160 文字で切る(本文を運ばない)
+        let long = oc(&[json!({"type":"error","error":{"name":"x".repeat(500)}})]);
+        assert_eq!(session_end_of("opencode", &long).2.unwrap().chars().count(), 160);
+    }
+
+    #[test]
+    fn claude_result_stop_reason_and_is_error() {
+        let ok = json!({"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn"}).to_string();
+        assert_eq!(session_end_of("claude", &ok), (Some("text"), None, None));
+        let tool = json!({"type":"result","subtype":"success","is_error":false,"stop_reason":"tool_use"}).to_string();
+        assert_eq!(session_end_of("claude", &tool).0, Some("tool"));
+        let err = json!({"type":"result","subtype":"error_during_execution","is_error":true}).to_string();
+        assert_eq!(session_end_of("claude", &err), (None, None, Some("error_during_execution".to_string())));
+    }
+
+    #[test]
+    fn unreadable_output_is_all_none() {
+        assert_eq!(session_end_of("opencode", ""), (None, None, None));
+        assert_eq!(session_end_of("opencode", "plain text output\n"), (None, None, None));
+        assert_eq!(session_end_of("codex", &oc(&[json!({"type":"tool_use","part":{"tool":"read"}})])), (None, None, None));
+    }
+
+    #[test]
+    fn attach_session_end_reads_stdout_log_and_refuses_unsafe_ids() {
+        let dir = std::env::temp_dir().join(format!("openroly-session-end-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("req-1")).unwrap();
+        std::fs::write(dir.join("req-1").join("stdout.log"), oc(&[json!({"type":"step_finish","part":{"reason":"tool-calls"}})])).unwrap();
+        let mut frame = json!({"type":"session_result","requestId":"req-1","runtime":"opencode","exit_code":0});
+        attach_session_end(&mut frame, &dir);
+        assert_eq!((frame["last_part"].clone(), frame["error"].clone()), (json!("tool"), Value::Null));
+        // sessions の外を指す id は読まない(3 つとも null)
+        std::fs::write(dir.join("stdout.log"), oc(&[json!({"type":"step_finish","part":{"reason":"tool-calls"}})])).unwrap();
+        let mut escape = json!({"type":"session_result","requestId":"../","runtime":"opencode"});
+        attach_session_end(&mut escape, &dir.join("req-1"));
+        assert_eq!(escape["last_part"], Value::Null);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

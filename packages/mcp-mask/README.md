@@ -4,7 +4,7 @@ A tiny stdio proxy that sits in front of **any** MCP server and masks secrets be
 reach an LLM's context — then restores them right before a tool call sends something back out.
 
 ```
-Claude Code / Codex / Gemini CLI
+Claude Code / Codex / any MCP client
         │  stdio (JSON-RPC)
         ▼
     openroly-mask   ← masks tool results, restores placeholders in tool call params
@@ -64,19 +64,6 @@ openroly-mask -- python -m my_mcp_server
 [mcp_servers.my-server]
 command = "openroly-mask"
 args = ["--", "node", "./my-mcp-server.js"]
-```
-
-### Gemini CLI (`.gemini/settings.json`)
-
-```json
-{
-  "mcpServers": {
-    "my-server": {
-      "command": "openroly-mask",
-      "args": ["--", "node", "./my-mcp-server.js"]
-    }
-  }
-}
 ```
 
 ## What gets masked

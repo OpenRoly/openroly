@@ -61,6 +61,10 @@ fn session_row(rid: &str, lane: &str, child: Child) -> Session {
         tool_count: 0,
         exit: None,
         cancel_reason: None,
+        // PBI-0230 の新 field(dedicated session 相当の default)。rebase で 0229 の攻撃 test が
+        // Session の新 field を知らずに compile しなくなった分を追従させる
+        resumed: false,
+        hub_dir: None,
     }
 }
 

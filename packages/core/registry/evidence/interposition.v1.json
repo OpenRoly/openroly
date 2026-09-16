@@ -93,53 +93,6 @@
     "unmeasured_reason": "codex_account_not_entitled"
   },
   {
-    "runtime": "gemini",
-    "version": "0.46.0",
-    "measured_at": "2026-09-13",
-    "level": "unmeasured",
-    "capabilities": {
-      "pre_action": "unmeasured",
-      "rewrite_action": "unmeasured",
-      "post_action": "unmeasured",
-      "inject_after_result": "unmeasured",
-      "post_batch": "unmeasured",
-      "pre_inference": "unmeasured"
-    },
-    "evidence": {
-      "pre_action": {
-        "how": "headless (-p)・一時 dir の project 設定: BeforeTool が exit 2 を返す設定",
-        "observed": "gemini がこの機で未認証(auth method も GEMINI_API_KEY 等も無い)で model を呼ぶ前に止まる・tool も推論も起きない・model 無しで runtime の stderr が完了を出した hook: 無し / probe の log に届いた hook: 無し",
-        "source_url": "https://geminicli.com/docs/hooks/reference"
-      },
-      "rewrite_action": {
-        "how": "headless (-p)・一時 dir の project 設定: BeforeTool が command を書き換えて返す設定",
-        "observed": "gemini がこの機で未認証(auth method も GEMINI_API_KEY 等も無い)で model を呼ぶ前に止まる・tool も推論も起きない・model 無しで runtime の stderr が完了を出した hook: 無し / probe の log に届いた hook: 無し",
-        "source_url": "https://geminicli.com/docs/hooks/reference"
-      },
-      "post_action": {
-        "how": "headless (-p)・一時 dir の project 設定: AfterTool の stdin を記録",
-        "observed": "gemini がこの機で未認証(auth method も GEMINI_API_KEY 等も無い)で model を呼ぶ前に止まる・tool も推論も起きない・model 無しで runtime の stderr が完了を出した hook: 無し / probe の log に届いた hook: 無し",
-        "source_url": "https://geminicli.com/docs/hooks/reference"
-      },
-      "inject_after_result": {
-        "how": "headless (-p)・一時 dir の project 設定: AfterTool が additionalContext で token を返す設定",
-        "observed": "gemini がこの機で未認証(auth method も GEMINI_API_KEY 等も無い)で model を呼ぶ前に止まる・tool も推論も起きない・model 無しで runtime の stderr が完了を出した hook: 無し / probe の log に届いた hook: 無し",
-        "source_url": "https://geminicli.com/docs/hooks/reference"
-      },
-      "post_batch": {
-        "how": "headless (-p)・一時 dir の project 設定: 文書にある event を全部 hook(BeforeTool,AfterTool,BeforeModel,AfterModel,BeforeToolSelection,AfterAgent)",
-        "observed": "gemini がこの機で未認証(auth method も GEMINI_API_KEY 等も無い)で model を呼ぶ前に止まる・tool も推論も起きない・model 無しで runtime の stderr が完了を出した hook: 無し / probe の log に届いた hook: 無し",
-        "source_url": "https://geminicli.com/docs/hooks/reference"
-      },
-      "pre_inference": {
-        "how": "headless: BeforeModel を hook 登録し、合成応答(llm_response)で推論を差し替える JSON を返した・prompt は \"Reply with exactly: HELLO\"",
-        "observed": "gemini がこの機で未認証(auth method も GEMINI_API_KEY 等も無い)で model を呼ぶ前に止まる・tool も推論も起きない・model 無しで runtime の stderr が完了を出した hook: 無し / probe の log に届いた hook: 無し",
-        "source_url": "https://geminicli.com/docs/hooks/reference"
-      }
-    },
-    "unmeasured_reason": "gemini_not_authenticated"
-  },
-  {
     "runtime": "kimi",
     "version": "0.42.0",
     "measured_at": "2026-09-13",

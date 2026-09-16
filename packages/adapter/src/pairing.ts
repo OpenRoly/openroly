@@ -1,4 +1,4 @@
-import { apiCall } from "./api.ts";
+import { apiCall, unreachableDetail } from "./api.ts";
 import { saveCredential, type RuntimeCredential } from "./credentials.ts";
 import { e2eeCallFor, reconnectOwnDevice } from "./e2ee.ts";
 
@@ -58,17 +58,6 @@ type Poll =
   | { kind: "transient"; detail: string }
   /** retry しても直らない失敗(4xx・約束外の応答) */
   | { kind: "fatal"; detail: string };
-
-/**
- * fetch が reject した時の 1 行。生の message(Bun: "Unable to connect. Is the computer able to
- * access the url?")は人向けの説明として長く、stack trace と見分けが付かないので、
- * error code(`ConnectionRefused` / `ECONNREFUSED` 等)が有ればそれだけを添える
- */
-function unreachableDetail(baseUrl: string, e: unknown): string {
-  const code = (e as { code?: unknown })?.code;
-  const why = typeof code === "string" && code ? code : (e as Error)?.message ?? String(e);
-  return `cannot connect to ${baseUrl} (${why})`;
-}
 
 /**
  * pair/start。claim と同じ一過性判定で最大 MAX_CONSECUTIVE_TRANSIENT 回まで撃ち直す —— 1 回目の

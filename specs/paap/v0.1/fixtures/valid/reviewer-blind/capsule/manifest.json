@@ -1,0 +1,34 @@
+{
+  "protocol": "paap/0.1",
+  "exported_at": "2026-09-14T12:00:00Z",
+  "exporter": {
+    "name": "paap-fixtures",
+    "version": "0.1.0"
+  },
+  "contents": [
+    {
+      "path": "identity.json",
+      "sha256": "c69a63e4d6a048ec700973e939e5be0f26842de2468310d2b1752de18ff69aa8"
+    },
+    {
+      "path": "works/wrk_01936b2a7c4e7a1b9f3d2e8c6a5b4d21/checkpoints/1.json",
+      "sha256": "729b2bc2a8be4fe49cde447758b2bb68570ee5c34b7b76357c7a88e1a12f42aa"
+    },
+    {
+      "path": "works/wrk_01936b2a7c4e7a1b9f3d2e8c6a5b4d21/work.json",
+      "sha256": "f3fd5a6066fd1e484c865cf5ae57e252834542350cd91bb3b0b70e07002c238e"
+    },
+    {
+      "path": "works/wrk_01936b2a7c4e7a1b9f3d2e8c6a5b4d22/checkpoints/1.json",
+      "sha256": "775ff44e30cc760466ad2e95600366b3383ce3dc51b2a4827073dc4292991d3e"
+    },
+    {
+      "path": "works/wrk_01936b2a7c4e7a1b9f3d2e8c6a5b4d22/work.json",
+      "sha256": "dd2652ccf4ba965d124c4aab452245bb797d4ae486b85fb539f1ed59a3a6cd28"
+    }
+  ],
+  "reenter": {
+    "credential_refs": [],
+    "devices": 0
+  }
+}

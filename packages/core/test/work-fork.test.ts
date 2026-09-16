@@ -36,10 +36,11 @@ describe("applyContextProfile(PBI-0440)", () => {
     expect(applyContextProfile("full", rows)).toEqual({ kept: rows, hidden: [] });
   });
 
-  test("reviewer_blind の capsule: 8 要素のうち allowlist の 4 つだけ・残りは名前だけ hidden(値はどこにも出ない)", () => {
+  test("reviewer_blind の capsule: CAPSULE_FIELDS のうち allowlist の 4 つだけ・残りは名前だけ hidden(値はどこにも出ない)", () => {
     const r = applyContextProfile("reviewer_blind", body);
     expect(Object.keys(r.kept).sort()).toEqual(["capability_requirements", "git_state", "goal", "relevant_artifacts"]);
-    expect(r.hidden).toEqual(["current_state", "decisions", "relevant_memory", "unresolved_questions"]);
+    // failed_attempts(PBI-0552 で 9 要素目)は allowlist に足していないので fail-closed で hidden 側に落ちる
+    expect(r.hidden).toEqual(["current_state", "decisions", "failed_attempts", "relevant_memory", "unresolved_questions"]);
     const text = JSON.stringify(r);
     for (const f of r.hidden) expect(text).not.toContain(`value of ${f}`);
   });

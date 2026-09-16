@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:paap:v0.1:work",
+  "title": "PAAP v0.1 Work",
+  "description": "A unit of work owned by an account. One primary write lease at a time; the lease epoch increases on every handoff.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "owner", "title", "status", "visibility", "lease", "profile", "created_at", "updated_at"],
+  "properties": {
+    "id": { "$ref": "#/$defs/text" },
+    "owner": { "type": "string", "pattern": "^[a-z]+:[^:]+$" },
+    "title": { "$ref": "#/$defs/text" },
+    "goal": { "$ref": "#/$defs/text" },
+    "status": {
+      "type": "string",
+      "enum": ["triage", "backlog", "todo", "scheduled", "ready", "running", "review", "blocked", "done", "needs_user"]
+    },
+    "visibility": { "type": "string", "enum": ["full", "masked", "local_only", "none"] },
+    "lease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["epoch"],
+      "properties": {
+        "epoch": { "$ref": "#/$defs/count" },
+        "holder_run": { "$ref": "#/$defs/text" },
+        "acquired_at": { "$ref": "#/$defs/timestamp" },
+        "expires_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "profile": { "type": "string", "enum": ["full", "reviewer_blind"] },
+    "parent_work_id": { "$ref": "#/$defs/text" },
+    "forked_from": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["work_id", "checkpoint_version"],
+      "properties": {
+        "work_id": { "$ref": "#/$defs/text" },
+        "checkpoint_version": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "created_at": { "$ref": "#/$defs/timestamp" },
+    "updated_at": { "$ref": "#/$defs/timestamp" },
+    "ext": { "$ref": "#/$defs/ext" }
+  },
+  "$defs": {
+    "text": { "type": "string", "minLength": 1 },
+    "count": { "type": "integer", "minimum": 0 },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^(?:[0-9]{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)-02-29)T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{1,9})?Z$"
+    },
+    "ext": {
+      "type": "object",
+      "propertyNames": { "type": "string", "pattern": "^[a-z0-9-]+\\.[A-Za-z0-9_.-]+$" }
+    }
+  }
+}

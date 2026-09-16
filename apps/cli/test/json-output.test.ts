@@ -108,7 +108,12 @@ describe("PBI-0334 --json: status", () => {
   test("AC-1/AC-4/AC-5: 全キーを固定した 1 つの JSON document が stdout だけに出る(本文を含まない)", async () => {
     const home = await isolatedHome();
     await seedCredential(home);
-    const res = await openroly(["status", "--json"], home);
+    // PBI-0631 の `running` は **この機械で実際に走っている AI** なので、全キーを toEqual で
+    // 固定するここでは `ps` を差し替えて空にする(測っているのは key の集合であって機械の中身ではない)
+    const bin = join(home, "bin");
+    await mkdir(bin, { recursive: true });
+    await writeFile(join(bin, "ps"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const res = await openroly(["status", "--json"], home, { PATH: `${bin}:${process.env.PATH ?? ""}` });
     expect(res.exitCode).toBe(0);
     expect(res.stderr).toBe("");
     // toEqual が全キーの列挙(AC-5)。SessionBrief は件数だけの形で、本文 key は存在しない
@@ -135,6 +140,9 @@ describe("PBI-0334 --json: status", () => {
         ],
         // PBI-0229: broker が「いま動いている session」の正本。未接続なら空配列(key は固定で列挙)
         live_sessions: [],
+        // PBI-0631: この機械で走っている AI の process。**null(ps が答えない = 分からない)と
+        // [](数えて 0 件)を分ける**ので、key は固定で列挙する
+        running: [],
       },
     });
     expect(res.stdout).not.toContain("msg_"); // 通知の id も本文側の metadata も載せない
@@ -171,7 +179,10 @@ describe("PBI-0334 --json: status", () => {
     expect(res.exitCode).toBe(0); // 人間向けと同じ: 行ごとの NG でコマンドは落ちない
     const doc = parseDoc(res.stdout);
     expect(doc.ok).toBe(true);
-    expect(doc.data.runtimes[0].error).toMatch(/whoami|Unable to connect/); // 文言は apiCall 依存
+    // 文言は apiCall 依存。**性質で測る**(PBI-0640 で 1 箇所に集めた) —— 届かない先を名指しし、
+    // bun の生 message("Unable to connect. Is the computer able to access the url?")を出さない
+    expect(doc.data.runtimes[0].error).toContain("http://127.0.0.1:1");
+    expect(doc.data.runtimes[0].error).not.toContain("Unable to connect");
     expect(doc.data.runtimes[0].brief).toBeUndefined();
     await rm(home, { recursive: true, force: true });
   }, 30_000);

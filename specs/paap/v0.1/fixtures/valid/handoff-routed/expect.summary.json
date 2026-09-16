@@ -1,0 +1,32 @@
+{
+  "protocol": "paap/0.1",
+  "handle": "@alice",
+  "display_name": "Alice",
+  "current_work": {
+    "id": "wrk_01936b2a7c4e7a1b9f3d2e8c6a5b4d21",
+    "title": "Flaky login test",
+    "status": "running"
+  },
+  "latest_checkpoint": {
+    "version": 2,
+    "write_epoch": 2,
+    "content_hash": "da2c82d2aca82be99c076a5ed39d41c3e312f98865c7fdad1d1d7704b24282ab",
+    "brief_sections": [
+      "goal",
+      "current_state",
+      "decisions",
+      "relevant_artifacts",
+      "git_state"
+    ]
+  },
+  "last_handoff": {
+    "id": "hof_01936b2a7c4e7a1b9f3d2e8c6a5b4d30",
+    "state": "routed",
+    "to_runtime": "codex",
+    "reserved_epoch": 2
+  },
+  "reenter": {
+    "credential_refs": [],
+    "devices": 1
+  }
+}

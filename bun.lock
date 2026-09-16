@@ -34,13 +34,6 @@
         "@openroly/adapter": "workspace:*",
       },
     },
-    "adapters/official/gemini": {
-      "name": "@openroly/adapter-gemini",
-      "version": "0.1.0",
-      "dependencies": {
-        "@openroly/adapter": "workspace:*",
-      },
-    },
     "apps/cli": {
       "name": "@openroly/cli",
       "version": "0.1.0",
@@ -52,7 +45,6 @@
         "@openroly/adapter-api": "workspace:*",
         "@openroly/adapter-claude": "workspace:*",
         "@openroly/adapter-codex": "workspace:*",
-        "@openroly/adapter-gemini": "workspace:*",
         "@openroly/core": "workspace:*",
         "@openroly/crypto-envelope": "workspace:*",
       },
@@ -77,6 +69,9 @@
       "dependencies": {
         "@openclaw/workboard-contract": "workspace:*",
         "uuid": "^11.0.0",
+      },
+      "devDependencies": {
+        "ajv": "8.20.0",
       },
     },
     "packages/crypto-envelope": {
@@ -141,8 +136,6 @@
     "@openroly/adapter-claude": ["@openroly/adapter-claude@workspace:adapters/official/claude"],
 
     "@openroly/adapter-codex": ["@openroly/adapter-codex@workspace:adapters/official/codex"],
-
-    "@openroly/adapter-gemini": ["@openroly/adapter-gemini@workspace:adapters/official/gemini"],
 
     "@openroly/cli": ["@openroly/cli@workspace:apps/cli"],
 

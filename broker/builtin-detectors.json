@@ -8,7 +8,28 @@
       "kind": "cli",
       "detect": { "binaries": ["claude"], "apps": [] },
       "version": { "args": ["--version"] },
-      "launch": { "new": [], "existing": ["--continue"] },
+      "launch": {
+        "new": [],
+        "existing": ["--continue"],
+        "headless": {
+          "argv": [
+            "-p", "${instruction}",
+            "--tools", "",
+            "--setting-sources", "project",
+            "${mcp_argv}",
+            "--permission-mode", "dontAsk",
+            "--allowedTools", "mcp__openroly",
+            "--output-format", "json",
+            "--max-turns", "${max_turns}"
+          ]
+        },
+        "mcp_inject": {
+          "strategy": "config_flag",
+          "file": "openroly-mcp.json",
+          "argv": ["--strict-mcp-config", "--mcp-config", "${mcp_file}"]
+        }
+      },
+      "note": "起こし方の実測の理由は packages/core/registry/overrides.json の同 id の note が正本。ここは配布 registry を読めない機の floor なので、launch の値だけを同じに保つ(catalog-build.test.ts が 2 file を突合する)。",
       "capabilities": ["coding", "shell", "files"],
       "adapter": "official/claude"
     },
@@ -18,7 +39,25 @@
       "kind": "cli",
       "detect": { "binaries": ["codex"], "apps": [] },
       "version": { "args": ["--version"] },
-      "launch": { "new": [], "existing": ["resume", "--last"] },
+      "launch": {
+        "new": [],
+        "existing": ["resume", "--last"],
+        "headless": {
+          "argv": [
+            "exec", "--skip-git-repo-check",
+            "--sandbox", "read-only",
+            "${mcp_argv}",
+            "-C", "${folder}",
+            "-o", "${session_dir}/result.txt",
+            "${instruction}"
+          ]
+        },
+        "mcp_inject": {
+          "strategy": "disable_others",
+          "argv_template": ["-c", "mcp_servers.${name}.enabled=false"]
+        }
+      },
+      "note": "起こし方の実測の理由は packages/core/registry/overrides.json の同 id の note が正本。ここは配布 registry を読めない機の floor なので、launch の値だけを同じに保つ(catalog-build.test.ts が 2 file を突合する)。",
       "capabilities": ["coding", "shell", "files"],
       "adapter": "official/codex"
     }

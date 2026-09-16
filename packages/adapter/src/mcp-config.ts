@@ -21,7 +21,7 @@ import { exportMcpFromConfig, readConfigNames } from "./native.ts";
 // listExtensions / applyExtension)の**構造が完全に同じ**で、違うのは
 //   ① その CLI の config をどこからどう読むか(path / 形式 / server 一覧の key)
 //   ② add / remove の argv をどう組むか
-// の 2 点だけ —— claude と codex は実際にほぼ同じ 120 行を各々持っていた。3 つ目(Gemini CLI)を
+// の 2 点だけ —— claude と codex は実際にほぼ同じ 120 行を各々持っていた。3 つ目以降を
 // 足す前にここへ集約する(既存 2 つを載せ替えて既存 test が全部通ることが、機構が既存実装を
 // 包含している証明。第 1 実例を待たずに機構を検証できる)。
 //

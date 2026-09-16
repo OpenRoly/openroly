@@ -71,7 +71,7 @@ async fn x2_attack_thread_id_with_metachars_stays_one_argv_element() {
     let (bin, marker, pwned) = fake_cli("inject");
     let evil = format!("th_1; touch {}", pwned.display());
     let argv = vec![bin.to_string_lossy().to_string()];
-    let mut child = launch::launch_api(&reg_with_api(), "openai-api", &evil, &argv).expect("spawn");
+    let mut child = launch::launch_api(&reg_with_api(), "openai-api", &evil, &argv, None).expect("spawn");
     let _ = child.wait().await;
     let logged = fs::read_to_string(&marker).unwrap();
     let lines: Vec<&str> = logged.lines().collect();
@@ -86,7 +86,7 @@ async fn x2_attack_dashdash_like_thread_id_cannot_reorder_argv() {
     let (bin, marker, _pwned) = fake_cli("dashdash");
     let argv = vec![bin.to_string_lossy().to_string()];
     let evil = "--help";
-    let mut child = launch::launch_api(&reg_with_api(), "openai-api", evil, &argv).expect("spawn");
+    let mut child = launch::launch_api(&reg_with_api(), "openai-api", evil, &argv, None).expect("spawn");
     let _ = child.wait().await;
     let logged = fs::read_to_string(&marker).unwrap();
     let lines: Vec<&str> = logged.lines().collect();
@@ -99,7 +99,7 @@ async fn x2_attack_dashdash_like_thread_id_cannot_reorder_argv() {
 async fn x1_attack_suffixed_impostor_runtime_is_rejected() {
     let (bin, marker, _pwned) = fake_cli("impostor");
     let argv = vec![bin.to_string_lossy().to_string()];
-    let result = launch::launch_api(&reg_with_api(), "evil-api", "th_1", &argv);
+    let result = launch::launch_api(&reg_with_api(), "evil-api", "th_1", &argv, None);
     assert_eq!(result.err(), Some("unknown_runtime".to_string()));
     assert!(!marker.exists(), "spawn してはいけない");
 }

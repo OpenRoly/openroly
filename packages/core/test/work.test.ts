@@ -11,6 +11,9 @@ import {
   AUTHORITY_ACTIONS,
   AUTHORITY_TIERS,
   decideAuthority,
+  WORK_OWNER_KINDS,
+  workOwnerId,
+  decideWorkOwner,
   type WorkLease,
   type IntentTokenState,
 } from "../src/work.ts";
@@ -221,5 +224,35 @@ describe("decideAuthority(PBI-0413)", () => {
     expect(brokenDecide("transfer_primary", workId, { policyGranted: false, intent: null })).toEqual({ ok: true });
     expect(decideAuthority("transfer_primary", workId, { policyGranted: false, intent: null }))
       .toEqual({ ok: false, reason: "explicit_user_intent_required" });
+  });
+});
+
+// PBI-0467 / CAP-3 V18: Project.owner。値集合は core の 1 箇所(WORK_OWNER_KINDS)だけが持つ
+describe("decideWorkOwner(PBI-0467)", () => {
+  test("値集合は account の 1 つだけ(今の最小の所有主体)", () => {
+    expect(WORK_OWNER_KINDS).toEqual(["account"]);
+  });
+
+  test("root(親を持たない) work は作成した account が owner", () => {
+    expect(decideWorkOwner({ accountId: "acc_a" })).toEqual({ ok: true, owner: "account:acc_a" });
+    expect(decideWorkOwner({ accountId: "acc_a", parent: null })).toEqual({ ok: true, owner: "account:acc_a" });
+  });
+
+  test("task(親を持つ)は親の owner をそのまま継承する", () => {
+    expect(decideWorkOwner({ accountId: "acc_a", parent: { owner: workOwnerId("account", "acc_a") } }))
+      .toEqual({ ok: true, owner: "account:acc_a" });
+  });
+
+  test("AC-3: 親と違う owner を渡すと owner_mismatch で拒否(作成した account の owner が返らない)", () => {
+    expect(decideWorkOwner({ accountId: "acc_a", parent: { owner: "account:acc_b" } }))
+      .toEqual({ ok: false, reason: "owner_mismatch" });
+  });
+
+  test("負の対照: 親の owner を検査せず常に自分の account を返すと、AC-3 の mismatch が消える(赤で確認して元に戻す)", () => {
+    const broken = (input: { accountId: string; parent?: { owner: string } | null }) =>
+      ({ ok: true as const, owner: workOwnerId("account", input.accountId) }); // 親を見ない壊れた版
+    expect(broken({ accountId: "acc_a", parent: { owner: "account:acc_b" } })).toEqual({ ok: true, owner: "account:acc_a" });
+    // 本物は同じ入力を拒否する(壊れた版との差が「親を見ている」証拠)
+    expect(decideWorkOwner({ accountId: "acc_a", parent: { owner: "account:acc_b" } }).ok).toBe(false);
   });
 });

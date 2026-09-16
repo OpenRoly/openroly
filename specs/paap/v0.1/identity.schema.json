@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:paap:v0.1:identity",
+  "title": "PAAP v0.1 Identity",
+  "description": "Who the agent account is. Keys are public JWKs only (I-9); a handle is a name, the keys are the identity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "account_id", "agent_id", "display_name", "handles", "keys", "exported_at"],
+  "properties": {
+    "protocol": { "type": "string", "const": "paap/0.1" },
+    "account_id": { "$ref": "#/$defs/text" },
+    "agent_id": { "$ref": "#/$defs/text" },
+    "display_name": { "$ref": "#/$defs/text" },
+    "owner": {
+      "description": "Who owns the account, as <kind>:<id>. Reserved in v0.1; readers need not act on it.",
+      "type": "string",
+      "pattern": "^[a-z]+:[^:]+$"
+    },
+    "handles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["handle", "status"],
+        "properties": {
+          "handle": { "$ref": "#/$defs/text" },
+          "status": { "type": "string", "enum": ["current", "alias"] },
+          "authority": { "$ref": "#/$defs/text" }
+        }
+      },
+      "contains": {
+        "type": "object",
+        "required": ["status"],
+        "properties": { "status": { "type": "string", "const": "current" } }
+      },
+      "minContains": 0,
+      "maxContains": 1
+    },
+    "keys": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["devices"],
+      "properties": {
+        "account": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["key_id", "jwk"],
+          "properties": {
+            "key_id": { "$ref": "#/$defs/text" },
+            "jwk": { "$ref": "#/$defs/public_jwk" }
+          }
+        },
+        "devices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "name", "jwk"],
+            "properties": {
+              "id": { "$ref": "#/$defs/text" },
+              "name": { "$ref": "#/$defs/text" },
+              "jwk": { "$ref": "#/$defs/public_jwk" },
+              "revoked_at": { "$ref": "#/$defs/timestamp" }
+            }
+          }
+        }
+      }
+    },
+    "exported_at": { "$ref": "#/$defs/timestamp" },
+    "ext": { "$ref": "#/$defs/ext" }
+  },
+  "$defs": {
+    "text": { "type": "string", "minLength": 1 },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^(?:[0-9]{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)-02-29)T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{1,9})?Z$"
+    },
+    "public_jwk": {
+      "description": "RFC 7517 JWK. Private members (RFC 7518 d, p, q, dp, dq, qi, oth, k) must not be present.",
+      "type": "object",
+      "required": ["kty"],
+      "properties": {
+        "kty": { "type": "string", "minLength": 1 },
+        "d": false,
+        "p": false,
+        "q": false,
+        "dp": false,
+        "dq": false,
+        "qi": false,
+        "oth": false,
+        "k": false
+      }
+    },
+    "ext": {
+      "type": "object",
+      "propertyNames": { "type": "string", "pattern": "^[a-z0-9-]+\\.[A-Za-z0-9_.-]+$" }
+    }
+  }
+}

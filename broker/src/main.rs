@@ -656,9 +656,10 @@ async fn run_once(
                 // 外部 API provider(PBI-0070)は端末に binary を持たない —— `openroly agent` を
                 // OPENROLY_CLI で起こす。返信先の thread は wake payload の threadId から来る
                 let thread_id = parsed.get("threadId").and_then(Value::as_str).unwrap_or("");
-                // triage session の scope token(EP-0013 W3 / PBI-0117)。有る時だけ dedicated
-                // session の子 env `OPENROLY_SESSION_SCOPE` へ載る(API provider 経路には載せない —
-                // scope は CLI runtime の dedicated session だけが運ぶ v1)。
+                // session scope token(EP-0013 W3 / PBI-0117 → PBI-0320)。有る時だけ子 env
+                // `OPENROLY_SESSION_SCOPE` へ載る。**dedicated / Manual / API provider の 3 経路とも
+                // 載せる** —— 床を閉じた後は scope を持たない session が agent 面に書けないので、
+                // 1 経路でも落とすとその経路の返信が全部 403 になる。
                 let scope_token = parsed
                     .get("scopeToken")
                     .and_then(Value::as_str)
@@ -675,6 +676,8 @@ async fn run_once(
                     .get("folder")
                     .and_then(Value::as_str)
                     .filter(|s| !s.is_empty());
+                // PBI-0230: `/new`(hub rotate 要求)。owner lane の hub wake だけが意味を持つ
+                let hub_rotate = parsed.get("hubRotate").and_then(Value::as_bool).unwrap_or(false);
                 let is_api = state
                     .registry
                     .detector(runtime)
@@ -721,40 +724,60 @@ async fn run_once(
                 // dedicated session は (child, egress proxy) の対。proxy は child と同じ寿命
                 // (reaper が wait の後に drop = 閉じる)。Manual / API 経路は proxy 無し。
                 let launch_result = if is_api {
-                    launch::launch_api_env(&state.registry, runtime, thread_id).map(|c| (c, None))
+                    launch::launch_api_env(&state.registry, runtime, thread_id, scope_token)
+                        .map(|c| (c, None, None))
                 } else {
                     match instruction {
                         Some(instr) => {
-                            let isolation = launch::Isolation {
-                                sandbox: state.sandbox.as_ref(),
-                                egress: egress::EgressConfig {
-                                    // allowlist = 内蔵表 ∪ catalog の egress.hosts ∪ server host ∪
-                                    // claude の ANTHROPIC_BASE_URL(PBI-0240 / PBI-0388)。variant(PBI-0211)は
-                                    // broker env ではなく profile の base URL の host
-                                    allow: profiles::wake_hosts(
-                                        &state.registry,
-                                        runtime,
-                                        &state.server_host,
-                                        std::env::var("ANTHROPIC_BASE_URL").ok().as_deref(),
-                                        profiles::state_dir().as_deref(),
-                                    ),
-                                    events: Some(results_tx.clone()),
-                                    upstream_override: None,
-                                    observe: None,
-                                },
-                                folder,
-                                lane,
-                                user_home: state.user_home.clone(),
-                                c1: &state.c1,
-                            };
-                            launch::launch_session_scoped(&state.registry, &known_runtimes, runtime, instr, request_id, scope_token, &isolation)
-                                .map(|(c, e)| (c, Some(e)))
+                            // allowlist = registry の egress.hosts ∪ server host ∪ claude の
+                            // ANTHROPIC_BASE_URL(PBI-0240 / PBI-0388 / PBI-0616)。registry を読めない機
+                            // だけ内蔵表に退避し、model host を 1 つも持たない runtime は
+                            // `no_egress_hosts` で起こさない。variant(PBI-0211)は broker env では
+                            // なく profile の base URL の host
+                            profiles::wake_hosts(
+                                &state.registry,
+                                runtime,
+                                &state.server_host,
+                                std::env::var("ANTHROPIC_BASE_URL").ok().as_deref(),
+                                profiles::state_dir().as_deref(),
+                            )
+                            .and_then(|allow| {
+                                let isolation = launch::Isolation {
+                                    sandbox: state.sandbox.as_ref(),
+                                    egress: egress::EgressConfig {
+                                        allow,
+                                        events: Some(results_tx.clone()),
+                                        upstream_override: None,
+                                        observe: None,
+                                    },
+                                    folder,
+                                    lane,
+                                    user_home: state.user_home.clone(),
+                                    c1: &state.c1,
+                                };
+                                // PBI-0230: hub 経路は owner lane の session_mode "hub" だけ。account_id は
+                                // hub dir の path 要素になるので request_id と同じ門に通す(通らなければ
+                                // fresh に落ちるのは launch 側でも弾く二重防壁)
+                                let hub = if session_mode == "hub"
+                                    && lane == "owner"
+                                    && launch::is_safe_request_id(account_id)
+                                {
+                                    Some(launch::HubContext {
+                                        account_id,
+                                        rotate: hub_rotate,
+                                    })
+                                } else {
+                                    None
+                                };
+                                launch::launch_session_scoped(&state.registry, &known_runtimes, runtime, instr, request_id, scope_token, &isolation, hub.as_ref())
+                                    .map(|(c, e, h)| (c, Some(e), h))
+                            })
                         }
-                        None => launch::launch(&state.registry, &known_runtimes, runtime, session_mode).map(|c| (c, None)),
+                        None => launch::launch(&state.registry, &known_runtimes, runtime, session_mode, scope_token).map(|c| (c, None, None)),
                     }
                 };
                 let response = match launch_result {
-                    Ok((child, egress)) => {
+                    Ok((child, egress, hub_spawn)) => {
                         // registry へ 1 行(PBI-0229)。child の handle は registry が持ち、exit は
                         // reaper(250ms poll try_wait)が session_result にして流す —— 経路は旧
                         // per-child wait task から 1 本に集約される。Manual routing の bare spawn
@@ -778,15 +801,24 @@ async fn run_once(
                             tool_count: 0,
                             exit: None,
                             cancel_reason: None,
+                            resumed: hub_spawn.as_ref().map(|h| h.resumed).unwrap_or(false),
+                            hub_dir: hub_spawn.as_ref().map(|h| h.dir.clone()),
                         });
-                        json!({ "type": "wake_result", "requestId": request_id, "ok": true })
+                        let mut result =
+                            json!({ "type": "wake_result", "requestId": request_id, "ok": true });
+                        if let Some(h) = &hub_spawn {
+                            blog!("hub spawn resumed={} turn={}", h.resumed, h.turn);
+                            // PBI-0230: hub の時だけ resumed / turn を載せる(server が activity
+                            // detail と web header に使う = AC-1 / AC-2)
+                            result["resumed"] = json!(h.resumed);
+                            result["turn"] = json!(h.turn);
+                        }
+                        result
                     }
                     Err(reason) => {
-                        // PBI-0240 AC-2: 起こし方が無い runtime には代替を 1 つ添えて返す
-                        // (hello で見つかった headless 可の別 runtime。web の 1 tap がこれで組める)
-                        let alternative = (reason == "not_headless")
-                            .then(|| launch::headless_alternative(&state.registry, &known_runtimes, runtime))
-                            .flatten()
+                        // PBI-0240 AC-2 / PBI-0548: 起こせなかった runtime には代替を 1 つ添えて返す
+                        // (not_headless = headless 可の別 runtime / lane_not_contained = claude か codex)
+                        let alternative = launch::wake_alternative(&state.registry, &known_runtimes, runtime, &reason)
                             .map(|kind| json!({ "kind": kind }));
                         json!({
                             "type": "wake_result",

@@ -9,7 +9,7 @@
 //! **なぜ claude だけか**: 専用 uid は本人の `~/.claude` も Keychain も読めない(C1 G2 の T6 実測)ので、
 //! 資格情報を専用 uid に渡せる runtime だけを閉じられる。claude は購読の `.credentials.json` を
 //! 専用 uid が読める形で置けば 1 turn 返る(owner の 2 回目 = `OK441=yes`)。codex は学生用 account で
-//! 未測・gemini はこの機で未ログイン → **その 2 つは `port_scoped` のまま**(黙って host_scoped と
+//! 未測 → **`port_scoped` のまま**(黙って host_scoped と
 //! 名乗らない)。だから egress の絞り方は device 単位でなく **runtime 単位**で決まる。
 //!
 //! # 権限の形(2026-09-13 に組み直した)
@@ -117,7 +117,7 @@ pub fn decide(run_as_ok: bool, pf_installed: bool, probe: &EgressProbe) -> C1Sta
 
 /// C1 で閉じられる runtime。**資格情報を専用 uid に渡せると実測できた物だけ**を載せる ——
 /// claude は購読の `.credentials.json` を渡して 1 turn 返る事を owner の 2 回目の probe で
-/// 実測した(`OK441=yes`)。codex は学生用 account で未測・gemini はこの機で未ログインなので載せない
+/// 実測した(`OK441=yes`)。codex は学生用 account で未測なので載せない
 /// (黙って `host_scoped` と名乗らない = PBI-0441 が殺そうとしている嘘)。
 pub const C1_RUNTIMES: &[&str] = &["claude"];
 
@@ -125,7 +125,7 @@ pub const C1_RUNTIMES: &[&str] = &["claude"];
 /// `base` は sandbox backend の床(`port_scoped` = seatbelt/landlock・`none` = NoSandbox)。
 ///
 /// C1 が使えて、**`C1_RUNTIMES` の runtime** で、床が `port_scoped` の時だけ `host_scoped` に上げる。
-/// - codex / gemini は資格情報を専用 uid に渡せない → `base`(= `port_scoped`)のまま。
+/// - codex は資格情報を専用 uid に渡せない → `base`(= `port_scoped`)のまま。
 /// - `none`(NoSandbox)は dedicated を起こさないので C1 も無い → `none` のまま。
 pub fn effective_enforcement(runtime: &str, base: &'static str, c1: &C1Status) -> &'static str {
     if c1.available && C1_RUNTIMES.contains(&runtime) && base == "port_scoped" {
@@ -963,7 +963,6 @@ mod tests {
         // 負の対照: 各軸を 1 つ崩すと port_scoped に戻る
         assert_eq!(effective_enforcement("claude", "port_scoped", &down), "port_scoped", "C1 無しは上げない");
         assert_eq!(effective_enforcement("codex", "port_scoped", &up), "port_scoped", "codex は上げない");
-        assert_eq!(effective_enforcement("gemini", "port_scoped", &up), "port_scoped", "gemini は上げない");
         // none(NoSandbox)は claude でも none のまま(dedicated を起こさない)
         assert_eq!(effective_enforcement("claude", "none", &up), "none");
     }
@@ -1054,7 +1053,7 @@ mod tests {
         // 負の対照: C1 無し / 床が none(NoSandbox)なら 1 件も載らない
         assert!(raised_by_runtime("port_scoped", &down).is_empty(), "C1 無しで表が出た");
         assert!(raised_by_runtime("none", &up).is_empty(), "NoSandbox で表が出た");
-        // 載るのは C1_RUNTIMES の物だけ(codex / gemini は入らない)
+        // 載るのは C1_RUNTIMES の物だけ(codex は入らない)
         for (kind, _) in raised_by_runtime("port_scoped", &up) {
             assert!(C1_RUNTIMES.contains(&kind), "{kind} は C1_RUNTIMES に無い");
         }

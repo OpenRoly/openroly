@@ -5,11 +5,11 @@
 //! (HTTPS_PROXY を読まない client)ので、内蔵表か env の載せ方を直す対象になる。
 //!
 //! 既定では走らせない(`#[ignore]`): 実 CLI が要る。runtime が在る macOS で
-//!   `OPENROLY_ATTACK_RUNTIMES=claude,codex,gemini,opencode,kiro cargo test --manifest-path broker/Cargo.toml \
+//!   `OPENROLY_ATTACK_RUNTIMES=claude,codex,opencode,kiro cargo test --manifest-path broker/Cargo.toml \
 //!      --test pbi0238_runtime_egress -- --ignored --nocapture`
 //! と明示した時だけ、名前を挙げた runtime を実際に起こす。
 //!
-//! 対照(gemini は `NODE_USE_ENV_PROXY=1` 無しだと proxy に来ない)は launch_in が env を常に載せるので
+//! 対照(Node 製 runtime は `NODE_USE_ENV_PROXY=1` 無しだと proxy に来ない)は launch_in が env を常に載せるので
 //! この test からは組めない —— 実測 2026-09-04(auto memory `project_sandbox_egress_measurements`)を正本にする。
 
 #[path = "../src/env_compat.rs"]
@@ -55,7 +55,9 @@ async fn every_named_runtime_reaches_its_model_host_through_the_proxy() {
     let home = std::env::temp_dir().join(format!("openroly-broker-0238-egress-{}", std::process::id()));
     let _ = fs::remove_dir_all(&home);
     let reg = registry::builtin();
+    // machine-ok: 実 runtime CLI を起こして egress を見る実射（#[ignore]）。機械の設定ごと測る
     let env = launch::containment_env();
+    // machine-ok: 実 runtime CLI を起こして egress を見る実射（#[ignore]）。機械の設定ごと測る
     let user_home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".to_string()));
     // PBI-0331 AC-1: 製品と同じ backend(macOS = seatbelt / Linux = Landlock + seccomp)を main.rs と同じ順で
     // 決める。self_test に落ちた機で「起きなかった」を runtime の所為にしない —— 最初に赤くする
@@ -84,11 +86,11 @@ async fn every_named_runtime_reaches_its_model_host_through_the_proxy() {
             &request_id,
             None,
             &env,
-            &iso,
+            &iso, None,
         );
         // 名指しした runtime が起きないのは失敗(PBI-0331 AC-1)。`continue` で飛ばすと、Linux で
         // `sandbox_unavailable` / `containment_unavailable` になっても 1 本も assert せず緑になる
-        let (mut child, egress) = result.unwrap_or_else(|reason| panic!("{runtime}: 起こせなかった({reason})"));
+        let (mut child, egress, _hub) = result.unwrap_or_else(|reason| panic!("{runtime}: 起こせなかった({reason})"));
         // model に届かない runtime は自分で諦めるまで待つ。上限を置く(retry を続ける client が在る)
         let status = tokio::time::timeout(Duration::from_secs(180), child.wait()).await;
         if status.is_err() {

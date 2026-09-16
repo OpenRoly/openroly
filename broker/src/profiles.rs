@@ -137,13 +137,17 @@ fn base_url(dir: Option<&Path>, class: &str) -> Option<String> {
 /// 1 wake の egress allowlist。variant は **broker process の `ANTHROPIC_BASE_URL` を見ない** ——
 /// その wake の provider は profile の base URL なので、そちらの host を足す(PBI-0388 と同じ機序:
 /// 足さないと proxy の 403 が認証エラーに化ける)。catalog の hosts は class と親の union。
+///
+/// PBI-0616: model host の正本は registry の `egress.hosts`。`is_builtin_only`(= 配布 registry を
+/// 読めていない)の時だけ内蔵表に退避し、どちらでも model host が 0 なら `no_egress_hosts` で起こさない。
 pub fn wake_hosts(
     registry: &Registry,
     runtime: &str,
     server_host: &str,
     broker_base_url: Option<&str>,
     dir: Option<&Path>,
-) -> Vec<String> {
+) -> Result<Vec<String>, String> {
+    let registry_ok = !registry.is_builtin_only();
     let catalog = |id: &str| -> Vec<String> {
         registry.detector(id).and_then(|d| d.egress.as_ref()).map(|e| e.hosts.clone()).unwrap_or_default()
     };
@@ -151,9 +155,9 @@ pub fn wake_hosts(
         Some(parent) => {
             let mut hosts = catalog(runtime);
             hosts.extend(catalog(parent));
-            egress::hosts_for(&hosts, parent, server_host, base_url(dir, runtime).as_deref())
+            egress::hosts_for(&hosts, registry_ok, parent, server_host, base_url(dir, runtime).as_deref())
         }
-        None => egress::hosts_for(&catalog(runtime), runtime, server_host, broker_base_url),
+        None => egress::hosts_for(&catalog(runtime), registry_ok, runtime, server_host, broker_base_url),
     }
 }
 
@@ -270,9 +274,8 @@ mod tests {
             claude_config: dir.join(".claude.json"),
             claude_plugin_registry: dir.join("no-plugins.json"),
             codex_config: dir.join("no-codex.toml"),
-            gemini_admin_dirs: vec![],
         };
-        let (claude_args, _) = launch::dedicated_launch(&registry::builtin(), "claude", "hi", "/s", "/f", &env).unwrap();
+        let (claude_args, _) = launch::dedicated_launch(&registry::builtin(), "claude", "triage", "hi", "/s", "/f", &env).unwrap();
         let cli = vec!["bun".to_string(), "/repo/openroly.ts".to_string()];
         let (program, args) = variant_argv(&[claude_found()], "claude-zai", "claude", &cli, claude_args.clone()).unwrap();
         assert_eq!(program, "bun");
@@ -288,13 +291,90 @@ mod tests {
         let dir = tmp("egress");
         fs::write(dir.join("profiles.json"), r#"{"version":1,"profiles":{"claude-proxy":{"env":{"ANTHROPIC_BASE_URL":"http://localhost:20128/api"}},"claude-zai":{"env":{"ANTHROPIC_BASE_URL":"https://gw.example.org/anthropic"}}}}"#).unwrap();
         let broker_env = Some("https://broker-env.example.net");
-        let zai = wake_hosts(&reg(), "claude-zai", "openroly.example.com", broker_env, Some(&dir));
+        let zai = wake_hosts(&reg(), "claude-zai", "openroly.example.com", broker_env, Some(&dir)).unwrap();
         assert!(zai.contains(&"gw.example.org".to_string()), "{zai:?}");
         assert!(zai.contains(&"api.z.ai".to_string()) && zai.contains(&"api.anthropic.com".to_string()), "{zai:?}");
         assert!(!zai.contains(&"broker-env.example.net".to_string()), "variant の allowlist に broker env の host: {zai:?}");
-        let proxy = wake_hosts(&reg(), "claude-proxy", "openroly.example.com", broker_env, Some(&dir));
+        // PBI-0616: class 側に hosts が無い variant も、親の registry の hosts で起きる
+        let proxy = wake_hosts(&reg(), "claude-proxy", "openroly.example.com", broker_env, Some(&dir)).unwrap();
         assert!(proxy.contains(&"localhost".to_string()) && !proxy.contains(&"broker-env.example.net".to_string()), "{proxy:?}");
-        let claude = wake_hosts(&reg(), "claude", "openroly.example.com", broker_env, Some(&dir));
+        assert!(proxy.contains(&"api.anthropic.com".to_string()), "親の registry の host が無い: {proxy:?}");
+        let claude = wake_hosts(&reg(), "claude", "openroly.example.com", broker_env, Some(&dir)).unwrap();
         assert!(claude.contains(&"broker-env.example.net".to_string()), "{claude:?}");
+    }
+
+    // PBI-0616 AC-3 / AC-4: 退避するのは配布 registry を読めない機だけ。読めたのに model host を
+    // 持たない entry は起こさない(内蔵表から拾って「起きるが 403」にしない)
+    #[test]
+    fn wake_hosts_uses_the_builtin_table_only_when_the_registry_is_unreadable() {
+        // AC-3: load が built-in に落ちた機(cache 無し / 署名不一致)。内蔵表 + server host で起こす
+        let builtin = registry::builtin();
+        assert!(builtin.is_builtin_only());
+        let claude = wake_hosts(&builtin, "claude", "openroly.example.com", None, None).unwrap();
+        assert!(claude.contains(&"api.anthropic.com".to_string()), "内蔵表に退避していない: {claude:?}");
+        assert!(claude.contains(&"openroly.example.com".to_string()), "{claude:?}");
+        // registry を読めた機では registry の値だけ(同じ id でも内蔵表は混ざらない)
+        let reg = registry::parse(
+            r#"{"version":1,"detectors":[{"id":"claude","adapter":"official/claude","egress":{"hosts":["gw.example.org"]}}]}"#,
+            "cache",
+        )
+        .unwrap();
+        assert!(!reg.is_builtin_only());
+        assert_eq!(wake_hosts(&reg, "claude", "", None, None).unwrap(), vec!["gw.example.org".to_string()]);
+        // AC-4: entry は在るが hosts が空 → 起こさない
+        let empty = registry::parse(
+            r#"{"version":1,"detectors":[{"id":"opencode","adapter":"generic/native","egress":{"hosts":[]}}]}"#,
+            "cache",
+        )
+        .unwrap();
+        assert_eq!(
+            wake_hosts(&empty, "opencode", "openroly.example.com", None, None).err().as_deref(),
+            Some("no_egress_hosts")
+        );
+        // entry ごと無い runtime も同じ(kiro-cli のように内蔵表にだけ在る id を data 抜きで起こさない)
+        assert_eq!(
+            wake_hosts(&empty, "kiro-cli", "openroly.example.com", None, None).err().as_deref(),
+            Some("no_egress_hosts")
+        );
+    }
+
+    // PBI-0616 AC-X3: 決めるのは **その時に読めた 1 版**(registry は snapshot で渡る)。
+    // 更新中の版が混ざらない = 古い registry は古い答え・新しい registry は新しい答えのまま
+    #[test]
+    fn each_registry_snapshot_answers_for_itself() {
+        let old = registry::parse(r#"{"version":1,"detectors":[{"id":"opencode","egress":{"hosts":["models.opencode.ai"]}}]}"#, "cache").unwrap();
+        let new = registry::parse(r#"{"version":2,"detectors":[{"id":"opencode","egress":{"hosts":["models.opencode.ai","api.z.ai"]}}]}"#, "fetched").unwrap();
+        assert_eq!(wake_hosts(&old, "opencode", "", None, None).unwrap(), vec!["models.opencode.ai".to_string()]);
+        assert_eq!(
+            wake_hosts(&new, "opencode", "", None, None).unwrap(),
+            vec!["models.opencode.ai".to_string(), "api.z.ai".to_string()]
+        );
+    }
+
+    // PBI-0544 AC-X2(実 catalog に対する測定): 配布 detectors.v1.json の opencode entry が
+    // api.z.ai(Z.AI Coding Plan の model host)を持ち、wake の allowlist に入る。api.z.ai が開くのは
+    // opencode の session だけ —— claude(base_url_env 無し)も codex も変わらない。
+    // catalog からこの行が消えると、Z.AI 経由の opencode session が proxy 403(= 認証 error に化ける)ので
+    // catalog 側の陳腐化をここで赤くする(evidence 検査ではなく broker の判定に近い側で測る)。
+    #[test]
+    fn opencode_wake_allowlist_has_api_z_ai_and_claude_codex_are_unchanged() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../packages/core/registry/detectors.v1.json"
+        );
+        let body = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
+        let reg = registry::parse(&body, "repo").expect("repo catalog が parse を通らない");
+        let opencode = wake_hosts(&reg, "opencode", "openroly.example.com", None, None).unwrap();
+        assert!(
+            opencode.contains(&"api.z.ai".to_string()) && opencode.contains(&"models.opencode.ai".to_string()),
+            "opencode の allowlist に model host が足りない: {opencode:?}"
+        );
+        // claude は base_url_env が無ければ api.anthropic.com のまま(base_url_env 有りの機は
+        // hosts_for の別 test が持つ)。codex は常に無関係。
+        let claude = wake_hosts(&reg, "claude", "openroly.example.com", None, None).unwrap();
+        assert!(!claude.contains(&"api.z.ai".to_string()), "claude に api.z.ai が載った: {claude:?}");
+        assert!(claude.contains(&"api.anthropic.com".to_string()), "claude の catalog の host が消えた: {claude:?}");
+        let codex = wake_hosts(&reg, "codex", "openroly.example.com", None, None).unwrap();
+        assert!(!codex.contains(&"api.z.ai".to_string()), "codex に api.z.ai が載った: {codex:?}");
     }
 }

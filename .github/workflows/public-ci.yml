@@ -34,6 +34,17 @@ jobs:
       # bun.lock here matches this repository's workspaces exactly, so frozen must pass
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
+      # Personal Agent Account Protocol v0.1 (specs/paap): the reference validator and both example
+      # implementations against every fixture. A step of its own so a protocol failure reads as one line.
+      # examples/miniroly-py needs Python 3, which ubuntu-latest ships.
+      - name: PAAP conformance
+        run: |
+          python3 --version
+          bun test packages/core/test/protocol.test.ts packages/core/test/miniroly.test.ts packages/core/test/miniroly-py.test.ts --timeout 30000
+      # PBI-0597: the MCP bundle is a build artifact and is not tracked. Build it here so a missing
+      # bundle reads as one line instead of surfacing inside the plugin tests (they can rebuild it
+      # themselves, but the explicit step keeps the failure readable).
+      - run: bun run plugin:build
       - run: bun test apps/cli packages --timeout 30000
 
   broker:

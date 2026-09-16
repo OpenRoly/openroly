@@ -11,5 +11,8 @@
   "dependencies": {
     "@openclaw/workboard-contract": "workspace:*",
     "uuid": "^11.0.0"
+  },
+  "devDependencies": {
+    "ajv": "8.20.0"
   }
 }

@@ -1,7 +1,7 @@
 # OpenRoly Roadmap
 
 **Where this is going:** one agent account that any AI can run. One identity, one inbox, one body
-of work, one memory, one set of rules — carried across Claude Code, Codex, Gemini CLI, Hermes, and
+of work, one memory, one set of rules — carried across Claude Code, Codex, OpenCode, and
 whatever comes next. You pick the engine for the moment; the agent stays the same.
 
 Three words carry the whole model: **Me** (your agent), **Work** (a job in progress), and **Place** (where
@@ -9,7 +9,7 @@ that job belongs). **People keep their agents. Whoever owns a place keeps its wo
 replaceable.** Switching AI is a feature; the point is that nothing about you or your work breaks when you do.
 
 The end goal goes one step further: an open account protocol, so your agent can outlive any single
-product — including OpenRoly.
+product — including OpenRoly — and move to another provider without losing its name, memory, or permissions.
 
 ✅ works now · 🚧 in progress · ⏳ planned
 
@@ -21,9 +21,9 @@ and everything that is planned — if something is missing here, it isn't on the
 ## The destination, in 60 seconds
 
 1. You start an issue in **Claude Code**. It works as your agent, `@you`.
-2. You kill it halfway. **Codex** picks up and says what changed: "these files, 32 of 34 tests pass,
+2. It hits a usage limit halfway. **OpenCode** picks up and says what changed: "these files, 32 of 34 tests pass,
    and here is what you told Claude last week."
-3. You say "check CI every morning at 8". Tomorrow a **Hermes** run handles it, because that's the
+3. You say "check CI every morning at 8". Tomorrow a **local model** handles it, because that's the
    engine that's awake and allowed.
 4. All three used the same permissions, the same memory, and the same history.
 
@@ -35,21 +35,21 @@ Steps 1 and 2 are the next milestones. Step 3 comes with schedules.
 |---|---|---|
 | 🚧 | Open, verifiable releases | CI on every pull request, installs that match this repo's lockfile, signed build provenance on every binary |
 | 🚧 | Linux wake-ups | The Linux sandbox works; next, incoming mail wakes real AIs inside it on Linux |
+| ✅ | Pick up where you left off | Hit a usage limit and keep going in another session — engineering smoke benchmark (the handoff reached the other AI and it acted on the checkpoint): 3 of 3 live runs, picked up in 14.1s (median), no handoff left the work without an owner |
+| ✅ | Switch AI mid-task | Start in Claude, continue in OpenCode, in one step — engineering smoke benchmark (the handoff reached the other AI and it acted on the checkpoint): 6 of 6 live runs, picked up in 13.1s (median), no handoff left the work without an owner. Codex next |
+| ⏳ | Shared memory and skills | What Claude learned today, another AI can use tomorrow |
+| ✅ | Account protocol v0.1 | Identity, work, checkpoints, and handoffs as an open spec, read by two small independent implementations and checked on every push; memory, skills, and history follow |
+| ⏳ | Add your AI | A small engine interface, and a guide to connect a new AI in about 30 minutes |
 | ⏳ | Self-hosting | Run the account server yourself |
-| 🚧 | Pick up where you left off | Hit a usage limit and keep going without explaining again — and see how often that actually holds |
-| 🚧 | Switch AI mid-task | Start in Claude, continue in Codex, in one step |
-| ⏳ | Places | Every job records who it belongs to — *Personal* today — and an AI working in one place never gets another place's notes |
 | ⏳ | Second opinion | A different AI reviews the work without seeing the first AI's opinion |
-| ⏳ | A third engine | Hermes runs your agent next to Claude and Codex |
-| ⏳ | Terminal UI | One screen for your job, your inbox, and what needs you |
-| ⏳ | Shared memory and skills | What Claude learned today, Codex can use tomorrow |
+| ⏳ | Places | Every job records who it belongs to — *Personal* today — and an AI working in one place never gets another place's notes |
 | ⏳ | One set of rules | The same permissions for every AI; "ask me first" really waits for you |
 | ⏳ | Public Beta | Your `@handle` is reserved for you |
 | ⏳ | Share a job by link | Send a read-only snapshot to someone without an account; the server still can't read it |
 | ⏳ | Schedules and chat apps | Recurring jobs pick the right AI; WhatsApp, Telegram, Discord, and Slack reach your agent |
 | ⏳ | Requests from services | Apps and machines can ask your agent for things, with approval that expires |
+| ⏳ | Terminal UI | One screen for your job, your inbox, and what needs you |
 | ⏳ | Many devices | Close your Mac and another device keeps the same job going; open it from two places and it never runs twice |
-| ⏳ | Account protocol | Load your agent into another implementation and it's still `@you`, with its memory, skills, and history |
 
 ## By module
 
@@ -73,7 +73,7 @@ Your agent is `@you`, no matter which AI is running it.
 
 | | What | Code |
 |---|---|---|
-| ✅ | One `@handle` for every connected AI: Claude Code, Codex, Gemini CLI, and API-key models | [`adapters/official`](adapters/official) |
+| ✅ | One `@handle` for every connected AI: Claude Code, Codex, and API-key models | [`adapters/official`](adapters/official) |
 | ✅ | Connect an AI with one command: `openroly pair <runtime>` or `openroly install <runtime>` | [`apps/cli`](apps/cli) |
 | ✅ | Message other people's agents by `@handle`; your delegation policy can hold a message until you approve it | [`packages/mcp/src/server.ts`](packages/mcp/src/server.ts) (`send`, `agents_list`) |
 | ⏳ | A handle always resolves to exactly one account — never two servers answering the same name — with strict name normalization | |
@@ -126,8 +126,8 @@ The job outlives the session, the usage limit, and the AI that started it.
 | ✅ | Every AI starts from the same compact context package (under 1,000 tokens): who you are, your constraints, the current job | [`packages/core/src/context.ts`](packages/core/src/context.ts) (`openroly context show`) |
 | ✅ | An event log and test results per job (`openroly work events`, `openroly work proof`) | [`apps/cli`](apps/cli) |
 | ✅ | Only you can freeze a job; an AI can't take over work another AI holds | [`packages/mcp/src/server.ts`](packages/mcp/src/server.ts) (`work_freeze`) |
-| 🚧 | Pick up after a usage limit without explaining again | |
-| 🚧 | Switch AI mid-task in one step (Claude → Codex): checkpoint, freeze, package, hand over, claim. If any step fails, the work stays ready — never lost | |
+| ✅ | Pick up after a usage limit without explaining again | [`adapters/official/claude/hooks/stalled.sh`](adapters/official/claude/hooks/stalled.sh) (`openroly work stalled`, `openroly continue`) |
+| ✅ | Switch AI mid-task in one step (Claude to OpenCode; Codex next): checkpoint, freeze, package, hand over, claim. If any step fails, the work stays ready — never lost | [`apps/cli/src/openroly.ts`](apps/cli/src/openroly.ts) (`openroly continue`) |
 | 🚧 | See exactly what the model received in a session, masked the way the model saw it (`openroly peek`) | |
 | ⏳ | Every job has an owner, recorded separately from your agent and inherited by its tasks — *Personal* today. Deleting or leaving an account is decided by who owns the work, not by who ran it | |
 | ⏳ | Context stays in its place: an AI gets your personal context, the current place, and the current job — never another place's notes, decisions, candidates, or job state. Enforced on your device, where the context is assembled, and covered by tests | |
@@ -153,9 +153,9 @@ Bring the AI you already pay for. OpenRoly starts it, fences it in, and brings t
 
 | | What | Code |
 |---|---|---|
-| ✅ | Claude Code, Codex, and Gemini CLI as full engines | [`adapters/official`](adapters/official) |
+| ✅ | Claude Code and Codex as full engines | [`adapters/official`](adapters/official) |
 | ✅ | 15 API providers — OpenAI, Anthropic, Gemini, OpenRouter, Groq, DeepSeek, Mistral, xAI, Together, Fireworks, Cerebras, Moonshot, Zhipu, DashScope, Perplexity — and local models through Ollama, LM Studio, and Jan (`openroly agent <provider>`) | [`adapters/official/api`](adapters/official/api), [`apps/cli`](apps/cli) |
-| ✅ | Detects 90 AI tools and engines on your machine (`openroly runtimes`) | [`packages/core/registry`](packages/core/registry) |
+| ✅ | Detects 91 AI tools and engines on your machine (`openroly runtimes`) | [`packages/core/registry`](packages/core/registry) |
 | ✅ | A catalog entry per engine: how to start it headless and which hosts it may talk to | [`packages/core/registry`](packages/core/registry) |
 | ✅ | A dedicated session woken when something arrives (macOS) | [`broker/src/launch.rs`](broker/src/launch.rs) |
 | ✅ | Stop a live session and everything it started (`openroly cancel`) | [`broker/src/procgroup.rs`](broker/src/procgroup.rs) |
@@ -167,8 +167,8 @@ Bring the AI you already pay for. OpenRoly starts it, fences it in, and brings t
 | ⏳ | Apps you can connect but not wake (desktop apps) marked as such | |
 | ⏳ | Separate catalogs for engines, providers, models, and capabilities | |
 | ⏳ | A project passport (`.openroly/project.json`) that says what a project needs, so any engine can pick it up | |
-| ⏳ | A portability check: `openroly project verify-portable` runs the same project on Claude, Codex, and Hermes | |
-| ⏳ | Hermes as a third engine | |
+| ⏳ | A portability check: `openroly project verify-portable` runs the same project on Claude, Codex, and OpenCode | |
+| ⏳ | Bring Your Own Runtime: your own model — fine-tuned, served by Ollama or vLLM, or behind your company's endpoint — takes a job from a checkpoint and hands back the next one, like any other engine | |
 | ⏳ | The background service on Windows, and no Bun required there | |
 | ⏳ | Chat subscriptions (like ChatGPT) connected through a remote MCP endpoint — they can read and act, but can't be woken | |
 
@@ -178,10 +178,12 @@ Incoming content is untrusted. Big moves need you.
 
 | | What | Code |
 |---|---|---|
-| ✅ | An OS sandbox for woken sessions: writes only inside the job's folder, secret paths unreadable (`~/.ssh`, cloud credentials, GnuPG, keychains) | [`broker/src/sandbox.rs`](broker/src/sandbox.rs) |
+| ✅ | An OS sandbox for woken sessions: writes only inside the job's folder and that engine's own config and cache folders (a table per engine — OpenCode can't write Claude Code's or Codex's settings), secret paths unreadable (`~/.ssh`, cloud credentials, GnuPG, keychains) | [`broker/src/sandbox.rs`](broker/src/sandbox.rs) (`writable_extra`) |
 | ✅ | The same walls on Linux 6.7+: Landlock for files and TCP ports, seccomp so only TCP sockets can be opened (no UDP, raw, or unix sockets), checked by a self-test at startup | [`broker/src/sandbox.rs`](broker/src/sandbox.rs) |
 | ✅ | Network limited to the engine's model provider and OpenRoly, through an egress proxy that denies everything else | [`broker/src/egress.rs`](broker/src/egress.rs) |
-| ✅ | Each engine's own built-in tools switched off for the session that reads untrusted mail | [`broker/src/launch.rs`](broker/src/launch.rs) |
+| ✅ | Built-in tools switched off for every session that reads untrusted mail: only Claude Code and Codex (with their own tools off) are woken there; catalog engines such as OpenCode are woken only for work you hand them, and the skip shows in your activity and in `openroly peek` | [`broker/src/launch.rs`](broker/src/launch.rs) (`lane_not_contained`) |
+| ✅ | A session that can't read your secrets file can't be handed other people's text either: the tools that return mail, contacts, and rules are closed, work tools stay open | [`packages/mcp/src/server.ts`](packages/mcp/src/server.ts) (`masking_unavailable`) |
+| ✅ | Secret masking held outside the sandbox, so a machine with a secrets file can triage mail again: for Claude Code sessions the broker runs the OpenRoly tools in a second sandbox that can read the secrets file, and the woken AI reaches them through its egress proxy — names, phone numbers, and addresses arrive as `⟨s:n⟩`, and replies are restored before they are sent (Codex sessions still close those tools) | [`broker/src/egress.rs`](broker/src/egress.rs) (`MASK_HOST`), [`packages/mcp/src/relay.ts`](packages/mcp/src/relay.ts) |
 | ✅ | Fail closed: no sandbox, no automatic wake | [`broker/src/sandbox.rs`](broker/src/sandbox.rs) |
 | ✅ | Outgoing actions can wait for your approval | [`packages/mcp/src/server.ts`](packages/mcp/src/server.ts) (`approval_get`) |
 | ✅ | `openroly-mask`: passwords, card numbers, and addresses blanked before any model sees them — no account needed | [`packages/mcp-mask`](packages/mcp-mask) |
@@ -292,9 +294,12 @@ The last step: your agent doesn't depend on this product either.
 | | What | Code |
 |---|---|---|
 | ⏳ | Load a `.capsule` into another implementation — or another OpenRoly server — and the same `@handle` works, with its memory, skills, policies, relationships, schedules, and receipts; only the secrets to re-enter are listed | |
-| ⏳ | A published Personal Agent Account Protocol — identity, memory, skills, capabilities, project state, encrypted messaging, receipts — with a conformance test that OpenRoly itself must pass in CI | [`specs`](specs) (today: the adapter contract and the envelope format) |
+| ✅ | A published Personal Agent Account Protocol v0.1 — identity, work, checkpoints, and handoffs — with a conformance test that OpenRoly itself passes in CI, and two small implementations written from the spec alone | [`specs/paap`](specs/paap), [`examples`](examples) |
+| ⏳ | Later protocol versions add memory, skills, capabilities, encrypted messaging, and receipts | |
 | ⏳ | Encrypted messages between accounts on different servers | |
 | ⏳ | Proof by switching: move an agent from one agent OS to another and keep its identity, memory, contacts, skills, schedules, permissions, and work history | |
+| ⏳ | Move your account to another provider — the hosted service, your own server, or someone else's — and keep the same `@handle`, memory, and permissions; the old provider can't hold you back | |
+| ⏳ | Continue with your agent inside other apps: an app asks your account for only the preferences and permissions it needs, and you approve what it may do — the app never needs its own AI | |
 
 ### 13. Open source, releases, and reliability
 
@@ -327,7 +332,7 @@ The last step: your agent doesn't depend on this product either.
 
 Saying no keeps OpenRoly small enough to trust.
 
-- **Our own agent loop.** Claude Code, Codex, Gemini CLI, and Hermes do the thinking and the tool
+- **Our own agent loop.** Claude Code, Codex, and OpenCode do the thinking and the tool
   calls. OpenRoly decides which one runs, with what authority, and brings the result back to your
   account.
 - **Chat-app code in the core.** Webhooks and MCP are the way in.

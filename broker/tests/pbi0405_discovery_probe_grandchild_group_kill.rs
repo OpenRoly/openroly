@@ -88,20 +88,29 @@ fn grandchild_script(pidfile: &Path) -> String {
 }
 
 /// AC-1/AC-2 相当: timeout した probe の孫は group ごと落ちる。
+///
+/// PBI-0468: 本番と同じ `PROBE_TIMEOUT`(3s、`scan()`経由)で測っていたところ、fork/exec 経路が
+/// 詰まっている(他 test の同時 spawn 等)と孫を fork する所まで exec が届く前に timeout が発火し、
+/// 「孫が起きていない」で無 signal のまま red になっていた(実測: 兄弟 test 同時実行で 6 回に 1 回。
+/// CPU-bound busy loop だけの負荷では 0/5 = fork/exec の詰まりが原因で CPU 時間の競合ではない)。
+/// 検証対象は「timeout が来たら孫ごと死ぬ」であって「本番の 3 秒以内に孫が fork できる」ではないので、
+/// `run_version_probe_with_timeout` を大きい timeout で直接呼ぶ(registry 経由の existence 判定は
+/// discovery.rs 自身の他 unit test が持つので、ここで scan()/registry を経由する必要はない)。
 #[test]
 fn version_probe_timeout_kills_the_grandchild() {
     let dir = tmp("kill");
     let pidfile = dir.join("grandchild.pid");
     write_exec(&dir.join("slow"), &grandchild_script(&pidfile));
 
-    let body = r#"{"version":1,"detectors":[
-        {"id":"slow","detect":{"binaries":["slow"]},"version":{"args":["--version"]},"adapter":null}
-    ]}"#;
-    let reg = registry::parse(body, "t").expect("attack registry を parse できない");
-    let mut cache = discovery::VersionCache::default();
+    let probe_timeout = Duration::from_secs(10);
     let start = Instant::now();
-    discovery::scan(&reg, &scan_env(&dir), &mut cache);
-    assert!(start.elapsed() < Duration::from_secs(6), "probe が PROBE_TIMEOUT で切り上げていない");
+    let version = discovery::run_version_probe_with_timeout(
+        &dir.join("slow"),
+        &["--version".to_string()],
+        probe_timeout,
+    );
+    assert!(version.is_none(), "timeout した probe が version を返した: {version:?}");
+    assert!(start.elapsed() < probe_timeout + Duration::from_secs(3), "probe が timeout で切り上げていない");
 
     let gpid = read_pid_within(&pidfile, Duration::from_secs(3))
         .expect("孫が起きていない = 何も測っていない(fork が timeout に間に合わなかった)");
@@ -135,6 +144,10 @@ fn version_probe_normal_exit_returns_version_負の対照() {
 }
 
 /// AC-X1 相当: 別 binary(別 group)の孫には触れない(group を跨いで殺さない)。
+///
+/// PBI-0468: victim 側も上のテストと同じ理由(fork/exec 経路の詰まり下で本番の `PROBE_TIMEOUT` が
+/// 孫の fork より先に発火しうる)で赤になりうるので、同じく `run_version_probe_with_timeout` を
+/// 大きい timeout で直接呼ぶ。
 #[test]
 fn version_probe_timeout_leaves_the_bystander_alive() {
     let dir = tmp("bystander");
@@ -153,12 +166,8 @@ fn version_probe_timeout_leaves_the_bystander_alive() {
     let _ = std::process::Command::new(dir.join("bystander_spawn")).status();
     let bpid = read_pid_within(&bystander_pidfile, Duration::from_secs(3)).expect("bystander の孫が起きていない");
 
-    let body = r#"{"version":1,"detectors":[
-        {"id":"victim","detect":{"binaries":["victim"]},"version":{"args":["--version"]},"adapter":null}
-    ]}"#;
-    let reg = registry::parse(body, "t").expect("attack registry を parse できない");
-    let mut cache = discovery::VersionCache::default();
-    discovery::scan(&reg, &scan_env(&dir), &mut cache);
+    let probe_timeout = Duration::from_secs(10);
+    discovery::run_version_probe_with_timeout(&dir.join("victim"), &["--version".to_string()], probe_timeout);
 
     let vpid = read_pid_within(&victim_pidfile, Duration::from_secs(3)).expect("victim の孫が起きていない");
     // 兄弟 test(version_probe_timeout_kills_the_grandchild)と同じ理由(2026-09-12 CI 実測)。

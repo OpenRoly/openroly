@@ -49,9 +49,17 @@ export type HandleResult =
   | { ok: true; handle: string }
   | { ok: false; reason: HandleErrorReason };
 
-/** trim → 先頭の @ を除去 → 小文字化。冪等。 */
+/**
+ * handle 記法の先頭 `@` —— **1 個だけ**、直後が `@` でも空白でもない時に限る(PBI-0347)。
+ * `@@alice` / `@ alice` は剥がさずに残し、後段の charset 判定で弾かせる(typo を黙って直さない)。
+ * 剥がした後に `@` や空白が先頭へ来ないので、normalizeHandle が冪等であり続ける。
+ * `@` を剥がす所(宛先判定・持ち込み domain・CLI)は全部これを使う。
+ */
+export const LEADING_AT = /^@(?=[^@\s])/;
+
+/** trim → 先頭の @ を 1 個だけ除去 → 小文字化。冪等。 */
 export function normalizeHandle(input: string): string {
-  return input.trim().replace(/^@+/, "").toLowerCase();
+  return input.trim().replace(LEADING_AT, "").toLowerCase();
 }
 
 export function validateHandle(input: string): HandleResult {
@@ -90,13 +98,16 @@ export function parseRecipient(
   input: string,
   providerDomains?: ReadonlyMap<string, string>,
 ): Recipient | null {
-  const s = input.trim().toLowerCase();
+  const s = input.trim();
   if (s === "") return null;
   // 先頭の @ は handle 記法(`@aya`)。除去後に @ が残るなら address
-  const withoutAt = s.replace(/^@+/, "");
+  const withoutAt = s.replace(LEADING_AT, "");
   if (withoutAt.includes("@")) {
     if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(withoutAt) && withoutAt.length <= 320) {
-      const [local, domain] = withoutAt.split("@") as [string, string];
+      const [local, rawDomain] = withoutAt.split("@") as [string, string];
+      // 小文字化は domain だけ(PBI-0347)。local-part は受信 host しか解釈しない(RFC 5321 では
+      // case-sensitive)ので原形で運ぶ。「同じ相手か」の比較は store 側が lower() で当てる(migration 061)
+      const domain = rawDomain.toLowerCase();
       // FQDN の trailing dot(`openai.mail.example.com.`)も同じ provider とみなす —
       // 落とさないと OpenRoly 管理空間の住所が表記ゆれだけで**外部 address 扱い**になり、
       // 未登録住所を外の mail に出す(図37 の不変条件が core の判定だけで破れる)。
@@ -107,7 +118,7 @@ export function parseRecipient(
         const h = validateHandle(local);
         return h.ok ? { kind: "provider", provider, handle: h.handle } : null;
       }
-      return { kind: "address", address: withoutAt };
+      return { kind: "address", address: `${local}@${domain}` };
     }
     return null;
   }

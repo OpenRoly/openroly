@@ -24,8 +24,8 @@ export interface SessionEntry {
   mtime: number;
   runtime: string;
   started: string;
-  /** result.txt が在れば done、無ければ running */
-  exit: "done" | "running";
+  /** skipped.txt が在れば skipped(broker が起こさなかった・PBI-0548)、result.txt が在れば done、無ければ running */
+  exit: "done" | "running" | "skipped";
 }
 
 interface PeekHeader {
@@ -75,7 +75,7 @@ export function listSessions(sessionsDir: string, limit = 20): { entries: Sessio
       mtime,
       runtime: header.runtime ?? "-",
       started: header.started ?? "-",
-      exit: (existsSync(join(dir, "result.txt")) ? "done" : "running") as SessionEntry["exit"],
+      exit: (existsSync(join(dir, "skipped.txt")) ? "skipped" : existsSync(join(dir, "result.txt")) ? "done" : "running") as SessionEntry["exit"],
     };
   });
   return { entries, total: dirs.length };
@@ -94,6 +94,12 @@ function renderHead(dir: string): string {
   const header = parseHeader(dir);
   const id = header.session ?? dir.split("/").pop() ?? dir;
   const out: string[] = [`session ${id}  runtime ${header.runtime ?? "-"}  started ${header.started ?? "-"}`, ""];
+  // PBI-0558: masking の状態(外の server で伏せたか / 繋がらず本文 tool を閉じたか)を header の下に 1 行
+  const masking = join(dir, "masking.txt");
+  if (existsSync(masking)) out.splice(1, 0, readFileSync(masking, "utf8").trimEnd());
+  // PBI-0616: allowlist が registry ではなく broker の内蔵表から来た session も 1 行(egress.txt)
+  const egress = join(dir, "egress.txt");
+  if (existsSync(egress)) out.splice(1, 0, readFileSync(egress, "utf8").trimEnd());
   out.push("--- instruction (what the broker handed to the model) ---");
   const instr = join(dir, "instruction.txt");
   out.push(existsSync(instr) ? readFileSync(instr, "utf8").trimEnd() : "(no instruction.txt)");
@@ -115,7 +121,13 @@ function renderRow(n: number, raw: string): string {
 /** `openroly peek <id>` の本体。header → instruction → 番号付き tool 往復 → 固定の末尾文 */
 export function renderSession(dir: string): string {
   const rows = readLines(join(dir, "peek.jsonl")).slice(1);
-  const body = rows.length === 0 ? ["(no tool calls recorded)"] : rows.map((raw, i) => renderRow(i + 1, raw));
+  // PBI-0548: broker が起こさなかった session は、tool 往復の代わりに理由の 1 行(skipped.txt)を出す
+  const skipped = join(dir, "skipped.txt");
+  const body = existsSync(skipped)
+    ? [`(not started) ${readFileSync(skipped, "utf8").trimEnd()}`]
+    : rows.length === 0
+      ? ["(no tool calls recorded)"]
+      : rows.map((raw, i) => renderRow(i + 1, raw));
   return [renderHead(dir), ...body, "", PEEK_FOOTER].join("\n");
 }
 

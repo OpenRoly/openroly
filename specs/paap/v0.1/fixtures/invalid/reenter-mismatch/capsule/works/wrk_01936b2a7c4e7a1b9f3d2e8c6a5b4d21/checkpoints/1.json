@@ -1,0 +1,12 @@
+{
+  "work_id": "wrk_01936b2a7c4e7a1b9f3d2e8c6a5b4d21",
+  "version": 1,
+  "write_epoch": 1,
+  "run_id": "run-7f3a",
+  "content_hash": "b912c6e55d69f6058cdf4594edbae6a3a5e97b7b74cd7333b936028102158bd8",
+  "body": {
+    "goal": "Export invoices as CSV for the accounting team",
+    "current_state": "The CSV columns are drafted."
+  },
+  "created_at": "2026-09-14T09:30:00Z"
+}

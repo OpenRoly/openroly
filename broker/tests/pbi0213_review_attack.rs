@@ -59,7 +59,7 @@ fn write_fake_cli(dir: &Path) -> PathBuf {
          echo \"$cmd\" >> \"{d}/$cmd-count\"\n\
          if [ -f \"{d}/hold-$cmd\" ]; then\n\
          \x20 : > \"{d}/holding-$cmd\"\n\
-         \x20 while [ -f \"{d}/hold-$cmd\" ]; do sleep 0.05; done\n\
+         \x20 while [ -f \"{d}/hold-$cmd\" ] && kill -0 \"$PPID\" 2>/dev/null; do sleep 0.05; done\n\
          \x20 rm -f \"{d}/holding-$cmd\"\n\
          fi\n\
          exit 0\n"

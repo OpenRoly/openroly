@@ -1,66 +1,70 @@
-import { readFileSync, existsSync, rmSync, mkdirSync, statSync } from "node:fs";
+import { readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "bun:test";
+import { bundlePath, ensurePluginBundle } from "./ensure-bundle.ts";
 
-// PBI-0112: plugin に入れる `mcp-server.bundle.js` は cache が plugin dir だけを copy する
+// PBI-0112 → PBI-0597: plugin に入れる `mcp-server.bundle.js` は cache が plugin dir だけを copy する
 // 構造上、source と同期していないと「install した環境でだけ壊れる」バグになる。
-// それを機械で刺す: tmp で再 build して byte 比較し、両 plugin dir の bundle の同一性と
-// `.mcp.json` の args も一緒に固定する(手順の正本は `bun run plugin:build`)。
+//
+// PBI-0112 はそれを「commit 済み bundle と再 build の byte 一致」で刺していた。**検出はできていたが
+// 止められなかった** —— 作り直しが手作業で、赤くなるのは commit の後だったので、3 度 main に載った
+// (PBI-0581 / 0594 / PBI-0230 の取り込み)。PBI-0597 で **追跡そのものをやめた**ので、この file が
+// 守るのは「生成物が git に戻っていないか」と「plugin dir の中身の形」になる。
+// 同期そのものは「使う時に作る」で構造的に保たれる(ensure-bundle.ts / install / CI の 1 step)。
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const BUNDLE = "mcp-server.bundle.js";
-const claudeBundle = join(repoRoot, "adapters/official/claude", BUNDLE);
-const codexBundle = join(repoRoot, "adapters/official/codex", BUNDLE);
 
-/** `bun run plugin:build` と同じ command を 1 dir 分だけ tmp 向けに実行する */
-function buildToTmp(outfile: string): void {
-  const proc = Bun.spawnSync(
-    ["bun", "build", "packages/mcp/src/server.ts", "--target=bun", "--outfile", outfile],
-    { cwd: repoRoot, stdout: "pipe", stderr: "pipe" },
-  );
-  expect(proc.exitCode).toBe(0);
+/** repo が追跡している file 一覧(`git ls-files`)。生成物が戻っていないかを見る */
+function trackedFiles(pattern: string): string[] {
+  const out = Bun.spawnSync(["git", "ls-files", pattern], { cwd: repoRoot, stdout: "pipe" });
+  expect(out.exitCode).toBe(0);
+  return out.stdout.toString().split("\n").filter(Boolean);
 }
 
-describe("plugin bundle の同期 (PBI-0112)", () => {
-  test("AC-4: commit 済み bundle は source からの再 build と byte 一致する", () => {
-    expect(existsSync(claudeBundle)).toBe(true);
-    expect(existsSync(codexBundle)).toBe(true);
-    const tmp = join(repoRoot, "packages/mcp/test/.bundle-sync-tmp");
-    try {
-      rmSync(tmp, { recursive: true, force: true });
-      mkdirSync(tmp, { recursive: true });
-      // claude 側の実 build を 1 度だけ回し、codex 側は同一性 test で賄う(重い build を 2 回やらない)
-      buildToTmp(join(tmp, BUNDLE));
-      expect(readFileSync(claudeBundle)).toEqual(readFileSync(join(tmp, BUNDLE)));
+describe("plugin bundle は生成物 (PBI-0597)", () => {
+  test("AC-1: bundle は git で追跡されていない(追跡し直すとここが赤くなる)", () => {
+    expect(trackedFiles("*.bundle.js")).toEqual([]);
+    // .gitignore が効いている = 作った後も `git status` を汚さない(commit に紛れ込まない)
+    ensurePluginBundle();
+    const ignored = Bun.spawnSync(
+      ["git", "check-ignore", "adapters/official/claude/mcp-server.bundle.js"],
+      { cwd: repoRoot, stdout: "pipe" },
+    );
+    expect(ignored.exitCode).toBe(0);
+  }, 120_000);
 
-      // 両 plugin dir の bundle が互いに一致(cache がどちらの runtime でも同じ中身を運ぶ)
-      expect(readFileSync(codexBundle)).toEqual(readFileSync(claudeBundle));
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
+  test("AC-2: 無ければ作られ、両 plugin dir に同じ中身が置かれる", () => {
+    ensurePluginBundle();
+    for (const runtime of ["claude", "codex"] as const) {
+      expect(existsSync(bundlePath(runtime))).toBe(true);
     }
+    // cache がどちらの runtime を copy しても同じ物が動く
+    expect(readFileSync(bundlePath("codex"))).toEqual(readFileSync(bundlePath("claude")));
   }, 120_000);
 
   test("PBI-0132: 両 plugin の launcher が source と byte 一致し、実行可能である", () => {
-    // bundle と同じ理由: cache は plugin dir だけを copy するので、source(packages/mcp/openroly-mcp)と
-    // ずれると「install した環境でだけ起動しない」になる。実行権が落ちるのも同じ壊れ方
+    // launcher(5 KB の sh)は **追跡したまま**: 中身が読める text で、diff が意味を持ち、
+    // churn も 2 commit しかない。bundle(1.1 MB の binary)と同じ扱いにする理由が無い
+    ensurePluginBundle(); // plugin:build が launcher の copy も作る(手順の正本は 1 つ)
     const source = readFileSync(join(repoRoot, "packages/mcp/openroly-mcp"));
     for (const dir of ["adapters/official/claude", "adapters/official/codex"]) {
       const copy = join(repoRoot, dir, "openroly-mcp");
       expect(readFileSync(copy)).toEqual(source);
       expect(statSync(copy).mode & 0o111).toBeGreaterThan(0);
     }
-  });
+  }, 120_000);
 
-  test("AC-1: 両 .mcp.json の args が各自の plugin root 変数の bundle を指す", () => {
+  test("AC-1(旧): 両 .mcp.json の args が各自の plugin root 変数の bundle を指す", () => {
     const claude = JSON.parse(
       readFileSync(join(repoRoot, "adapters/official/claude/.mcp.json"), "utf8"),
     ) as { mcpServers: Record<string, { args: string[]; command: string }> };
     const codex = JSON.parse(
       readFileSync(join(repoRoot, "adapters/official/codex/.mcp.json"), "utf8"),
     ) as { mcp_servers: Record<string, { args: string[]; command: string }> };
-    expect(claude.mcpServers.openroly!.args).toEqual(["${CLAUDE_PLUGIN_ROOT}/mcp-server.bundle.js"]);
-    expect(codex.mcp_servers.openroly!.args).toEqual(["${PLUGIN_ROOT}/mcp-server.bundle.js"]);
+    expect(claude.mcpServers.openroly!.args).toEqual([`\${CLAUDE_PLUGIN_ROOT}/${BUNDLE}`]);
+    expect(codex.mcp_servers.openroly!.args).toEqual([`\${PLUGIN_ROOT}/${BUNDLE}`]);
     // PBI-0132: command 側は launcher。args(bundle)は fallback 経路の材料として残す
     expect(claude.mcpServers.openroly!.command).toBe("${CLAUDE_PLUGIN_ROOT}/openroly-mcp");
     expect(codex.mcp_servers.openroly!.command).toBe("${PLUGIN_ROOT}/openroly-mcp");

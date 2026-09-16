@@ -54,6 +54,7 @@ async function freshEnv(ps?: { bin: string }) {
       runtime_id: "rt_broker_claim_ps",
       token: "par_claim_ps",
       base_url: "http://127.0.0.1:9",
+      // machine-ok: 実装側（openroly.ts の hostname()）と同じ値なので両辺が一緒に動く
       name: hostname(),
       paired_at: new Date().toISOString(),
     },
@@ -66,6 +67,7 @@ async function freshEnv(ps?: { bin: string }) {
     lock: join(brokerHome, LOCK_NAME),
     env: {
       PATH: `${ps ? `${ps.bin}:` : ""}${process.env.PATH ?? ""}`,
+      // machine-ok: 子の bun / CLI 自身が HOME（bun の cache）を要る。製品の状態は OPENROLY_HOME / OPENROLY_BROKER_HOME で隔離済み
       HOME: process.env.HOME ?? "",
       OPENROLY_HOME: home,
       OPENROLY_BROKER_HOME: brokerHome,

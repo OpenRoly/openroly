@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { saveCredential } from "@openroly/adapter";
 import { CONTRACT_TOOLS } from "./contract-tools.ts";
+// PBI-0597: bundle は追跡していない生成物。clone を作る前に「無ければ作る」
+import { ensurePluginBundle } from "./ensure-bundle.ts";
 
 // PBI-0112: marketplace install(= node_modules を持たない clone、実 cache と同構造)から
 // bundle を起動し、runtime と同じ stdio transport で MCP を往復する。
@@ -38,6 +40,7 @@ let clone = "";
 let openrolyHome = "";
 
 beforeAll(async () => {
+  ensurePluginBundle(); // rsync の前に作る(clone に bundle が入っている事がこの test の前提)
   clone = await mkdtemp(join(tmpdir(), "openroly-plugin-"));
   const rsync = Bun.spawn(
     ["rsync", "-a", "--exclude", "node_modules", "--exclude", ".git", "--exclude", ".gstack",
@@ -71,6 +74,7 @@ async function connect(env: Record<string, string>) {
   const transport = new StdioClientTransport({
     command: "bun",
     args: [join(clone, BUNDLE)],
+    // machine-ok: 子の bun / CLI 自身が HOME（bun の cache）を要る。製品の状態は OPENROLY_HOME / OPENROLY_BROKER_HOME で隔離済み
     env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", ...env },
     stderr: "pipe",
   });
@@ -108,6 +112,7 @@ describe("plugin bundle の MCP 往復", () => {
     const proc = Bun.spawn(["bun", join(clone, BUNDLE)], {
       env: {
         PATH: process.env.PATH ?? "",
+        // machine-ok: 子の bun / CLI 自身が HOME（bun の cache）を要る。製品の状態は OPENROLY_HOME / OPENROLY_BROKER_HOME で隔離済み
         HOME: process.env.HOME ?? "",
         OPENROLY_RUNTIME_KIND: "claude",
         OPENROLY_HOME: emptyHome,
@@ -122,7 +127,8 @@ describe("plugin bundle の MCP 往復", () => {
 
     expect(await proc.exited).toBe(1);
     expect(stderr).toContain("No OpenRoly credential was found");
-    expect(stderr).toContain("openroly install claude");
+    expect(stderr).toContain("openroly pair claude");
+    expect(stderr).not.toContain("openroly install");
     // stdout は MCP の stdio transport 用。1 byte でも混ぜたら JSON-RPC が壊れる
     expect(stdout).toBe("");
     await rm(emptyHome, { recursive: true, force: true });

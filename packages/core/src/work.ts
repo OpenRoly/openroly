@@ -251,6 +251,73 @@ export function decideParent(
   return { ok: true };
 }
 
+// ---------- root work を誰が作れるか(PBI-0623 / CAP-3・図75 (f)) ----------
+
+/**
+ * **人の手(human hand)として数える runtime の kind。** broker = `openroly login` で人が承認した
+ * 端末そのもの。1 語しか無いのに定数の集合にしてあるのは、2 語目を足す日にここだけを見れば済むから。
+ */
+export const HUMAN_HAND_RUNTIME_KINDS = ["broker"] as const;
+
+/**
+ * 親を持たない(root)work を作ってよいか。
+ *
+ * **runtime は自分の担当を無から作れない。** PBI-0397 が `canPromoteThread` で守っている不変条件
+ * (「昇格できるのは通知由来の owner thread だけ」= self を昇格させない)は、thread からの道だけを
+ * 塞いでも足りない —— create の口が開いていれば、runtime は work を作って自分へ handoff するだけで
+ * 同じ事ができ、`handled` の調停(誰がこの仕事の係か)が意味を失う。
+ *
+ * 分岐は 3 つだけ:
+ *  - **`hasParent` は素通り** —— task は親が既に人の手から生まれているので、出所は人まで辿れる
+ *    (`work_task_create` の道。ここを閉じると runtime が仕事を分割できなくなる)
+ *  - **`human`** —— web / `pas_` session。呼び出しそのものが人の認証で来ている事が「人がやった」証明
+ *    (`decideAuthority` の human 素通りと同じ理由 —— 意図を LLM に判定させない)
+ *  - **`broker`** —— 人が `openroly login` した端末。PBI-0023 F1 が引いた線と同じ:
+ *    broker credential は `approvePairing`(human 専用)でしか出ず、`autoRegisterRuntimes` が
+ *    配る kind は detector 由来なので broker にはならない。AI runtime はこれを名乗れない
+ */
+export function decideWorkCreator(input: {
+  actorKind: "human" | "runtime";
+  runtimeKind: string | null;
+  hasParent: boolean;
+}): { ok: true } | { ok: false; reason: "human_only" } {
+  if (input.hasParent) return { ok: true };
+  if (input.actorKind === "human") return { ok: true };
+  if (input.runtimeKind != null && (HUMAN_HAND_RUNTIME_KINDS as readonly string[]).includes(input.runtimeKind)) {
+    return { ok: true };
+  }
+  return { ok: false, reason: "human_only" };
+}
+
+// ---------- Project.owner(PBI-0467 / CAP-3 V18・第 25 通 §2〜§4・§18・§19) ----------
+
+/** owner の kind の値集合。今は account の 1 つだけ(最小の所有主体)。
+ * 2 つ目を足す日はここに 1 語足すだけ(migration も backfill も要らない形 — DB は形 `<kind>:<id>` だけ check する) */
+export const WORK_OWNER_KINDS = ["account"] as const;
+export type WorkOwnerKind = (typeof WORK_OWNER_KINDS)[number];
+
+/** owner の綴りを組む唯一の場所("<kind>:<id>") */
+export function workOwnerId(kind: WorkOwnerKind, id: string): string {
+  return `${kind}:${id}`;
+}
+
+/**
+ * work を作る時の owner を決める。root(親を持たない)work は作成した account が owner。
+ * task(親を持つ)は **親の owner をそのまま継承する** —— owner は作成時にしか決まらず、
+ * 書き換える口も無い(親の規約と同じ・migration 054)。渡された parent の owner が
+ * 作成した account の owner と違えば拒否する(今の経路では parent は必ず同じ account から読むので
+ * 到達しないが、owner が作成時にしか決まらない不変条件を core の 1 関数で守る)。
+ */
+export function decideWorkOwner(input: {
+  accountId: string;
+  parent?: { owner: string } | null;
+}): { ok: true; owner: string } | { ok: false; reason: "owner_mismatch" } {
+  const accountOwner = workOwnerId("account", input.accountId);
+  if (input.parent == null) return { ok: true, owner: accountOwner };
+  if (input.parent.owner !== accountOwner) return { ok: false, reason: "owner_mismatch" };
+  return { ok: true, owner: input.parent.owner };
+}
+
 // ---------- runtime transfer(PBI-0439 / CAP-3 V7・図84) ----------
 // 握っている work を別 runtime へ移す 2 相。PREPARE で holder を予約 id に置き換え(null にしない =
 // その間に第三の run が claim で奪えない)、target run の accept(COMMIT)で予約 id を target run に置き換える。
@@ -330,6 +397,149 @@ export function decideTransferStep(
   if (transfer.state !== "routed") return { ok: false, reason: "transfer_not_routed" };
   if (actor.runtimeKind !== transfer.toRuntimeKind) return { ok: false, reason: "transfer_target_mismatch" };
   return { ok: true, next: "committed" };
+}
+
+// ---------- one-step continue(PBI-0547 / CAP-3 V7) ----------
+// 「Claude が止まったら openroly continue の一言」の選択の正本。works は全件(server の listWorks)を
+// 渡し、この純関数が 1 本に絞る。箱は 3 つ(3 つ目 = 失敗した handoff が解放した work・PBI-0578)—— live lease の最新、無ければ lapsed(session 死亡で
+// lease 期限切れ)で done でない最新。どちらの箱にも複数残れば ambiguous(黙って選ばない = V10 の
+// 「候補まで」)。done は続ける対象外なので両方の箱から外す。
+
+/** pickContinueWork へ渡す 1 行(listWorks の直列化から CLI が組む) */
+export interface ContinueWorkInput {
+  id: string;
+  title: string;
+  status: string;
+  holderRun: string | null;
+  leaseExpiresAt: Date | null;
+  updatedAt: Date;
+  /** stallOf の結果(PBI-0557)。live が複数の時に 1 本へ絞る根拠に使う。未指定 = 止まっていない */
+  stalled?: Stall | null;
+  /** 失敗した handoff が解放した lease(PBI-0578・一覧の released_by_failed_handoff)。未指定 = 解放されていない */
+  failedHandoff?: boolean;
+}
+
+/** 選んだ 1 本(lapsed = 切れた lease からの continue)か、候補が無いか、絞り切れないか */
+export type ContinuePick =
+  | { kind: "none" }
+  | { kind: "work"; work: ContinueWorkInput; lapsed: boolean }
+  | { kind: "ambiguous"; works: ContinueWorkInput[]; lapsed: boolean };
+
+export function pickContinueWork(works: ContinueWorkInput[], now: Date): ContinuePick {
+  // lease_expires_at が null の holder は「切れない lease」(store の live 判定と同じ規則)
+  const live = works.filter(
+    (w) => w.holderRun != null && w.status !== "done" && (w.leaseExpiresAt == null || w.leaseExpiresAt > now),
+  );
+  const lapsed = works.filter(
+    (w) => w.holderRun != null && w.status !== "done" && w.leaseExpiresAt != null && w.leaseExpiresAt <= now,
+  );
+  // 「最新」= updated_at の降順(ambiguous の一覧も同じ順で出す)
+  const newest = (xs: ContinueWorkInput[]) => [...xs].sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+  if (live.length > 1) {
+    // PBI-0557: live が複数でも、usage limit で止まっている(= 続ける理由が明確な)物が 1 本だけなら
+    // それを選ぶ。止まった物が 2 本以上 or 0 本なら今どおり ambiguous(黙って選ばない = V10)
+    const stalled = live.filter((w) => w.stalled != null);
+    if (stalled.length === 1) return { kind: "work", work: stalled[0]!, lapsed: false };
+    return { kind: "ambiguous", works: newest(live), lapsed: false };
+  }
+  if (live.length === 1) return { kind: "work", work: live[0]!, lapsed: false };
+  if (lapsed.length > 1) return { kind: "ambiguous", works: newest(lapsed), lapsed: true };
+  if (lapsed.length === 1) return { kind: "work", work: lapsed[0]!, lapsed: true };
+  // PBI-0578: 3 つ目の箱 = 失敗した handoff が holder を外した work(spec §6: failed の後は誰も lease を持たない)。
+  // freeze で止めた work は入れない(failedHandoff を立てるのは server の解放の判定だけ)
+  const released = works.filter((w) => w.holderRun == null && w.status !== "done" && w.failedHandoff === true);
+  if (released.length > 1) return { kind: "ambiguous", works: newest(released), lapsed: true };
+  if (released.length === 1) return { kind: "work", work: released[0]!, lapsed: true };
+  return { kind: "none" };
+}
+
+// ---------- continue guard(PBI-0583 / CAP-3・図84 の continue guard の節) ----------
+// continue / transfer で受け取った session が tool を呼んだ直後に途切れた(model の返事が無い)時だけ、server が
+// 同じ runtime を同じ work で 1 回起こし直す。ここは判定だけ —— 終わり方(last_part / error)は broker が session の
+// stdout から読んで session_result に載せる(本文は運ばない)。
+
+/** session の最後の part の種類(broker の session_end_of)。読めない runtime は null */
+export const SESSION_LAST_PARTS = ["text", "tool"] as const;
+export type SessionLastPart = (typeof SESSION_LAST_PARTS)[number];
+
+/** guard が work の orchestration event に積む stage。exhausted / failed は `released_epoch` を持つ = continue で拾える解放 */
+export const CONTINUE_GUARD_STAGES = ["continue_guard_rewake", "continue_guard_exhausted", "continue_guard_failed"] as const;
+export type ContinueGuardStage = (typeof CONTINUE_GUARD_STAGES)[number];
+
+/** 終わり方が読めない session の ③ の代わり: proof 無しでこれより早く終わった */
+export const SESSION_CUT_FALLBACK_MS = 60_000;
+
+export interface SessionEndInput {
+  /** その session が lease を取った run(accept する前に終わった = null) */
+  runId: string | null;
+  holderRun: string | null;
+  workStatus: string;
+  /** その run が status passed の proof を出した */
+  proofPassed: boolean;
+  lastPart: SessionLastPart | null;
+  error: string | null;
+  /** broker の終了理由(cancelled = 人 / server の stop・tool_cap = 上限の kill)。自然終了は null */
+  reason: string | null;
+  durationMs: number;
+}
+
+/**
+ * 途切れ = ① lease をまだその run が持っている ② work が done でなく、その run の passed の proof が無い
+ * ③ 最後の part が tool(tool の結果の後に model の返事が無い)か error が在る。外から止めた session は途切れではない
+ */
+export function sessionCut(end: SessionEndInput): boolean {
+  if (end.reason === "cancelled" || end.reason === "tool_cap") return false;
+  if (end.runId == null || end.holderRun !== end.runId) return false;
+  if (end.workStatus === "done" || end.proofPassed) return false;
+  if (end.error != null) return true;
+  if (end.lastPart != null) return end.lastPart === "tool";
+  return end.durationMs < SESSION_CUT_FALLBACK_MS;
+}
+
+// ---------- usage-limit resume(PBI-0557 / CAP-3 V7 の続き) ----------
+// 「Claude が usage limit で止まった」事を work に残し、次に開いた AI が候補を出す。保存面は
+// 既存の diagnostic event 1 行(workboard の値集合を発明しない —— reason / runtime / resets_at を
+// payload に足すだけ)。ここにあるのは判定だけ: event 列から「まだ止まっているか」を読む純関数。
+
+/** 止まった理由の値集合。今は 1 つ(API の rate limit)。2 つ目を足す日はここに 1 語足す */
+export const STALL_REASONS = ["usage_limit"] as const;
+export type StallReason = (typeof STALL_REASONS)[number];
+
+/** stallOf へ渡す 1 行(listWorkEvents の直列化から CLI / MCP が組む) */
+export interface StallEventInput {
+  kind: string;
+  payload: Record<string, unknown> | null;
+  createdAt: Date;
+}
+
+/** 止まっている事実(stallOf の戻り値。continue_candidate と continue の成功行がこの値を載せる) */
+export interface Stall {
+  reason: StallReason;
+  at: Date;
+  runtime: string | null;
+  resetsAt: Date | null;
+}
+
+/**
+ * event 列(古い順)の末尾が usage_limit の diagnostic なら、その work は**まだ**止まっている。
+ * 「run の進捗」を kind ごとに判定しない —— diagnostic の後に event が 1 つでも積まれていたら
+ * 何かが動いたので再開済み(null)。これが AC-1 の冪等と同じ条件: work stalled を 2 回叩いても
+ * 末尾が同じ diagnostic のままなら二度目は積まない、と CLI 側で判断できる
+ */
+export function stallOf(events: readonly StallEventInput[]): Stall | null {
+  const last = events.at(-1);
+  if (last == null || last.kind !== "diagnostic") return null;
+  const p = last.payload ?? {};
+  if (p.reason !== "usage_limit") return null;
+  const resets = typeof p.resets_at === "string" && !Number.isNaN(Date.parse(p.resets_at))
+    ? new Date(p.resets_at)
+    : null;
+  return {
+    reason: "usage_limit",
+    at: last.createdAt,
+    runtime: typeof p.runtime === "string" ? p.runtime : null,
+    resetsAt: resets,
+  };
 }
 
 // ---------- fork / review(PBI-0440 / CAP-3 V8・図84) ----------

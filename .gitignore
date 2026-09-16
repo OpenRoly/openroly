@@ -1,24 +1,96 @@
-node_modules/
-dist/
-# Standalone binaries (66MB each; distribution is the Release's job)
-adapters/official/*/bin/
-coverage/
-# broker (Rust) build output (distribution is the Release's job; for the local cargo build fallback)
-broker/target/
-
-.env*
+# 開発メモ（public repo には置かない）
+task/
+backlog/
+# 並列 fleet の実行状態・local 作業メモの置き場（fleet-state.json 等。成果物ではない）
+scratchpad/
+# worktree では backlog は主 repo への **symlink**。`backlog/` は symlink に当たらないので
+# `git add -A` で 277 本の PBI(ローカル絶対パス入り)が丸ごと入る口が開いていた(2026-09-05 実測)
+backlog
+docs/internal/
+docs/agents/
+# 方向転換の分析（競合の実測・弱点・reuse 計画）。public repo には置かない
+docs/direction/
+# 上から抽出した実装仕様（reuse 元の一覧・既存実装の評価が入る）。public repo には置かない
+docs/spec/
+*_PLAN.md
+*_ROADMAP.md
+*_AUDIT.md
+*_strategy_v*.md
+SCORECARD.md
+STATUS.md
+PROJECT.md
+CLAUDE.md
+AGENTS.md
+.claude/
+arc.md
+task.md
 *.log
 
-.paa/
-credentials.json
+# 個人情報・ローカル環境
+.env*
+*.db
+*.sqlite*
 
-# binaries the Quickstart downloads into the repo root (never commit a 70MB binary)
+# ビルド成果物・依存
+node_modules/
+dist/
+# 単体実行ファイル(PBI-0132。1 本 61MB。配布は Release の仕事)
+adapters/official/*/bin/
+# Quickstart(README の Get started)を repo root で打つと出来る物(PBI-0621)。release の asset であって
+# source ではない —— 読む側は 1 つも無い(`packages/adapter/src/binary.ts` は release の URL から
+# SHA256SUMS を fetch する)。無視していなかった間に 48e4160 で 3 つ commit された
+# (`openroly` = 69.7MB の Mach-O + checksum 2 本)。追跡していると sync-public が公開 repo へも運ぶ
 /openroly
 /openroly-broker
 /openroly-mcp
+/openroly-darwin-*
+/openroly-linux-*
+/openroly.sha256
+/SHA256SUMS
+# plugin の MCP bundle(PBI-0597)。生成物なので追跡しない —— 作るのは `bun run plugin:build` /
+# `openroly install <runtime>` / CI の 1 step。追跡していた頃は source を触る commit ごとに
+# 1.1 MB が付き、作り直し忘れが 3 度 main に載った(PBI-0581 / 0594 / PBI-0230 の取り込み)
+adapters/official/*/mcp-server.bundle.js
+# 開発図の連結版(PBI-0607)。source は docs/diagrams/*.md で、1 枚に繋いだ物は生成物なので追跡しない ——
+# 作るのは `bash scripts/diagrams-build.sh` / `./diagrams-check.sh` / CI の 1 step。追跡していた頃は
+# 隣 pane の未 commit の図が commit に焼き込まれ(fedd8b2 → 53e008b で作り直し)、図の番号が衝突し、
+# merge で衝突解決が要った file の上位に居座った(50 回。.gitattributes の -merge で凌いでいた)
+docs/diagrams.md
+coverage/
+.gstack/
+
+# Rust(broker/ — PBI-0015 Device Broker)
+broker/target/
+
+# 測定用 worktree(PBI-0606)。実 run は「測る commit に固定した」ここでだけ回る
+.bench-worktree/
+
+# ローカル credential (pairing で保存される runtime token)
+.openroly/
+.openroly/
+credentials.json
+
+# 添付 blob の local dev 保管場所(PBI-0074)
+.data/
+
+# macOS
+.DS_Store
+
+# .NET(apps/windows-collector — PBI-0122)
+apps/windows-collector/**/bin/
+apps/windows-collector/**/obj/
+docs/agents/
+
+# playwright MCP のローカル出力(console log / page snapshot)。debug の副産物で成果物ではない
+.playwright-mcp/
+
+# ---- ここから下は公開 clone にだけ要る(scripts/sync-public.ts が生成する) ----
+# 旧名の Quickstart が落とす binary と credential dir。公開した物を持っている人が居るので、
+# main が名前を変えた後も公開側だけは無視し続ける(現行名は main の .gitignore が持つ・PBI-0621)
 /paa
 /paa-darwin-*
 /paa-linux-*
 /atn
 /atn-broker
 /atn-mcp
+.paa/

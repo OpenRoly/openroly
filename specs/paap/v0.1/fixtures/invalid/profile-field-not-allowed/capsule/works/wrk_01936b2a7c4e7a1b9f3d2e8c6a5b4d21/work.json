@@ -1,0 +1,13 @@
+{
+  "id": "wrk_01936b2a7c4e7a1b9f3d2e8c6a5b4d21",
+  "owner": "account:acc_01936b2a7c4e7a1b9f3d2e8c6a5b4d10",
+  "title": "Rate limiting",
+  "status": "review",
+  "visibility": "full",
+  "lease": {
+    "epoch": 1
+  },
+  "profile": "full",
+  "created_at": "2026-09-14T08:00:00Z",
+  "updated_at": "2026-09-14T10:00:00Z"
+}

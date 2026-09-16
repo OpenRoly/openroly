@@ -1,4 +1,5 @@
 import { CONTEXT_SEARCH_DEFAULT_MAX_TOKENS, CONTEXT_SEARCH_MAX_TOKENS } from "@openroly/adapter";
+import { MEMORY_CONTENT_MAX_CHARS, MEMORY_SCOPES, MEMORY_TYPES } from "@openroly/core";
 import { z } from "zod";
 
 // server.ts の各 tool 登録で使う zod shape。副作用(credential 解決・process.exit・stdio connect)を
@@ -158,6 +159,28 @@ export const workContextSearchInputShape = {
     .describe(
       `the most this call returns (default ${CONTEXT_SEARCH_DEFAULT_MAX_TOKENS}). Entries that do not fit are left out whole and listed in budget.omitted`,
     ),
+};
+
+// Memory v1(PBI-0378 / CAP-7・図86)
+export const memoryProposeInputShape = {
+  scope: z.enum(MEMORY_SCOPES).describe("project = this repository (same git origin) / personal = the owner everywhere"),
+  type: z.enum(MEMORY_TYPES),
+  content: z.string().describe(`one short statement (up to ${MEMORY_CONTENT_MAX_CHARS} characters)`),
+  source_work_id: z.string().optional().describe("the work you learned this in (wrk_...) — required when an AI proposes"),
+  run_id: z.string().optional().describe("your own run id, recorded as the source"),
+  supersedes: z.string().optional().describe("id of an active memory this replaces (the owner always approves a replacement)"),
+};
+
+export const memorySearchInputShape = {
+  query: z.string().optional().describe("words matched against the text on this device (any word)"),
+  work_id: z.string().optional().describe("the work you are doing (wrk_...) — the recall is recorded on it"),
+  max_tokens: z
+    .number()
+    .int()
+    .min(1)
+    .max(CONTEXT_SEARCH_MAX_TOKENS)
+    .optional()
+    .describe(`the most this call returns (default ${CONTEXT_SEARCH_DEFAULT_MAX_TOKENS}); records that do not fit are counted in omitted`),
 };
 
 // Work Project の task と住所(PBI-0434・手描き 2 枚目)

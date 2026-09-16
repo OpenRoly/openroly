@@ -1,0 +1,32 @@
+{
+  // 「product ではないが CI が checkout する .ts」を 1 つの project に集める。
+  // scripts/ が tsc の対象外だったせいで PBI-0614 の引数追加が呼び出し元 5 か所を壊し、
+  // `bench-memory --report` が必ず失敗する状態で main に乗った（PBI-0628）。
+  // 門を抜けている file が居ないことは scripts/typecheck-coverage.ts が機械で見る。
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    // scripts は DOM を触る物（gen-pwa-icons / seed-ux）と bun の物が混ざる
+    "lib": ["ESNext", "DOM", "DOM.AsyncIterable"],
+    "types": ["bun"],
+    // scripts/ には import も export も持たない「上から下に走る 1 枚」が多い。
+    // それらの top-level await は module でないと TS1375 になるが、実行は常に bun の ESM。
+    // 25 件の TS1375 は実装の欠陥ではなく config の取り違えなので、ここで揃える。
+    "moduleDetection": "force"
+  },
+  "include": [
+    "scripts/**/*.ts",
+    "docs/demo/**/*.ts",
+    "examples/miniroly/**/*.ts",
+    "apps/android-collector/interop/**/*.ts"
+  ],
+  // benchmark の「入力の木」だけが門の外。base/ dirty/ stages/N-*/ overlay/ reference/ は
+  // わざと欠けた木で、`./money.ts` が在らない事そのものが fixture の中身（TS2307 18 件が全部これ）。
+  // 型を通すと fixture が fixture でなくなる。
+  //
+  // **`scripts/bench-fixtures/*.ts`（judge.ts / memory-judge.ts / fidelity-judge.ts と其の test）は
+  // 入力ではなく実装なので門の中に置く。** PBI-0614 が壊したのは judge.ts の `headCommit` で、
+  // そこを外すとこの PBI が塞ぐはずの穴が開いたままになる。
+  // 形は typecheck-coverage.ts の EXEMPT と同じ（bench-fixtures の下で src/ を持つ木）。
+  // 深さは case ごとに違う（l-csv-export は stages/<N>/src、他は <variant>/src）ので段数では書かない。
+  "exclude": ["scripts/bench-fixtures/**/src/**"]
+}

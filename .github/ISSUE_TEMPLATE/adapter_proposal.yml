@@ -7,7 +7,7 @@ body:
       value: |
         OpenRoly's value is runtime neutrality, and that only means something if many runtimes
         implement the contract. See `specs/extension-adapter-contract.md` and the reference
-        implementations in `adapters/official/{claude,codex,gemini,api}` before starting.
+        implementations in `adapters/official/{claude,codex,api}` before starting.
   - type: input
     id: runtime
     attributes:

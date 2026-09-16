@@ -21,7 +21,7 @@ export type InterpositionLevel = (typeof INTERPOSITION_LEVELS)[number];
  * §19 の Level を capability の実測から決める。true / false でない列が 1 つでも在れば(unmeasured・欠けた列・崩れた JSON)A〜D を名乗らない。
  * pre_action の true は「deny で副作用が起きなかった」実測なので、それ自体が A の「強制」。
  * A でなくても hook で掴めた capability が 1 つでも在れば B(一部だけ保証)。C は 6 列とも false(hook では何も掴めない)の時だけ。
- * D は 6 列からは出ない(hook も MCP も無く記録を読むだけの runtime 用。今の 4 runtime には無い)。
+ * D は 6 列からは出ない(hook も MCP も無く記録を読むだけの runtime 用。今の 3 runtime には無い)。
  */
 export function interpositionLevel(caps: Record<InterpositionCapability, Measured>): InterpositionLevel {
   const values: unknown[] = INTERPOSITION_CAPABILITIES.map((c) => caps[c]);

@@ -97,6 +97,7 @@ describe.skipIf(!(await cliExists("claude")))("claude adapter", () => {
     const readServers = async () =>
       JSON.parse(await readFile(configPath, "utf8").catch(() => "{}")).mcpServers ?? {};
 
+    // machine-ok: 実 config を触っていない事の見張り（実機の file そのものが測る対象）
     await untouched(join(homedir(), ".claude.json"), async () => {
       expect((await claudeAdapter.detect(ctx)).installed).toBe(true);
 
@@ -125,6 +126,7 @@ describe.skipIf(!(await cliExists("codex")))("codex adapter", () => {
     const ctx = await isolated({ CODEX_HOME: codexHome });
     const configPath = join(codexHome, "config.toml");
 
+    // machine-ok: 実 config を触っていない事の見張り（実機の file そのものが測る対象）
     await untouched(join(homedir(), ".codex", "config.toml"), async () => {
       expect((await codexAdapter.detect(ctx)).installed).toBe(true);
 

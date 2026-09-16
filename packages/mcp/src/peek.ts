@@ -11,8 +11,9 @@
 // - id は broker 側 `is_safe_request_id` と同じ境界(英数と _ - のみ)を MCP 側でも持つ —— env は
 //   信頼境界の外(runtime の設定 file 経由でも書ける)なので `../x` を dir に混ぜない。
 
-import { appendFileSync, chmodSync, existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { isAbsolute } from "node:path";
 import { createConnection } from "node:net";
 import { join } from "node:path";
 import { legacyDir, LEGACY_STATE_DIR, STATE_DIR } from "@openroly/core";
@@ -47,9 +48,33 @@ export interface Peek {
 const warn = (e: unknown) => console.error(`peek: ${e instanceof Error ? e.message : String(e)}`);
 
 /**
+ * `OPENROLY_SESSION_DIR`(PBI-0230・hub wake で broker が載せる turn dir)の門。絶対 path で
+ * `<home>/sessions/` 配下・leaf を持つ物だけを通す。env は信頼境界の外(runtime の設定 file 経由
+ * でも書ける)なので SESSION_ID と同じ二重防壁 —— 通らない物は peek を書かない(fail-open。
+ * 観測で agent の仕事を止めない)。broker は `sessions/hub/<account>/<runtime>/` を載せるので、
+ * 正常系はこの門を素通りする。
+ */
+export function checkedSessionDir(dir: string, home: string): string | null {
+  const norm = dir.replace(/\/+$/, "");
+  const prefix = join(home, "sessions") + "/";
+  if (
+    !isAbsolute(norm) ||
+    !norm.startsWith(prefix) ||
+    norm.length <= prefix.length ||
+    norm.split("/").includes("..")
+  ) {
+    console.error("peek: invalid session dir");
+    return null;
+  }
+  return norm;
+}
+
+/**
  * `OPENROLY_SESSION_ID` が無ければ null(manual session = 何もしない)。有れば
  * `<home>/sessions/<id>/peek.jsonl` を append で開き 0600 にして header 1 行を書く。
- * 失敗は stderr 1 行で null(= 以後 record しない)。
+ * hub wake(PBI-0230)では `OPENROLY_SESSION_DIR` が turn dir を指し、そちらを優先する
+ * (cwd 固定の会話 dir に peek をまとめる。folder payload は使わない)。失敗は stderr 1 行で
+ * null(= 以後 record しない)。
  */
 export function openPeek(env: Env = process.env, home: string = brokerHome(env)): Peek | null {
   const id = env.OPENROLY_SESSION_ID;
@@ -58,7 +83,16 @@ export function openPeek(env: Env = process.env, home: string = brokerHome(env))
     console.error("peek: invalid session id");
     return null;
   }
-  const dir = join(home, "sessions", id);
+  const dirOverride = env.OPENROLY_SESSION_DIR;
+  let dir: string;
+  if (dirOverride !== undefined) {
+    // 門で落ちた時は標準位置へフォールバックしない(怪しい env は黙って別の場所に書かない)
+    const checked = checkedSessionDir(dirOverride, home);
+    if (!checked) return null;
+    dir = checked;
+  } else {
+    dir = join(home, "sessions", id);
+  }
   const path = join(dir, "peek.jsonl");
   const line = (v: unknown) => JSON.stringify(v) + "\n";
   try {
@@ -83,6 +117,23 @@ export function openPeek(env: Env = process.env, home: string = brokerHome(env))
       }
     },
   };
+}
+
+/**
+ * PBI-0558: この session の masking の状態を session_dir/masking.txt に 1 行(`openroly peek` が header の下に出す)。
+ * broker は外の server を起こした時に `masking: outside sandbox` を書き、relay が繋がらなかった時はここで
+ * `masking: unavailable — <理由>` に上書きする。manual session(id 無し)では何もしない・失敗は stderr 1 行(peek と同じ fail-open)
+ */
+export function noteMasking(env: Env, line: string, home: string = brokerHome(env)): void {
+  const id = env.OPENROLY_SESSION_ID;
+  if (!id || !SESSION_ID_RE.test(id)) return;
+  try {
+    const dir = join(home, "sessions", id);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(dir, "masking.txt"), `${line}\n`);
+  } catch (e) {
+    warn(e);
+  }
 }
 
 // broker の hook socket 名(broker/src/triggers.rs の HOOK_SOCKET_NAME と同じ名前)。

@@ -14,7 +14,7 @@
     "plugin:build": "bun build packages/mcp/src/server.ts --target=bun --outfile adapters/official/claude/mcp-server.bundle.js && bun build packages/mcp/src/server.ts --target=bun --outfile adapters/official/codex/mcp-server.bundle.js && cp packages/mcp/openroly-mcp adapters/official/claude/openroly-mcp && cp packages/mcp/openroly-mcp adapters/official/codex/openroly-mcp && chmod +x adapters/official/claude/openroly-mcp adapters/official/codex/openroly-mcp",
     "build:binaries": "./scripts/build-binaries.sh",
     "test": "OPENROLY_WAKE_TIMEOUT_MS=20000 bun test --timeout 30000",
-    "typecheck": "for p in packages/core packages/crypto-envelope packages/adapter packages/mcp-mask packages/mcp adapters/official/claude adapters/official/codex adapters/official/gemini apps/server apps/cli apps/web; do [ -d \"$p\" ] || continue; tsc --noEmit -p \"$p\" || exit 1; done",
+    "typecheck": "bun run scripts/typecheck-coverage.ts",
     "e2e": "./scripts/e2e.sh && ./scripts/e2e-runtimes.sh && ./scripts/e2e-broker.sh && ./scripts/e2e-auto-session.sh",
     "check": "bun run typecheck && bun run test && PATH=\"/usr/local/opt/rustup/bin:$PATH\" cargo test --manifest-path broker/Cargo.toml --quiet && sh -c '[ -f ./diagrams-check.sh ] || exit 0; ./diagrams-check.sh'"
   },

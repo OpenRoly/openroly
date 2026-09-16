@@ -207,19 +207,25 @@ export class Masker {
     return this.table.length - 1;
   }
 
-  maskText(text: string, patterns: PatternConfig): string {
+  /** `onPattern` は、この呼び出しで pattern に一致した値の index を 1 つずつ知らせる(表に既に在った値も)。
+   * 辞書の値と、元の text に書かれていた `⟨s:n⟩` の字面は知らせない —— 呼び手が「どの応答から来た値か」を持つ為の口 */
+  maskText(text: string, patterns: PatternConfig, onPattern?: (index: number) => void): string {
     let out = text;
     for (let i = 0; i < this.staticCount; i++) out = out.split(this.table[i]!).join(`⟨s:${i}⟩`);
-    out = applyPatterns(out, patterns, (matched) => `⟨s:${this.allocate(matched)}⟩`);
+    out = applyPatterns(out, patterns, (matched) => {
+      const i = this.allocate(matched);
+      onPattern?.(i);
+      return `⟨s:${i}⟩`;
+    });
     return out;
   }
 
-  maskValue(value: unknown, patterns: PatternConfig): unknown {
-    if (typeof value === "string") return this.maskText(value, patterns);
-    if (Array.isArray(value)) return value.map((v) => this.maskValue(v, patterns));
+  maskValue(value: unknown, patterns: PatternConfig, onPattern?: (index: number) => void): unknown {
+    if (typeof value === "string") return this.maskText(value, patterns, onPattern);
+    if (Array.isArray(value)) return value.map((v) => this.maskValue(v, patterns, onPattern));
     if (value !== null && typeof value === "object") {
       const out: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(value)) out[k] = this.maskValue(v, patterns);
+      for (const [k, v] of Object.entries(value)) out[k] = this.maskValue(v, patterns, onPattern);
       return out;
     }
     return value;

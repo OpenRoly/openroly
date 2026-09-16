@@ -12,18 +12,27 @@ import { join } from "node:path";
 import {
   applyContextProfile,
   buildCapsule,
+  estimateTokens,
+  memoryFingerprint,
+  memoryPayloadBytes,
+  memoryScopeKey,
+  normalizeGitRemote,
+  reviewOpenedMemory,
+  scanMemoryContent,
+  validateMemoryInput,
   buildManifest,
   CHECKPOINT_TICK_INTERVAL_SECS,
   countInbox,
   findReservedContextKeys,
   inboxDeliveredKeys,
   renderCapsule,
+  stallOf,
   summarizeContextIndex,
   TASK_MERGE_PATHS_MAX,
   WORK_LIVENESS_TIMEOUT_SECS,
   type MessageContent,
 } from "@openroly/core";
-import { open, type EncryptedEnvelope } from "@openroly/crypto-envelope";
+import { open, seal, type EncryptedEnvelope } from "@openroly/crypto-envelope";
 import {
   CONTEXT_SEARCH_DEFAULT_MAX_TOKENS,
   credentialRejectedHint,
@@ -31,6 +40,7 @@ import {
   readCasPayload,
   readerKeys,
   openIfEnvelope as openEnvelope,
+  ownAccountPublicKey,
   sealForHandle,
   syncPendingContextValues,
   writeCasPayload,
@@ -40,17 +50,20 @@ import {
   type ContextIndexEntryInput,
   type ContextIndexRow,
 } from "@openroly/adapter";
-import { checkoutForkFolder, mergeTaskFolder } from "@openroly/core/node";
-import { changedSinceGitState, computeGitState, type GitState } from "./git-state.ts";
+import { checkoutForkFolder, computeGitState, mergeTaskFolder } from "@openroly/core/node";
+import { changedSinceGitState, type GitState } from "./git-state.ts";
 
 export interface OpenRolyClientConfig {
   baseUrl: string;
   token: string;
   /** device key の永続化単位(credential store の kind と同じ)。省略時は "default" */
   deviceKind?: string;
-  /** triage session の scope token(EP-0013 W3 / REQ-61 ②)。broker が dedicated session の
+  /** この MCP server を動かしている runtime の kind(PBI-0557)。OPENROLY_RUNTIME_KIND と同じ値。
+   * work_current が「別の runtime で止まった work」を continue_candidate として出す時の自分側の値 */
+  runtimeKind?: string;
+  /** session の scope token(EP-0013 W3 / REQ-61 ② → PBI-0320)。broker が 5 lane + Manual の session の
    * env `OPENROLY_SESSION_SCOPE` に載せた物を server.ts が受けて全 request の header に付ける。
-   * 無ければ header 自体を送らない(Manual / AUTO / owner lane は従来どおり全権) */
+   * 無ければ header 自体を送らない(broker を通らない手元の session。agent 面の書き込みは 403 scope_required) */
   scopeToken?: string;
   /** source(repo 相対 path)を解く基点(PBI-0433)。MCP server は起動した cwd = runtime の作業 dir */
   cwd?: string;
@@ -99,6 +112,41 @@ const e2eeCall = (config: OpenRolyClientConfig) =>
 
 const deviceKindOf = (config: OpenRolyClientConfig) => config.deviceKind ?? "default";
 
+/**
+ * project の名乗り(PBI-0378): この folder の git origin を host/path に揃えた物。origin が無ければ repo root の path、
+ * git の外なら null。server へは core の memoryScopeKey で hash にしてから出す(repo の名前は出さない)
+ */
+function projectIdOf(cwd: string): string | null {
+  const git = (...args: string[]) => {
+    const r = Bun.spawnSync(["git", "-C", cwd, ...args], { stdout: "pipe", stderr: "ignore" });
+    return r.exitCode === 0 ? r.stdout.toString().trim() : "";
+  };
+  const origin = git("remote", "get-url", "origin");
+  if (origin !== "") return normalizeGitRemote(origin);
+  const root = git("rev-parse", "--show-toplevel");
+  return root === "" ? null : root;
+}
+
+/** 記憶の本文を account から開く。上がっていない・鍵が無い・壊れている は null(平文を作る道は無い) */
+async function openMemoryBody(
+  e2ee: ReturnType<typeof e2eeCall>,
+  keys: { keyId: string; privateJwk: JsonWebKey }[],
+  fingerprint: string,
+): Promise<Uint8Array | null> {
+  let envelope: EncryptedEnvelope;
+  try {
+    envelope = (await e2ee(`/v1/context-values/${fingerprint}`)) as EncryptedEnvelope;
+  } catch {
+    return null;
+  }
+  const recipients = (Array.isArray(envelope?.recipients) ? envelope.recipients : []).filter(
+    (r): r is EncryptedEnvelope["recipients"][number] => typeof (r as { device_key_id?: unknown } | null)?.device_key_id === "string",
+  );
+  const key = keys.find((k) => recipients.some((r) => r.device_key_id === k.keyId));
+  if (!key) return null;
+  return open({ ...envelope, recipients }, key).catch(() => null);
+}
+
 export interface SendInput {
   to: string;
   text?: string;
@@ -122,6 +170,8 @@ interface WorkRow {
   id: string;
   title: string;
   status: string;
+  /** 明示の owner("<kind>:<id>"・PBI-0467)。root は自分の account、task は親から継承 */
+  owner?: string;
   lease_epoch: number;
   lease_holder_run: string | null;
   lease_acquired_at: string | null;
@@ -230,6 +280,37 @@ export interface WorkContextSearchInput {
   max_tokens?: number;
 }
 
+/** PBI-0378: memory_propose の入力(schemas.ts の memoryProposeInputShape と同じ形) */
+export interface MemoryProposeInput {
+  scope: string;
+  type: string;
+  content: string;
+  source_work_id?: string;
+  run_id?: string;
+  supersedes?: string;
+}
+
+/** PBI-0378: memory_search の入力 */
+export interface MemorySearchInput {
+  /** 端末で開いた本文にどれかの語が含まれる物(大文字小文字は区別しない) */
+  query?: string;
+  /** 引いた記録を残す仕事 */
+  work_id?: string;
+  max_tokens?: number;
+}
+
+/** GET /v1/memory の 1 行(本文は無い) */
+interface MemoryIndexRow {
+  id: string;
+  scope: string;
+  scope_key: string | null;
+  type: string;
+  fingerprint: string;
+  source_work_id: string | null;
+  source_runtime_kind: string | null;
+  created_at: string;
+}
+
 /**
  * PBI-0437: `auto/`(30 秒 tick の事実)と `inbox/`(work_message)は agent の手書きで上書きさせない。
  * 壁は agent が呼ぶ口に置き、tick だけが allowReserved で通る(CAS に書く前・task を作る前に落とす)
@@ -312,6 +393,8 @@ export function createAccountTools(config: OpenRolyClientConfig) {
       const message = (await call(config, `/v1/messages/${messageId}`)) as { content: MessageContent };
       return openEnvelope(deviceKindOf(config), message, e2eeCall(config));
     },
+    // PBI-0579: message の thread(peer_address / peer_handle)。MCP server が untrusted な lane で「値を運んできた送り手」を引く
+    thread_get: (threadId: string) => call(config, `/v1/threads/${encodeURIComponent(threadId)}`),
     send: async (input: SendInput) => {
       const { to, text, urls, files, force } = input;
       const content = await sealForHandle(e2eeCall(config), deviceKindOf(config), to, { text, urls, files });
@@ -435,10 +518,35 @@ export function createAccountTools(config: OpenRolyClientConfig) {
       const works = (await call(config, "/v1/works")) as WorkRow[];
       const now = Date.now();
       const held = works
-        .filter((w) => isLeaseLive(w, now))
+        .filter((w) => isLeaseLive(w, now) && w.status !== "done")
         .sort((a, b) => leaseTime(b) - leaseTime(a));
+      // PBI-0557: 別の runtime が usage limit で止まった work を候補として出す(自分の runtime で
+      // 止まった物は出さない — それは自分が続けるべき仕事であって移し先の候補ではない)。
+      // live の work の event 末尾だけが根拠(stallOf)。複数止まっていたら lease の新しい方 1 本
+      let candidate: { work_id: string; title: string; runtime: string; reason: string; at: string } | null = null;
+      const mine = config.runtimeKind ?? null;
+      for (const h of held) {
+        const ev = (await call(config, `/v1/works/${encodeURIComponent(h.id)}/events`)) as {
+          kind: string;
+          payload: Record<string, unknown> | null;
+          occurred_at: string;
+        }[];
+        const s = stallOf(
+          ev.map((x) => ({ kind: x.kind, payload: x.payload, createdAt: new Date(x.occurred_at) })),
+        );
+        if (s && s.runtime != null && s.runtime !== mine) {
+          candidate = {
+            work_id: h.id,
+            title: h.title,
+            runtime: s.runtime,
+            reason: s.reason,
+            at: s.at.toISOString(),
+          };
+          break;
+        }
+      }
       const w = held[0];
-      if (!w) return null;
+      if (!w) return candidate == null ? null : { continue_candidate: candidate };
       return {
         work_id: w.id,
         title: w.title,
@@ -446,6 +554,7 @@ export function createAccountTools(config: OpenRolyClientConfig) {
         lease: { epoch: w.lease_epoch, holder_run: w.lease_holder_run },
         handled_runtime_id: w.handled_runtime_id ?? null,
         ambiguous: held.length > 1,
+        ...(candidate ? { continue_candidate: candidate } : {}),
       };
     },
     work_get: (workId: string) => call(config, `/v1/works/${encodeURIComponent(workId)}`),
@@ -580,6 +689,105 @@ export function createAccountTools(config: OpenRolyClientConfig) {
       }
       // PBI-0440: 枝の Context Profile で server が隠した key(名前だけ)。無い = 絞っていない work
       return { work_id: workId, ...resolved, ...(res.hidden_by_profile ? { hidden_by_profile: res.hidden_by_profile } : {}) };
+    },
+    /**
+     * PBI-0378(図86): 覚える候補を 1 つ出す。形の壁と注入検査は **送る前に**この端末で行い、落ちたら HTTP を 1 本も打たない。
+     * 本文は account 鍵へ seal して fingerprint の置き場に預け、server には索引だけを出す(使える記憶にするのは人)
+     */
+    memory_propose: async (input: MemoryProposeInput) => {
+      let scopeKey: string | null = null;
+      if (input.scope === "project") {
+        const projectId = projectIdOf(config.cwd ?? process.cwd());
+        if (projectId === null) return { proposed: false, error: "not_in_a_repository" };
+        scopeKey = await memoryScopeKey(projectId);
+      }
+      const checked = validateMemoryInput({ scope: input.scope, scope_key: scopeKey, type: input.type, content: input.content });
+      if (!checked.ok) return { proposed: false, error: checked.reason };
+      const scan = scanMemoryContent(checked.payload.content);
+      if (!scan.ok) return { proposed: false, blocked: scan.reason };
+      const bytes = memoryPayloadBytes(checked.payload);
+      const fingerprint = await memoryFingerprint(checked.payload);
+      const envelope = await seal(bytes, [await ownAccountPublicKey(e2eeCall(config))]);
+      await call(config, `/v1/context-values/${fingerprint}`, { method: "PUT", body: envelope });
+      const res = (await call(config, "/v1/memory", {
+        body: {
+          scope: checked.payload.scope,
+          scope_key: checked.payload.scope_key,
+          type: checked.payload.type,
+          fingerprint,
+          size: bytes.byteLength,
+          ...(input.source_work_id ? { source_work_id: input.source_work_id } : {}),
+          ...(input.run_id ? { source_run_id: input.run_id } : {}),
+          ...(input.supersedes ? { supersedes: input.supersedes } : {}),
+        },
+      })) as { record: { id: string; status: string }; created: boolean };
+      return { proposed: true, id: res.record.id, status: res.record.status, created: res.created };
+    },
+    /**
+     * PBI-0378(図86): 承認済みの記憶を引く(この repo の project と personal)。本文はこの端末で開き、core の
+     * reviewOpenedMemory(hash 照合 + 注入検査)を通った物だけを返す —— tool を迂回して置かれた候補もここで止まる。
+     * 返した record id は /v1/memory/recalled に残す(順 10 の bench が「誰が何を使ったか」を読む口)
+     */
+    memory_search: async (input: MemorySearchInput = {}) => {
+      const { records } = (await call(config, "/v1/memory")) as { records: MemoryIndexRow[] };
+      const projectId = projectIdOf(config.cwd ?? process.cwd());
+      const projectKey = projectId === null ? null : await memoryScopeKey(projectId);
+      const e2ee = e2eeCall(config);
+      const keys = await readerKeys(deviceKindOf(config), e2ee);
+      // ponytail: 語のどれかを含むだけ(順位なし)。溜まって外れが目立ったら C2 の端末索引(FTS5)で置き換える
+      const words = (input.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+      const budget = input.max_tokens ?? CONTEXT_SEARCH_DEFAULT_MAX_TOKENS;
+      const found: {
+        id: string;
+        type: string;
+        scope: string;
+        content: string;
+        source: { runtime_kind: string | null; work_id: string | null };
+        created_at: string;
+      }[] = [];
+      let blocked = 0;
+      let unreadable = 0;
+      let omitted = 0;
+      let used = 0;
+      for (const r of records) {
+        if (r.scope !== "personal" && (projectKey === null || r.scope_key !== projectKey)) continue;
+        const plaintext = await openMemoryBody(e2ee, keys, r.fingerprint);
+        if (plaintext === null) {
+          unreadable += 1;
+          continue;
+        }
+        const review = await reviewOpenedMemory(r, plaintext);
+        if (!review.ok) {
+          blocked += 1;
+          continue;
+        }
+        const text = review.payload.content.toLowerCase();
+        if (words.length > 0 && !words.some((w) => text.includes(w))) continue;
+        const item = {
+          id: r.id,
+          type: r.type,
+          scope: r.scope,
+          content: review.payload.content,
+          source: { runtime_kind: r.source_runtime_kind, work_id: r.source_work_id },
+          created_at: r.created_at,
+        };
+        const cost = estimateTokens(JSON.stringify(item));
+        if (used + cost > budget) {
+          omitted += 1;
+          continue;
+        }
+        used += cost;
+        found.push(item);
+      }
+      const recallRecorded =
+        found.length > 0 &&
+        (await call(config, "/v1/memory/recalled", {
+          body: { record_ids: found.map((f) => f.id), ...(input.work_id ? { work_id: input.work_id } : {}) },
+        }).then(
+          () => true,
+          () => false,
+        ));
+      return { records: found, blocked, unreadable, omitted, recall_recorded: recallRecorded };
     },
     /**
      * 係(handled_runtime_id)がこの runtime の work。**id でも kind でも一致**(handoff の `to` はどちらも受ける)。

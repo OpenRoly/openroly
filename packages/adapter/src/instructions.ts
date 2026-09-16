@@ -12,7 +12,7 @@ import { withFileLock, writeFileAtomic } from "./credentials.ts";
 // **global** 指示ファイルに入る。図14b が正本。
 //
 // 形は 2 つあるが **管理単位はどちらも同じ「ブロック」** 1 種類だけ:
-//   file 形 (~/.claude/CLAUDE.md ・ ~/.codex/AGENTS.md ・ ~/.gemini/GEMINI.md ・
+//   file 形 (~/.claude/CLAUDE.md ・ ~/.codex/AGENTS.md ・
 //            ~/.config/opencode/AGENTS.md): 人が書いた本文と同居するので、ブロックだけを
 //            足す / 差し替える / 抜く。ブロックの外は 1 byte も触らない。
 //   dir 形  (kiro steering …): `<dir>/<filename>` が丸ごと 1 extension。中身は file 形と

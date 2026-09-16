@@ -8,12 +8,13 @@
 # Generated files are meant to be regenerated, not merged.
 
 # ---------- Generated files (regenerate on conflict; never merge) ----------
-# Regenerate: bun run plugin:build (adapters/official/*/package.json)
-*.bundle.js                                 -merge -diff
+# The MCP bundle used to live here. It is no longer tracked at all (PBI-0597): it is built by
+# `bun run plugin:build` / `openroly install <runtime>` / one CI step, so there is nothing to merge.
 # Regenerate: bun scripts/catalog-build.ts (--check shows the diff against the committed file)
 packages/core/registry/detectors.v1.json    -merge
-# Regenerate: bash scripts/diagrams-build.sh (sources are docs/diagrams/*.md)
-docs/diagrams.md                            -merge
+# The concatenated dev diagram used to live here. It is no longer tracked either (PBI-0607): it is
+# built by `bash scripts/diagrams-build.sh` / `./diagrams-check.sh` / one CI step, and the machine
+# checks read `docs/diagrams/*.md` directly, so there is nothing to merge.
 
 # ---------- Lock files (take one side, then reinstall) ----------
 bun.lock                                    -merge
@@ -32,7 +33,8 @@ broker/Cargo.lock                           -merge
 
 # ---------- Deliberately left out (with reasons) ----------
 # No merge=union for docs/diagrams.md: union mixes both sides without conflict markers, which
-#   silently breaks structured markdown. The fix for that file is one file per figure.
+#   silently breaks structured markdown. The real fix was one file per figure (PBI-0366) and then
+#   not tracking the concatenation at all (PBI-0607) — an untracked file never merges.
 # No merge=mergiraf (a syntax-aware merge driver) yet: there is no bottle for this platform, so it
 #   would be a source build, and attributes written before the driver is set in git config
 #   **silently do nothing**. Add it in the same commit as the install.

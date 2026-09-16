@@ -1,0 +1,25 @@
+{
+  "protocol": "paap/0.1",
+  "handle": "@alice",
+  "display_name": "Alice",
+  "current_work": {
+    "id": "wrk_01936b2a7c4e7a1b9f3d2e8c6a5b4d22",
+    "title": "Review: rate limiting",
+    "status": "running"
+  },
+  "latest_checkpoint": {
+    "version": 1,
+    "write_epoch": 1,
+    "content_hash": "21ad958c4d8f25234e91264e0c1cb3e0846511584e620108217ea87350c2d1f4",
+    "brief_sections": [
+      "goal",
+      "relevant_artifacts",
+      "git_state"
+    ]
+  },
+  "last_handoff": null,
+  "reenter": {
+    "credential_refs": [],
+    "devices": 0
+  }
+}

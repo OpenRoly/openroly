@@ -1,0 +1,53 @@
+{
+  "protocol": "paap/0.1",
+  "account_id": "acc_01936b2a7c4e7a1b9f3d2e8c6a5b4d10",
+  "agent_id": "agt_01936b2a7c4e7a1b9f3d2e8c6a5b4d11",
+  "display_name": "Alice",
+  "owner": "account:acc_01936b2a7c4e7a1b9f3d2e8c6a5b4d10",
+  "handles": [
+    {
+      "handle": "alice",
+      "status": "current"
+    },
+    {
+      "handle": "alice_old",
+      "status": "alias"
+    }
+  ],
+  "keys": {
+    "account": {
+      "key_id": "acct-key-1",
+      "jwk": {
+        "kty": "EC",
+        "crv": "P-256",
+        "x": "MKBCTNIcKUSDii11ySs3526iDZ8AiTo7Tu6KPAqv7D4",
+        "y": "4Etl6SRW2YiLUrN5vfvVHuhp7x8PxltmWWlbbM4IFyM"
+      }
+    },
+    "devices": [
+      {
+        "id": "dev-macbook",
+        "name": "MacBook Pro",
+        "jwk": {
+          "kty": "EC",
+          "crv": "P-256",
+          "x": "MKBCTNIcKUSDii11ySs3526iDZ8AiTo7Tu6KPAqv7D4",
+          "y": "4Etl6SRW2YiLUrN5vfvVHuhp7x8PxltmWWlbbM4IFyM",
+          "d": "EXAMPLE-NOT-A-REAL-PRIVATE-KEY"
+        }
+      },
+      {
+        "id": "dev-old-phone",
+        "name": "Old phone",
+        "jwk": {
+          "kty": "EC",
+          "crv": "P-256",
+          "x": "MKBCTNIcKUSDii11ySs3526iDZ8AiTo7Tu6KPAqv7D4",
+          "y": "4Etl6SRW2YiLUrN5vfvVHuhp7x8PxltmWWlbbM4IFyM"
+        },
+        "revoked_at": "2026-09-14T08:00:00Z"
+      }
+    ]
+  },
+  "exported_at": "2026-09-14T12:00:00Z"
+}

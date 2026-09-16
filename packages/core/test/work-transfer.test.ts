@@ -107,6 +107,7 @@ describe("renderCapsule(PBI-0439 AC-4)", () => {
     current_state: { step: 3 },
     decisions: ["two-phase"],
     unresolved_questions: ["timeout?"],
+    failed_attempts: ["one-phase transfer lost the lease"],
     relevant_artifacts: ["docs/diagrams/083-fig84.md"],
     relevant_memory: "none",
     git_state: { baseCommit: "abc", dirty: 0 },

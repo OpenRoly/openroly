@@ -21,7 +21,6 @@ body:
         - packages/mcp-mask
         - adapters/official/claude
         - adapters/official/codex
-        - adapters/official/gemini
         - adapters/official/api
         - specs/ (documentation mismatch)
         - README / install steps

@@ -81,7 +81,9 @@ describe("doctor", () => {
     const findings = await doctorRuntime({ adapter: fakeAdapter, ctx, env });
     const credential = findings.find((f) => f.label === "credential")!;
     expect(credential.ok).toBe(false);
-    expect(credential.detail).toContain("openroly install claude");
+    // README の語(PBI-0641)。`install` に戻すと赤くなる
+    expect(credential.detail).toContain("openroly pair claude");
+    expect(credential.detail).not.toContain("openroly install");
   });
 
   test("credential が有効なら全て OK", async () => {

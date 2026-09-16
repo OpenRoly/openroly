@@ -55,7 +55,9 @@ async fn generic_path_starts_catalog_runtimes_and_reaches_model_host() {
 
     let home = std::env::temp_dir().join(format!("openroly-broker-0240-generic-{}", std::process::id()));
     let _ = fs::remove_dir_all(&home);
+    // machine-ok: catalog の実 runtime を起こす実射（#[ignore]）。機械の設定ごと測る
     let env = launch::containment_env();
+    // machine-ok: catalog の実 runtime を起こす実射（#[ignore]）。機械の設定ごと測る
     let user_home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".to_string()));
 
     // catalog の binary(kiro は id ≠ binary 名)を解決する為に 1 回 scan する
@@ -70,7 +72,10 @@ async fn generic_path_starts_catalog_runtimes_and_reaches_model_host() {
             // allowlist 空 = 全部 403。token 消費 0 で「どこへ出ようとしたか」だけを見る
             egress: egress::EgressConfig { allow: vec![], events: Some(tx), upstream_override: None, observe: None },
             folder: None,
-            lane: "manual",
+            // PBI-0548 以降、generic entry は lane work でしか起きない(他は lane_not_contained)。
+            // ここが "manual" のままだと opencode / kiro が起こされず、この test は
+            // **generic 経路を一度も測らないまま緑**になる(2026-09-16 PBI-0618 の実機確認で発覚)
+            lane: "work",
             user_home: user_home.clone(),
             c1: &C1_OFF,
         };
@@ -85,8 +90,9 @@ async fn generic_path_starts_catalog_runtimes_and_reaches_model_host() {
             None,
             &env,
             &iso,
+            None,
         );
-        let (mut child, egress) = match result {
+        let (mut child, egress, _hub) = match result {
             Ok(v) => v,
             Err(reason) => {
                 println!("· {runtime}: 起こさなかった({reason})");
@@ -109,13 +115,14 @@ async fn generic_path_starts_catalog_runtimes_and_reaches_model_host() {
                 hosts.insert(h.to_string());
             }
         }
-        // catalog の egress.hosts と内蔵表の union(pbi0238 と同じ見方)
+        // catalog の egress.hosts(PBI-0616: registry が正本。pbi0238 と同じ見方)
         let catalog_hosts: Vec<String> = reg
             .detector(runtime)
             .and_then(|d| d.egress.as_ref())
             .map(|e| e.hosts.clone())
             .unwrap_or_default();
-        let table = egress::hosts_for(&catalog_hosts, runtime, "", None);
+        let table = egress::hosts_for(&catalog_hosts, true, runtime, "", None)
+            .unwrap_or_else(|e| panic!("{runtime}: catalog に egress.hosts が要る ({e})"));
         let reached: Vec<&String> = hosts.iter().filter(|h| egress::allows(&table, h)).collect();
         println!("· {runtime}: proxy に来た host = {hosts:?} / catalog+内蔵表と一致 = {reached:?}");
         assert!(

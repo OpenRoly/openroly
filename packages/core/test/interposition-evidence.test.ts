@@ -10,13 +10,13 @@ import {
 
 // PBI-0461: 実測表(scripts/probes/interposition-probe.ts が書く)の形と「文書の写しを true にしない」を守る。
 
-const RUNTIMES = ["claude", "codex", "gemini", "kimi"];
+const RUNTIMES = ["claude", "codex", "kimi"];
 
 function evidenceViolations(table: any[]): string[] {
   const out: string[] = [];
   for (const r of table) {
     const at = `${r.runtime}`;
-    if (!RUNTIMES.includes(r.runtime)) out.push(`${at}: runtime が 4 つの外`);
+    if (!RUNTIMES.includes(r.runtime)) out.push(`${at}: runtime が 3 つの外`);
     if (!r.version || !r.measured_at) out.push(`${at}: version / measured_at が無い`);
     if (!INTERPOSITION_LEVELS.includes(r.level)) out.push(`${at}: level ${r.level} が値集合の外`);
     const keys = Object.keys(r.capabilities ?? {}).sort();
@@ -37,7 +37,7 @@ function evidenceViolations(table: any[]): string[] {
 const all = (v: Measured) => Object.fromEntries(INTERPOSITION_CAPABILITIES.map((c) => [c, v])) as Record<InterpositionCapability, Measured>;
 
 describe("interposition.v1.json(実測表)", () => {
-  test("AC-4: 4 runtime が 1 行ずつ在り、値集合・observed・level が全部守られている", () => {
+  test("AC-4: 3 runtime が 1 行ずつ在り、値集合・observed・level が全部守られている", () => {
     expect(rows.map((r) => r.runtime).sort()).toEqual(RUNTIMES);
     expect(evidenceViolations(rows)).toEqual([]);
   });

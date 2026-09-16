@@ -37,7 +37,7 @@ pub struct Adoption {
 /// `claude mcp add` のような **runtime 自身の CLI** を呼ぶ。その CLI の起動が数秒かかる機械では
 /// 5 秒を超え、全部 `adopt_timeout` で落ちて **MCP が 1 つも登録されない**
 /// (同じ機械で `claude --version` の probe も 5 秒で timeout していた)。
-/// 60 秒に伸ばし(30 秒でも gemini が落ちた)、代わりに呼び出し側で **並行**に走らせて
+/// 60 秒に伸ばし(30 秒でも落ちる runtime があった)、代わりに呼び出し側で **並行**に走らせて
 /// WS ループの停止時間を 1 件分に抑える(件数の上限は `ADOPT_CONCURRENCY`)。
 const ADOPT_TIMEOUT: Duration = Duration::from_secs(60);
 

@@ -135,11 +135,9 @@ describe("peek.jsonl(MCP 側・PBI-0224)", () => {
     await rm(home, { recursive: true, force: true });
   }, 30_000);
 
-  test("AC-1 補足: 電話番号は server.ts の json() では pattern mask されない(model にもそのまま渡っている)= log も同じ面", async () => {
-    // PBI 本文の「⟨p:…⟩」は openroly-mask に無い placeholder(placeholder は ⟨s:n⟩ の 1 種のみ)。
-    // server.ts の json() は静的 secrets の maskValue だけを掛けるので、pattern(電話)は mask されない。
-    // peek は「model が見た面」を写す物であって mask を増やす物ではないので、その事実をここで凍結する
-    // (server.ts が pattern mask を掛ける様になったらこの test が赤くなり、log も同時に変わる)。
+  test("AC-1 補足 / PBI-0558 AC-3: 電話番号も server.ts の json() で pattern mask される(model にも log にも生で出ない)", async () => {
+    // placeholder は ⟨s:n⟩ の 1 種のみ(openroly-mask)。PBI-0558 までは json() が辞書だけを掛け、電話番号は生で model に
+    // 届いていた(REQ-69 のずれ)。今は Masker(辞書 + pattern)なので、model が見た面にも peek にも番号は 0 回
     const { home, secretsPath } = await fixture();
     const session = await connect({
       OPENROLY_TOKEN: "par_peek",
@@ -156,7 +154,9 @@ describe("peek.jsonl(MCP 側・PBI-0224)", () => {
       .split("\n")
       .filter((l) => l.length > 0)
       .map((l) => JSON.parse(l));
-    expect(text(read).includes(PHONE)).toBe(row1.output.includes(PHONE));
+    expect(text(read)).not.toContain(PHONE);
+    expect(row1.output).not.toContain(PHONE);
+    expect(text(read)).toContain("⟨s:1⟩"); // 辞書が ⟨s:0⟩、見つかった番号がその次
     await rm(home, { recursive: true, force: true });
   }, 30_000);
 
@@ -201,7 +201,8 @@ describe("peek.jsonl(MCP 側・PBI-0224)", () => {
     expect(existsSync(join(home, "sessions"))).toBe(false);
     expect(session.stderr()).not.toContain("peek:");
     // 応答は peek 有りの時と同じ masked 形(mask は peek と独立に効く)
-    expect(JSON.parse(text(read))).toMatchObject({ id: "m1", content: { text: `call ${PLACEHOLDER} at ${PHONE}` } });
+    // PBI-0558 AC-3: 電話番号も pattern で伏せる(辞書が ⟨s:0⟩、見つかった番号がその次)
+    expect(JSON.parse(text(read))).toMatchObject({ id: "m1", content: { text: `call ${PLACEHOLDER} at ⟨s:1⟩` } });
     await rm(home, { recursive: true, force: true });
   }, 30_000);
 
@@ -292,6 +293,55 @@ describe("openSessionUpdate(MCP 側・PBI-0229 AC-X2)", () => {
       await new Promise((r) => setTimeout(r, 100));
     } finally {
       await rm(home, { recursive: true, force: true });
+    }
+  });
+});
+
+// PBI-0230: hub turn dir への peek。broker が hub wake の env に載せる OPENROLY_SESSION_DIR を
+// 優先して使う事と、env は信頼境界の外なので門(絶対 path・home/sessions 配下・.. 禁止)を
+// 持つ事を in-process で検査する(server.ts → openPeek の env 受け渡しは OS が担う)
+// 負の対照(実測): checkedSessionDir の .. 検査を外すと「門外は null・file を作らない」が赤
+describe("OPENROLY_SESSION_DIR(hub turn dir・PBI-0230)", () => {
+  test("home/sessions/hub 配下ならそこに peek.jsonl が落ち、標準位置には作らない", async () => {
+    const { home } = await fixture();
+    try {
+      const { openPeek } = await import("../src/peek.ts");
+      const dir = join(home, "sessions", "hub", "acc-hub", "claude");
+      mkdirSync(dir, { recursive: true });
+      const peek = openPeek({ OPENROLY_SESSION_ID: "req_hub", OPENROLY_SESSION_DIR: dir }, home);
+      expect(peek).not.toBeNull();
+      peek!.record({ tool: "inbox_read", input: { message_id: "m1" }, output: "masked" });
+      const lines = readFileSync(join(dir, "peek.jsonl"), "utf8").split("\n").filter((l) => l.length > 0);
+      expect(lines).toHaveLength(2);
+      expect(JSON.parse(lines[0]!)).toMatchObject({ session: "req_hub" });
+      expect(JSON.parse(lines[1]!)).toMatchObject({ tool: "inbox_read" });
+      // 標準位置(sessions/<id>/)には落ちない(2 箇所に散らばらない)
+      expect(existsSync(join(home, "sessions", "req_hub"))).toBe(false);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("門外(相対 / sessions 自身 / .. / broker home の外)は stderr 1 行で null・file を作らない(fail-open)", async () => {
+    const { home } = await fixture();
+    const outside = await mkdtemp(join(tmpdir(), "openroly-peek-out-"));
+    try {
+      const { openPeek } = await import("../src/peek.ts");
+      const cases = [
+        "sessions/hub/acc/claude", // 相対 path
+        join(home, "sessions"), // leaf 無し(peek.jsonl が sessions 直下に散る)
+        `${home}/sessions/../escape`, // .. を含む(join が正規化して消すので生文字列で作る)
+        join(outside, "hub", "acc", "claude"), // broker home の外
+      ];
+      for (const dir of cases) {
+        expect(openPeek({ OPENROLY_SESSION_ID: "req_bad", OPENROLY_SESSION_DIR: dir }, home)).toBeNull();
+      }
+      // どの case も標準位置へフォールバックしていない(怪しい env は黙って別の場所に書かない)
+      expect(existsSync(join(home, "sessions", "req_bad"))).toBe(false);
+      expect(existsSync(join(outside, "hub"))).toBe(false);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
     }
   });
 });

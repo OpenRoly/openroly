@@ -28,6 +28,9 @@ export const CONTRACT_TOOLS = [
   "inbox_list",
   "inbox_read",
   "mark_read",
+  // Memory v1(PBI-0378 / CAP-7・図86): 候補を出す口と承認済みを引く口の 2 本だけ
+  "memory_propose",
+  "memory_search",
   "notification_label",
   "reply",
   "rules_list",

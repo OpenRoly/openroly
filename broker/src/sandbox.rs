@@ -28,7 +28,7 @@ use tokio::process::Command;
 pub struct SandboxSpec {
     pub folder: PathBuf,
     pub session_dir: PathBuf,
-    /// runtime の config / cache(`~/.claude` 等)。catalog の `native.writable_dirs` が来たら置換(PBI-0240)
+    /// runtime の config / cache(`~/.claude` 等)。runtime ごとの表 `writable_extra`(PBI-0548)
     pub writable_extra: Vec<PathBuf>,
     /// read も禁じる path(`~/.ssh` 等)。`default_deny_read` が既定
     pub deny_read: Vec<PathBuf>,
@@ -102,13 +102,42 @@ pub fn default_deny_read(home: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// write を許す既定(runtime の config / cache)。catalog の `native.writable_dirs` で置換(PBI-0240)。
+/// dedicated session が folder / session_dir の他に書ける場所。**runtime ごとの表**(PBI-0548)。
+/// 組込み tool が生きた engine(opencode 等)に `~/.claude/settings.json` の hooks や別 engine の config を
+/// 書かせると、次の手動起動で sandbox の外で走る。だから catalog engine は自分の config / data / cache だけ。
+/// 表に無い runtime は何も足さない(fail-closed。generic 経路は `sandbox_verified` の entry だけなので、
+/// 実測した engine はここに行を持つ)。
+///
+/// 置き場は engine と同じ env で決める(`env` は子が継ぐ broker の env)。`XDG_*_HOME` は絶対 path の時だけ使う(XDG spec)。
+/// 2026-09-14 実測: e2e は `XDG_DATA_HOME` を一時 dir に置くので、`~/.local/share/opencode` 固定の表では opencode が
+/// `EPERM: mkdir …/data/opencode` で起動直後に落ちた。XDG は `<dir>/opencode` を足すだけなので env が何でも他所は開かない。
+/// `KIRO_HOME` は dir そのものを開けるので、HOME とその祖先は受け取らない。
+pub fn writable_extra(runtime: &str, home: &Path, env: &dyn Fn(&str) -> Option<String>) -> Vec<PathBuf> {
+    let dir = |var: &str, default_rel: &str| {
+        env(var).map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| home.join(default_rel))
+    };
+    match runtime {
+        "claude" | "codex" => default_writable_extra(home),
+        // xdg-basedir(2026-09-14 この機の ~/.config・~/.local/share・~/.local/state・~/.cache に opencode が在る)
+        "opencode" => [("XDG_CONFIG_HOME", ".config"), ("XDG_DATA_HOME", ".local/share"), ("XDG_STATE_HOME", ".local/state"), ("XDG_CACHE_HOME", ".cache")]
+            .iter()
+            .map(|(var, rel)| dir(var, rel).join("opencode"))
+            .collect(),
+        // native.home(catalog の env は KIRO_HOME)+ data dir(2026-09-14 この機に ~/Library/Application Support/kiro-cli が在る)
+        "kiro" => {
+            let kiro_home = Some(dir("KIRO_HOME", ".kiro")).filter(|p| !home.starts_with(p)).unwrap_or_else(|| home.join(".kiro"));
+            vec![kiro_home, home.join("Library/Application Support/kiro-cli")]
+        }
+        _ => vec![],
+    }
+}
+
+/// claude / codex の書ける場所(組込み tool を落として起こす 2 runtime。既定のまま)。
 pub fn default_writable_extra(home: &Path) -> Vec<PathBuf> {
     [
         ".claude",
         ".claude.json",
         ".codex",
-        ".gemini",
         ".config",
         ".cache",
         ".local",
@@ -874,6 +903,34 @@ mod tests {
         let extra = default_writable_extra(home);
         assert!(extra.contains(&PathBuf::from("/Users/x/.claude")));
         assert!(extra.contains(&PathBuf::from("/Users/x/Library/Application Support")));
+        // PBI-0548: claude / codex は既定のまま。catalog engine は自分の dir だけ(別 engine の config・~/.config 全体に書かせない)
+        let no_env = |_: &str| None;
+        assert_eq!(writable_extra("claude", home, &no_env), extra);
+        assert_eq!(writable_extra("codex", home, &no_env), extra);
+        let oc = writable_extra("opencode", home, &no_env);
+        assert!(oc.contains(&PathBuf::from("/Users/x/.config/opencode")) && oc.contains(&PathBuf::from("/Users/x/.local/share/opencode")));
+        // 置き場を env で動かした機: 絶対 path の XDG は `<dir>/opencode` だけを開ける。相対 path は spec どおり無視
+        let xdg = |k: &str| match k {
+            "XDG_DATA_HOME" => Some("/tmp/xdg/data".to_string()),
+            "XDG_CONFIG_HOME" => Some("relative/config".to_string()),
+            _ => None,
+        };
+        let moved = writable_extra("opencode", home, &xdg);
+        assert!(moved.contains(&PathBuf::from("/tmp/xdg/data/opencode")) && !moved.contains(&PathBuf::from("/Users/x/.local/share/opencode")), "{moved:?}");
+        assert!(moved.contains(&PathBuf::from("/Users/x/.config/opencode")), "相対 XDG を使った: {moved:?}");
+        // KIRO_HOME が HOME(やその祖先)なら既定に戻す(dir そのものを開けるので HOME 全体が書ける事になる)
+        let kiro_at_home = |k: &str| (k == "KIRO_HOME").then(|| "/Users/x".to_string());
+        assert!(!writable_extra("kiro", home, &kiro_at_home).contains(&PathBuf::from("/Users/x")));
+        for engine in ["opencode", "kiro"] {
+            let own = writable_extra(engine, home, &no_env);
+            assert!(!own.is_empty(), "{engine}");
+            assert!(
+                !own.iter().any(|p| p.starts_with("/Users/x/.claude") || p.starts_with("/Users/x/.claude.json") || p.starts_with("/Users/x/.codex")
+                    || extra.contains(p)),
+                "{engine} が既定の広い dir を持つ: {own:?}"
+            );
+        }
+        assert!(writable_extra("not-in-the-table", home, &no_env).is_empty(), "表に無い runtime は何も足さない");
     }
 
     // PBI-0441: doctor が読む status file に、実際に使う backend が名乗る egress_enforcement が載る

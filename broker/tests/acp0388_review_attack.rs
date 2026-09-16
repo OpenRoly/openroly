@@ -13,6 +13,9 @@
 mod c1;
 #[path = "../src/egress.rs"]
 mod egress;
+// egress.rs の Drop が外の masking server を group ごと落とす(PBI-0558)
+#[path = "../src/procgroup.rs"]
+mod procgroup;
 #[path = "../src/sandbox.rs"]
 mod sandbox;
 
@@ -28,6 +31,7 @@ use tokio::process::Command;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 fn user_home() -> PathBuf {
+    // machine-ok: 実 runtime を起こす probe（#[ignore]）。実機の HOME がそのまま測る対象
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".to_string()))
 }
 

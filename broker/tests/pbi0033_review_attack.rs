@@ -53,13 +53,12 @@ fn attack_isolation() -> launch::Isolation<'static> {
 }
 
 /// 閉じ込め(PBI-0167)の判定に使う path。この test は判定より手前で止まることを見るので、
-/// claude config も gemini の admin policy dir も**存在しない** path で足りる。
+/// claude config も codex config も**存在しない** path で足りる。
 fn attack_containment_env() -> launch::ContainmentEnv {
     launch::ContainmentEnv {
         claude_config: std::path::PathBuf::from("/nonexistent/.claude.json"),
         claude_plugin_registry: std::path::PathBuf::from("/nonexistent/installed_plugins.json"),
         codex_config: std::path::PathBuf::from("/nonexistent/config.toml"),
-        gemini_admin_dirs: vec![],
     }
 }
 
@@ -95,7 +94,7 @@ async fn x1_unregistered_actor_never_reaches_spawn_or_cwd_fixation() {
         "req-x1",
         None,
         &attack_containment_env(),
-        &attack_isolation(),
+        &attack_isolation(), None,
     );
     assert_eq!(
         result.err(),
@@ -128,7 +127,7 @@ async fn x1b_actor_cannot_steer_cwd_via_request_id_path_traversal() {
             evil_id,
             None,
             &attack_containment_env(),
-            &attack_isolation(),
+            &attack_isolation(), None,
         );
         assert_eq!(
             result.err(),

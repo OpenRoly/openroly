@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "type": "module",
   "license": "Apache-2.0",
-  "description": "Stdio proxy that masks secrets in front of any MCP server (Claude Code, Codex, Gemini CLI).",
+  "description": "Stdio proxy that masks secrets in front of any MCP server (Claude Code, Codex, and any MCP client).",
   "bin": {
     "openroly-mask": "./src/cli.ts"
   },

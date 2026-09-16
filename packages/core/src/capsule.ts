@@ -1,8 +1,8 @@
 // PBI-0406 / CAP-3 V2: Immutable Work Capsule の判定(保存の正本は migration 050)。
 //
-// Conversation compression ではなく Work serialization(C4 #13)。入れるのは 8 要素だけ —
+// Conversation compression ではなく Work serialization(C4 #13)。入れるのは CAPSULE_FIELDS だけ —
 // 会話を入れる道を 1 つも作らない(AC-4 の壁が本体)。`conversation` / `messages` / `transcript`
-// は名指しで弾いて理由を返す。8 要素以外の未知 key は黙って落とさず、落とした key を返す
+// は名指しで弾いて理由を返す。CAPSULE_FIELDS 以外の未知 key は黙って落とさず、落とした key を返す
 // (呼び手が「何が消えたか」を知れる)。
 //
 // 借りる物(PBI-0406 の「まず 2 つを開いてから決める」): third_party/openclaw の
@@ -24,6 +24,7 @@ export const CAPSULE_FIELDS = [
   "current_state",
   "decisions",
   "unresolved_questions",
+  "failed_attempts",
   "relevant_artifacts",
   "relevant_memory",
   "git_state",
@@ -51,7 +52,7 @@ export class CapsuleConversationError extends Error {
 export interface BuildCapsuleResult {
   body: CapsuleBody;
   hash: string;
-  /** 8 要素以外で落とした key(黙って捨てない — 呼び手に返す) */
+  /** CAPSULE_FIELDS 以外で落とした key(黙って捨てない — 呼び手に返す) */
   droppedKeys: string[];
 }
 
@@ -103,11 +104,10 @@ export class CapsuleCredentialRefError extends Error {
 
 function isValidCredentialRef(value: unknown): boolean {
   if (typeof value !== "string" || !value.startsWith("env:")) return false;
-  // reconcile.ts の resolveCredentialRef と同じ split + filter(Boolean)(空セグメントは無視)。
-  // 2 箇所で別のパーサにしない —— ここが reconcile より厳しいと、capsule には通るのに
-  // 実際の解決は失敗する(または逆)という drift が起きる
-  const names = value.slice("env:".length).split(",").filter(Boolean);
-  return names.length > 0 && names.every((n) => ENV_NAME_RE.test(n));
+  // PAAP I-4(env:NAME[,NAME…])どおり空の NAME を認めない(`env:A,` `env:,A` を core だけが通し、spec だけから書いた
+  // 実装が拒否していた)。reconcile.ts の split + filter(Boolean) はこの部分集合を同じ名前の列に解くので drift しない
+  const names = value.slice("env:".length).split(",");
+  return names.every((n) => ENV_NAME_RE.test(n));
 }
 
 /** body のどこかに `credential_ref` key が在れば、その値が `env:NAME[,NAME...]` である事を要求する。
@@ -163,7 +163,7 @@ function stableStringify(value: unknown): string {
 }
 
 // ---------- Capsule Manifest(PBI-0414 / CAP-3 V4.5) ----------
-// server が持つのはこれだけ。8 要素の本文は 1 つも入らない(AC-1) —— payload_hash が
+// server が持つのはこれだけ。CAPSULE_FIELDS の本文は 1 つも入らない(AC-1) —— payload_hash が
 // 端末の CAS(packages/adapter/checkpoint-cas.ts)への参照。version / write_epoch / run_id は
 // 既存の work_capsules の型付き列のまま(ここへ重複させない)。
 
@@ -219,7 +219,7 @@ export type ManifestValidation = { ok: true; manifest: CapsuleManifest } | { ok:
 
 /**
  * server 側が受け取る manifest の形式検証(**中身は見えない・見ない** —— payload はここに無い)。
- * 8 要素の生の値が紛れ込んでいないかは見ようがない(server は payload を受け取らないので、
+ * CAPSULE_FIELDS の生の値が紛れ込んでいないかは見ようがない(server は payload を受け取らないので、
  * そもそも「平文を送る口」自体が無い — AC-1 は経路の不在で保証する。ここは manifest の形だけ)。
  */
 export function validateManifest(input: unknown): ManifestValidation {

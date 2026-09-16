@@ -214,7 +214,7 @@ export type CloudVisibility = (typeof CLOUD_VISIBILITIES)[number];
 // ---------- 秘匿境界 L3 = local_only(EP-0013 W6 / REQ-70) ----------
 /** local_only item の content を読める runtime kind の集合。local model server(PBI-0025 の
  * ollama / lmstudio)と broker(端末常駐 process・LLM 無し)。**fail-closed**: この集合に無い
- * kind(claude / codex / gemini 等の cloud LLM CLI・今後の detector id 追加分も)は全部
+ * kind(claude / codex 等の cloud LLM CLI・今後の detector id 追加分も)は全部
  * 読めない = 新しい cloud runtime の追加で静かに漏れる経路を構造で潰す。human は常に読める */
 export const LOCAL_ONLY_READER_KINDS = ["broker", "ollama", "lmstudio"] as const;
 export type LocalOnlyReaderKind = (typeof LOCAL_ONLY_READER_KINDS)[number];

@@ -1,4 +1,6 @@
+import { existsSync } from "node:fs";
 import { hostname } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { apiCall } from "./api.ts";
 import { ensureBinary, type EnsureBinaryOutcome } from "./binary.ts";
@@ -23,7 +25,14 @@ export const MCP_SERVER_ENTRY = fileURLToPath(
 /** runtime 側の設定に載る MCP server 名 */
 export const MCP_SERVER_NAME = "openroly";
 
-export const DEFAULT_BASE_URL = "http://localhost:8787";
+/**
+ * 何も設定されていない端末の行き先(PBI-0641)。**localhost ではない** —— 公開した binary を
+ * 手に入れた人が最初に打つ `pair` / `doctor` が名乗るのはこの 1 本で、そこに開発機の port を
+ * 出していた(PBI-0638 実測: `cannot connect to` の後ろが開発機の localhost だった)。Android / Windows の
+ * collector は最初からこの値を既定にしている。手元の server を指す時は `--url` /
+ * `$OPENROLY_URL` / `openroly login --url` —— 下の優先順位がそのまま効く。
+ */
+export const DEFAULT_BASE_URL = "https://atn.shibubu.ai";
 
 /**
  * この端末が繋ぐ Account API の URL を決める **唯一の関数**(PBI-0246・図7.1)。
@@ -121,6 +130,10 @@ export async function installRuntime(options: InstallOptions): Promise<InstallOu
   // register の**前**に binary を置く —— register が書き込む command は
   // resolveMcpServerCommand(PBI-0132)の結果なので、順序が逆だと今回の install だけ bun のまま残る
   const binary = await ensureBinary("openroly-mcp", { env });
+  // plugin dir の bundle(PBI-0597)。**生成物なので repo には入っていない** —— plugin 経由で
+  // 起こされた時の bun 経路(launcher の 3 段目)がここで揃う。binary が在れば使われない道なので、
+  // 作れない事は失敗ではない(bun が無い / repo の外から入れた = binary 経路で動く)
+  const bundle = buildPluginBundles();
 
   await adapter.register(ctx, {
     serverEntry: options.serverEntry ?? MCP_SERVER_ENTRY,
@@ -133,8 +146,44 @@ export async function installRuntime(options: InstallOptions): Promise<InstallOu
     status: "installed",
     credential,
     paired,
-    findings: [binaryFinding(binary), ...(await doctorRuntime({ ...options, serverName }))],
+    findings: [binaryFinding(binary), bundle, ...(await doctorRuntime({ ...options, serverName }))],
   };
+}
+
+/**
+ * plugin dir の `mcp-server.bundle.js` を source から作る(PBI-0597)。**追跡をやめた生成物**を、
+ * 実際に要る瞬間(install)に置く。手順の正本は package.json の `plugin:build` —— ここで build 行を
+ * 写さず、その script をそのまま呼ぶ(2 箇所に置くと必ずずれる。それが PBI-0597 の発端)。
+ *
+ * 失敗は **ok:true** で返す: bundle は launcher の 3 段目(bun 経路)の材料でしかなく、binary が
+ * 在る端末では 1 度も使われない。ここを ok:false にすると、bun の無い端末で `openroly install` が
+ * exit 1 になる(binary で完全に動くのに)。
+ */
+export function buildPluginBundles(): Finding {
+  const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
+  const script = join(repoRoot, "package.json");
+  if (!existsSync(script) || !existsSync(join(repoRoot, "adapters/official/claude"))) {
+    return { ok: true, label: "Plugin bundle", detail: "skipped (not running from the repo; the binary path does not need it)" };
+  }
+  try {
+    const built = Bun.spawnSync(["bun", "run", "plugin:build"], { cwd: repoRoot, stdout: "pipe", stderr: "pipe" });
+    return built.exitCode === 0
+      ? { ok: true, label: "Plugin bundle", detail: "built into adapters/official/{claude,codex} (used when the plugin starts it with bun)" }
+      : {
+          ok: true,
+          label: "Plugin bundle",
+          detail: `could not be built (${built.stderr.toString().trim().split("\n").at(-1) ?? "unknown"}). The binary path still works`,
+        };
+  } catch (e) {
+    // bun が PATH に無い機では spawnSync は exitCode を返さず **throw する**(PBI-0610 実測:
+    // `Executable not found in $PATH: "bun"`)。失敗の扱いを exitCode 経路と 1 つにする ——
+    // ここで落とすと「bun の無い端末で install を exit 1 にしない」という上の約束が破れる。
+    return {
+      ok: true,
+      label: "Plugin bundle",
+      detail: `could not be built (${e instanceof Error ? e.message : String(e)}). The binary path still works`,
+    };
+  }
 }
 
 /**
@@ -208,12 +257,15 @@ export async function doctorRuntime(options: EngineOptions): Promise<Finding[]> 
   const credential = await getCredential(adapter.id, env);
   if (!credential) {
     // **行き先を名乗る**(PBI-0246)—— 未 pair の runtime にはまだ credential が無いので、
-    // ここが「この端末は今どの server に繋ぎに行くのか」を人が読める唯一の面になる
+    // ここが「この端末は今どの server に繋ぎに行くのか」を人が読める唯一の面になる。
+    // **案内する command は README の語**(PBI-0641)。README §Get started は `login` → `pair` で、
+    // `install` を 1 度も持たない —— 公開後に最初の 1 人が読むのは README なので、同じ行為を
+    // 2 通りの名前で呼ばない(`pair` は credential を作り直すので、失効した時の道もこちらで足りる)
     findings.push({
       ok: false,
       label: "credential",
       detail:
-        `not paired. Run 'openroly install ${adapter.id}' ` +
+        `not paired. Run 'openroly pair ${adapter.id}' ` +
         `(it will connect to ${await accountBaseUrl(options.baseUrl, undefined, env)})`,
     });
     return findings;
@@ -237,7 +289,7 @@ export async function doctorRuntime(options: EngineOptions): Promise<Finding[]> 
           label: "Account connection",
           detail:
             who.status === 401
-              ? `the credential was revoked. Reconnect with 'openroly install ${adapter.id}'`
+              ? `the credential was revoked. Reconnect with 'openroly pair ${adapter.id}'`
               : `whoami returned ${who.status}`,
         },
   );

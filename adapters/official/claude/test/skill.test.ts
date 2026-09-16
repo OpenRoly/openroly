@@ -45,6 +45,7 @@ async function untouched<T>(path: string, fn: () => Promise<T>): Promise<T> {
 
 describe("claudeAdapter.applyExtension — kind=skill(PBI-0008)", () => {
   test("AC-1,2: install が SKILL.md と補助 file を書く", async () => {
+    // machine-ok: 実 config を触っていない事の見張り（実機の file そのものが測る対象）
     await untouched(join(homedir(), ".claude", "skills"), async () => {
       const { ctx, home } = await makeCtx();
       await claudeAdapter.applyExtension(ctx, {
@@ -199,6 +200,7 @@ describe("claudeAdapter.applyExtension — kind=skill(PBI-0008)", () => {
   });
 
   test("AC-11: 実 HOME を汚さない(全 test を untouched で包んでいることの自己検証)", async () => {
+    // machine-ok: 実 config を触っていない事の見張り（実機の file そのものが測る対象）
     await untouched(join(homedir(), ".claude", "skills"), async () => {
       const { ctx } = await makeCtx();
       await claudeAdapter.applyExtension(ctx, {

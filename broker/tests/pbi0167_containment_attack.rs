@@ -3,7 +3,7 @@
 //!
 //! 既定では走らせない(`#[ignore]`): 実 CLI = 実 API 呼び出し = 課金と認証と quota が要る。
 //! runtime が在る環境で
-//!   `OPENROLY_ATTACK_RUNTIMES=claude,gemini,codex cargo test --manifest-path broker/Cargo.toml \
+//!   `OPENROLY_ATTACK_RUNTIMES=claude,codex cargo test --manifest-path broker/Cargo.toml \
 //!      --test pbi0167_containment_attack -- --ignored --nocapture`
 //! と明示した時だけ、名前を挙げた runtime を実際に起こす(挙げなかった物は skip)。
 //!
@@ -59,15 +59,20 @@ async fn attacker_written_body_cannot_run_shell_in_any_runtime() {
     let wanted: Vec<&str> = wanted.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
     assert!(
         !wanted.is_empty(),
-        "OPENROLY_ATTACK_RUNTIMES に起こす runtime を挙げること(例: OPENROLY_ATTACK_RUNTIMES=claude,gemini)"
+        "OPENROLY_ATTACK_RUNTIMES に起こす runtime を挙げること(例: OPENROLY_ATTACK_RUNTIMES=claude,codex)"
     );
 
     let home = std::env::temp_dir().join(format!("openroly-broker-0167-{}", std::process::id()));
     let _ = fs::remove_dir_all(&home);
     let reg = registry::builtin();
+    // machine-ok: 実 runtime CLI を実 seatbelt で起こす実射（#[ignore]）。機械の設定ごと測る
     let env = launch::containment_env();
     // PBI-0238: 実 runtime は実 seatbelt の中で起こす(閉じ込めの土台。model host だけ許す)
-    let egress_allow = |runtime: &str| egress::hosts_for(&[], runtime, "", None);
+    // PBI-0616: registry は built-in(`is_builtin_only`)なので内蔵表へ退避する面を測る
+    let egress_allow = |runtime: &str| {
+        egress::hosts_for(&[], false, runtime, "", None)
+            .unwrap_or_else(|e| panic!("{runtime} の内蔵表 allowlist が組めない: {e}"))
+    };
 
     for runtime in wanted {
         let marker = home.join(format!("pwned-{runtime}"));
@@ -86,16 +91,18 @@ async fn attacker_written_body_cannot_run_shell_in_any_runtime() {
                 egress: egress::EgressConfig { allow: egress_allow(runtime), events: None, upstream_override: None, observe: None },
                 folder: None,
                 lane: "manual",
+                // machine-ok: 実 runtime CLI を実 seatbelt で起こす実射（#[ignore]）。機械の設定ごと測る
                 user_home: std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())),
                 c1: &C1_OFF,
             },
+        None,
         );
         // 閉じ込めが組めない環境(AC-4)は「起こさない」が正解 —— そのまま合格にする。
         if matches!(result.as_ref().err().map(String::as_str), Some("containment_unavailable" | "sandbox_unavailable")) {
             println!("· {runtime}: {}(fail-closed で起こさない)", result.as_ref().err().unwrap());
             continue;
         }
-        let (mut child, _egress) = result.expect("spawn できること");
+        let (mut child, _egress, _hub) = result.expect("spawn できること");
         let status = child.wait().await.expect("wait");
         let dir = home.join("sessions").join(&request_id);
         let stdout = fs::read_to_string(dir.join("stdout.log")).unwrap_or_default();

@@ -14,7 +14,9 @@ import { binaryTarget, saveCredential } from "@openroly/adapter";
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const LAUNCHER = join(repoRoot, "adapters/official/claude/openroly-mcp");
-const BUNDLE = join(repoRoot, "adapters/official/claude/mcp-server.bundle.js");
+// PBI-0597: bundle は追跡していない生成物。launcher の 3 段目(bun <bundle>)を測るので、無ければ作る
+const { ensurePluginBundle } = await import("../../../packages/mcp/test/ensure-bundle.ts");
+const BUNDLE = ensurePluginBundle();
 const BUILD = join(repoRoot, "scripts/build-binaries.sh");
 
 let sandbox = "";

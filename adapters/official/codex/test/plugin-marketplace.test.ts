@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
+import { ensurePluginBundle } from "../../../../packages/mcp/test/ensure-bundle.ts";
 
 // PBI-0097 review(有界)の攻撃 test。marketplace install は codex CLI 0.150.1 でも plugin 本体を
 // 検査しない(AC-X2 実測: cache dir だけ作る)ため「source path の正しさは機械で守る」が G2 の
@@ -62,7 +63,9 @@ describe("codex plugin marketplace の構造 (PBI-0097 review)", () => {
     // runtime 名の取り違え(claude 用 plugin で codex を起動する等)を刺す
     expect(claudeEntry.env?.OPENROLY_RUNTIME_KIND).toBe("claude");
     expect(codexEntry.env?.OPENROLY_RUNTIME_KIND).toBe("codex");
-    // args が参照する bundle が plugin 本体 dir に実在する(cache 内完結性の前提・図7)
+    // args が参照する bundle が plugin 本体 dir に実在する(cache 内完結性の前提・図7)。
+    // PBI-0597: bundle は追跡していない生成物なので、ここで「無ければ作る」を通してから見る
+    ensurePluginBundle();
     expect(existsSync(join(claudePluginDir, "mcp-server.bundle.js"))).toBe(true);
     expect(existsSync(join(codexPluginDir, "mcp-server.bundle.js"))).toBe(true);
     // command が指す launcher も同じく plugin dir 内に在る(PBI-0132。cache 内完結性は command 側にも要る)

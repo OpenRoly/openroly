@@ -8,11 +8,32 @@
 // 経路は 0406 の capsule 口をそのまま再利用する(`tools.work_capsule` → buildCapsule → server の
 // dedupe/heartbeat)。この file は「いつ・何を」呼ぶかだけを持ち、壁(hasKeyDeep)や dedupe
 // (content_hash)を作り直さない。
-import { gcCheckpoints } from "@openroly/adapter";
+import { gcCheckpoints, readCasPayload } from "@openroly/adapter";
 import { isTransferHolderId } from "@openroly/core";
 import type { AccountTools } from "./tools.ts";
-import { computeGitState } from "./git-state.ts";
+import { computeGitState } from "@openroly/core/node";
 import { runAutoContext } from "./auto-context.ts";
+
+/**
+ * PBI-0596: **版は前の版を引き継がない**(`pushCapsule` → `buildCapsule` は渡された field だけで版を作る)。
+ * 自動の書き手が `git_state` だけの版を積むと、その版が最新になり、受け取り側が読む**1 つの版**
+ * (`openroly continue` の `caps.at(-1)` / `work_accept` の transfer の版)から goal / next_step が消える ——
+ * Claude が死んだ後に OpenCode が受け取っても「何の仕事か」が無い。
+ *
+ * 当て方は rollback の「先に固める」(`apps/cli/src/openroly.ts` = 最新版の他の要素はそのまま・git_state
+ * だけ今)に揃える。前の版がこの端末の CAS に無い(別端末が積んだ / GC 済み)時は今までどおり git_state だけ
+ * ——**ここで throw しない**(tick は 30 秒ごとの機会を 1 回の読み損ねで失わない)。
+ */
+async function capsuleFieldsWithGitState(
+  tools: AccountTools,
+  workId: string,
+  gitState: unknown,
+): Promise<Record<string, unknown>> {
+  const caps = (await tools.work_capsules(workId).catch(() => [])) as { body?: { payload_hash?: unknown } | null }[];
+  const hash = caps.at(-1)?.body?.payload_hash;
+  const previous = typeof hash === "string" ? await readCasPayload(hash).catch(() => null) : null;
+  return { ...(previous ?? {}), git_state: gitState };
+}
 
 export type CheckpointTickResult =
   | { pushed: false; reason: "no_active_work" | "not_a_git_worktree" | "ambiguous_work" | "transfer_in_progress" }
@@ -45,7 +66,7 @@ export async function runCheckpointTick(tools: AccountTools, cwd: string): Promi
   if (!gitState) return { pushed: false, reason: "not_a_git_worktree" };
   await tools.work_capsule(current.work_id, {
     run_id: current.lease.holder_run,
-    git_state: gitState,
+    ...(await capsuleFieldsWithGitState(tools, current.work_id, gitState)),
   });
   return { pushed: true, workId: current.work_id };
 }
@@ -65,7 +86,9 @@ export async function pushCheckpointAfterProof(
 ): Promise<void> {
   try {
     const gitState = computeGitState(cwd);
-    if (gitState) await tools.work_capsule(workId, { run_id: runId, git_state: gitState });
+    if (gitState) {
+      await tools.work_capsule(workId, { run_id: runId, ...(await capsuleFieldsWithGitState(tools, workId, gitState)) });
+    }
   } catch {
     /* checkpoint は proof の成否を左右しない */
   }

@@ -87,7 +87,6 @@ async function runAdopt(
       env: {
         HOME: f.home,
         OPENROLY_HOME: f.home,
-        GEMINI_CLI_HOME: f.home,
         CLAUDE_CONFIG_DIR: f.home,
         OPENROLY_EXTRA_PATH_DIRS: "", // 実機の /usr/local/bin の本物に負けないよう決定化する
         ...env,
@@ -199,15 +198,15 @@ describe("PBI-0236 攻撃: probe の閉じ込め / 名前の分離", () => {
     expect(await whoRan(f)).toBe("STALE");
   }, 60_000);
 
-  test("攻撃6: AC-X1 は codex 固有ではない —— gemini でも同じ名前が付く", async () => {
-    const f = await fixture("gemini", { bin: "gemini" });
-    await rm(join(f.stale, "gemini"), { force: true });
-    await rm(join(f.fresh, "gemini"), { force: true });
+  test("攻撃6: AC-X1 は codex 固有ではない —— claude でも同じ名前が付く", async () => {
+    const f = await fixture("claude", { bin: "claude" });
+    await rm(join(f.stale, "claude"), { force: true });
+    await rm(join(f.fresh, "claude"), { force: true });
     const snapshot = `${f.stale}:/usr/bin:/bin`;
     const res = await runAdopt(
       f,
       { PATH: snapshot, OPENROLY_LOGIN_PATH: snapshot, OPENROLY_LOGIN_SHELL: f.shell },
-      "gemini",
+      "claude",
     );
     expect(res.code).toBe(2);
     const first = res.err.split("\n")[0]!;
