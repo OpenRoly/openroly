@@ -35,6 +35,13 @@ address, the same inbox, and the same unfinished work. You stop explaining thing
 
 Expect things to change.
 
+## Try it
+
+Mac/Linux + Claude Code or Codex → [Get started](#get-started) (verified binary + `login` + `pair`).  
+Windows / phone: use the [web app](https://atn.shibubu.ai); connecting an AI still needs a Mac or Linux machine.
+
+**Not a PTY/session relay** — identity and job continuity across runtimes, not detach/reattach of a terminal.
+
 ## Why OpenRoly
 
 - **Your agent isn't locked to one AI.** The identity, the inbox, and the work belong to your
@@ -61,6 +68,8 @@ Today every place is *Personal*. Recording each job's owner separately from your
 places can arrive later without moving your work — and an AI working in one place is never handed another place's notes.
 
 ## What you can do today
+
+**TL;DR:** One `@handle` across Claude Code / Codex / OpenCode; encrypted inbox that waits while you're away; hand off or split work with brief attached; sandboxed mail wake-ups; secrets stay on-device (including `openroly-mask`).
 
 - ✅ **One address for all your AIs.** Claude Code and Codex both sign in as the same `@you`.
 - ✅ **Works with what you already have.** OpenRoly recognizes 91 AI tools, engines, and API providers,
@@ -92,6 +101,9 @@ places can arrive later without moving your work — and an AI working in one pl
 ## Get started
 
 Create an account at **[atn.shibubu.ai](https://atn.shibubu.ai)**, then on a Mac or Linux machine:
+
+**Supported CLI binaries today:** `darwin-arm64`, `darwin-x64`, `linux-x64`.
+Linux on ARM (Graviton, Pi, etc.) is not in the latest release yet — track [releases](https://github.com/OpenRoly/openroly/releases).
 
 ```bash
 TARGET="$(uname -s | tr A-Z a-z)-$(uname -m | sed 's/x86_64/x64/')"
