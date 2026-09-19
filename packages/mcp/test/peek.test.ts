@@ -67,11 +67,19 @@ interface Session {
   close: () => Promise<void>;
 }
 
+// **測る人の ~/.claude を test の入力にしない**(PBI-0796)。MCP SDK の StdioClientTransport は
+// 渡した env に `getDefaultEnvironment()`(HOME を含む)を必ず混ぜるので、HOME を明示しないと
+// server 起動時の `ingestAndLink`(PBI-0688)が**実行者本物の skill / CLAUDE.md** を読み、
+// OPENROLY_HOME に skills / rules / mcp-servers.json を非同期に生やす。AC-X2 の
+// 「何も作られない」は、その競走に勝った時だけ緑になる嘘だった(skill を持つ機械では赤)。
+const AGENT_HOME = await mkdtemp(join(tmpdir(), "openroly-peek-agent-home-"));
+afterAll(() => rm(AGENT_HOME, { recursive: true, force: true }));
+
 async function connect(env: Record<string, string>): Promise<Session> {
   const transport = new StdioClientTransport({
     command: "bun",
     args: [SERVER],
-    env: { PATH: process.env.PATH ?? "", ...env },
+    env: { PATH: process.env.PATH ?? "", HOME: AGENT_HOME, ...env },
     stderr: "pipe",
   });
   let stderr = "";

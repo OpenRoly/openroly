@@ -21,11 +21,15 @@ import {
 // runtime CLI に依存せず engine の判定だけを見るため、fake adapter を使う。
 
 let revoked = false;
+// PBI-0765: "api" = /health は 200 で他が 500（DB quota の形・dogfood F60）/ "all" = /health も 500
+let outage: "" | "api" | "all" = "";
 const stub = Bun.serve({
   port: 0,
   fetch: (req) => {
     if (revoked) return Response.json({ error: "unauthorized" }, { status: 401 });
     const path = new URL(req.url).pathname;
+    if (outage && !(outage === "api" && path === "/health")) return Response.json({ error: "internal" }, { status: 500 });
+    if (path === "/health") return Response.json({ ok: true });
     if (path === "/v1/inbox/messages") {
       const token = req.headers.get("authorization");
       if (token === "Bearer par_401msg") return Response.json({ error: "unauthorized" }, { status: 401 });
@@ -109,6 +113,24 @@ describe("doctor", () => {
     expect(connection.ok).toBe(false);
     expect(connection.detail).toContain("revoked");
     revoked = false;
+  });
+
+  test("PBI-0765 AC-3: whoami 500 + /health 200 は「向こうの障害」と名乗る", async () => {
+    outage = "api";
+    const findings = await doctorRuntime({ adapter: fakeAdapter, ctx, env: await envWithCredential() });
+    outage = "";
+    const connection = findings.find((f) => f.label === "Account connection")!;
+    expect(connection.ok).toBe(false);
+    expect(connection.detail).toContain("/health 200");
+    expect(connection.detail).toContain("not this credential");
+  });
+
+  test("PBI-0765 AC-X: /health も答えない時は落ちず、今までの 1 行", async () => {
+    outage = "all";
+    const findings = await doctorRuntime({ adapter: fakeAdapter, ctx, env: await envWithCredential() });
+    outage = "";
+    const connection = findings.find((f) => f.label === "Account connection")!;
+    expect(connection.detail).toBe("whoami returned 500");
   });
 
   test("PBI-0709 AC-1: whoami unread 0 でも requests 未読 1 なら Account connection unread 1", async () => {

@@ -65,6 +65,11 @@ export const rulesPutInputShape = {
     tz: z.string().optional().describe("IANA timezone for digests (e.g. America/Los_Angeles; default UTC)"),
     visibility: z.enum(["full", "masked", "local_only", "none"]).optional().describe("for cloud_visibility"),
   }),
+  // PBI-0776: 提案として置く。web の確認 card に出て、人が Save するまで ingest は読まない
+  confirm: z
+    .boolean()
+    .optional()
+    .describe("true = propose it instead of saving: the rule is stored switched off and waits for the owner to press Save rules in OpenRoly. Use this whenever the owner asked for a rule in their own words"),
 };
 
 // Work Core の proof(PBI-0400 / CAP-3 V9)。**run_id は必須** —— work の lease_holder_run を

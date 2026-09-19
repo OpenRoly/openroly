@@ -38,6 +38,28 @@ export class ApiUnreachableError extends Error {
   }
 }
 
+/** 409 のうち **lease が本当に競合している** code。これ以外の 409 を「lease conflict」と呼ばない */
+const LEASE_CONFLICT_CODES = new Set(["not_holder", "lease_expired", "stale_epoch", "primary_held", "lease_held"]);
+
+/**
+ * server の拒否 → 人の言葉。**訳はここ 1 箇所**（PBI-0765）—— CLI（`worksErr`）も MCP（`OpenRolyApiError`）も
+ * これを呼ぶ。route ごとに status だけを見て訳していた頃は、同じ 409 に別の原因が同居して
+ * 「lease は何も競合していないのに lease conflict」（dogfood F69）、5xx は `HTTP 500` とだけ出て
+ * 「自分の credential が悪いのか server が死んでいるのか」が分からなかった（F59 / F60）。
+ * 先頭の `NG ` は付けない（面が付ける）。404 は面ごとに指す物が違うので面が持つ
+ */
+export function explainApiError(status: number, body: unknown): string {
+  const err = (body as { error?: unknown } | null)?.error;
+  const code = typeof err === "string" ? err : (err as { code?: unknown } | undefined)?.code;
+  const named = typeof code === "string" && code ? code : undefined;
+  if (status >= 500)
+    return `the account server failed (HTTP ${status}${named ? ` ${named}` : ""}) — server-side, not your credential. 'openroly doctor' says which`;
+  if (named === "human_only" || named === "explicit_user_intent_required")
+    return `${named}: only a person can do this — this terminal has an AI runtime credential. Run 'openroly login' first`;
+  if (status === 409 && named && LEASE_CONFLICT_CODES.has(named)) return `lease conflict: ${named}`;
+  return named ?? `HTTP ${status}`;
+}
+
 export async function apiCall<T = any>(
   baseUrl: string,
   path: string,

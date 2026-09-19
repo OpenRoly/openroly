@@ -298,9 +298,12 @@ describe("PBI-0334 --json: extensions / sync", () => {
     expect(doc.data.targets).toHaveLength(1);
     expect(doc.data.targets[0].runtime).toBe("claude");
     // noop も plan に残る(機械は自分で filter する)
+    // openroly 自身も行として出る —— sync は最初に ingestAndLink() を回し、hub が全 sink に
+    // openroly-mcp を付ける(PBI-0699)。既に付いていれば noop。機械は自分で filter する
     expect(doc.data.targets[0].plan).toEqual([
       { action: "noop", name: "github" },
       { action: "install", name: 'needs"secret\nnow' },
+      { action: "noop", name: "openroly" },
     ]);
     expect(doc.data.targets[0].failed).toEqual([
       { name: 'needs"secret\nnow', detail: expect.stringContaining("MISSING_TOKEN") },
@@ -384,7 +387,8 @@ describe("PBI-0334 --json: runtimes / doctor", () => {
     const doc = parseDoc(res.stdout);
     expect(doc.ok).toBe(true);
     const claude = doc.data.runtimes.find((r: any) => r.id === "claude");
-    expect(Object.keys(claude).sort()).toEqual(["connected", "detected", "display_name", "id", "runtime_id"]);
+    // adapter は catalog が名乗る実装名(generic/native 等。PBI-0690 で行に入った)
+    expect(Object.keys(claude).sort()).toEqual(["adapter", "connected", "detected", "display_name", "id", "runtime_id"]);
     expect(claude.connected).toBe(true);
     expect(claude.runtime_id).toBe("rt_r");
     // seed していない runtime は connected:false / runtime_id:null

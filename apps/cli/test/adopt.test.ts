@@ -25,6 +25,12 @@ beforeAll(async () => {
   await mkdir(bin, { recursive: true });
   await writeFile(join(bin, "codex"), `#!/bin/sh\necho "$@" >> ${marker}\nexit 0\n`);
   await chmod(join(bin, "codex"), 0o755);
+  // grok も同じ扱い。**開発機に grok が入っているかどうかで結果が変わらない**ようにする ——
+  // shim が無いと adopt の register が `runtime_cli_not_found` で exit 2 になり、grok を入れていない
+  // 機械(公開 CI の Linux runner)でだけ赤くなる。grok の mcp strategy は "cli" なので register は
+  // binary を要る。config.toml へ openroly-mcp を書くのは register の後の applyOpenRolyMcp()
+  await writeFile(join(bin, "grok"), `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.0.34; exit 0; fi\necho "$@" >> ${marker}\nexit 0\n`);
+  await chmod(join(bin, "grok"), 0o755);
 });
 
 afterAll(async () => {

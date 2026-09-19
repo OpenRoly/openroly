@@ -202,14 +202,14 @@ const senderOf = async (message: unknown): Promise<string[]> => {
 
 tool(
   "whoami",
-  "Identity of the attached agent account and its unread count",
+  "Identity of the attached agent account, its unread count, and run_id — the name this session names itself with when a work asks who is doing it (work_proof, work_capsule, work_context_put). It is your own name, not one read off a work",
   {},
   async () => json("whoami", {}, await tools.whoami()),
 );
 
 tool(
   "inbox_list",
-  "List received messages (metadata only, no bodies). Use inbox_read for the body",
+  "List received messages (metadata only, no bodies). Use inbox_read for the body. unread = how many unread messages that row's thread holds (a thread count, not this one message); absent when the server does not report it",
   {},
   async () => json("inbox_list", {}, await tools.inbox_list()),
 );
@@ -298,7 +298,7 @@ tool(
 
 tool(
   "rules_put",
-  "Save how the owner asked to handle things as a rule (nl = their words verbatim, scope = what it applies to, action = what to do). The server normalizes it, picks the layer (metadata / content) and returns the normalized rule — echo it back to the owner in one sentence. Putting the same nl again updates in place (no duplicate rules). sender / keywords in scope make it a content rule, stored encrypted on the server",
+  "Save how the owner asked to handle things as a rule (nl = their words verbatim, scope = what it applies to, action = what to do). The server normalizes it, picks the layer (metadata / content) and returns the normalized rule — echo it back to the owner in one sentence. Putting the same nl again updates in place (no duplicate rules). sender / keywords in scope make it a content rule, stored encrypted on the server. Pass confirm: true when the owner asked for this in their own words — the rule is then stored switched off and waits for them to press Save rules",
   rulesPutInputShape,
   async (input) => json("rules_put", input, await tools.rules_put(input)),
 );
@@ -405,7 +405,7 @@ tool(
 
 tool(
   "work_proof",
-  "Record what a check actually said on this work (e.g. 32 passed / 2 failed). Only the run that holds the lease can: pass your own run id, not the one you read off the work",
+  "Record what a check actually said on this work (e.g. 32 passed / 2 failed). Only the run that holds the lease can: name yourself with the run_id whoami gives you (your own name, not one read off a work). Any other name is refused with 409 not_holder",
   workProofInputShape,
   async ({ work_id, ...input }) => {
     const result = await tools.work_proof(work_id, input);
@@ -425,7 +425,7 @@ tool(
 
 tool(
   "work_handoff",
-  "Hand the work to another runtime (to = its runtime id or kind) and/or leave a note — and in the same call publish what the next agent needs into this work's Work Project: context = key/value facts, preferably the well-known keys goal / next_step / decisions / open_questions / failed_attempts / verified_findings (e.g. {\"next_step\": \"make the reconnect test deterministic\"}), sources = repo-relative file paths (e.g. docs/plan.md). Values are stored only on this device (the server keeps the key, a hash and who wrote it); sources are recorded by path + sha256, not copied. Either all of it lands or none of it does. Never put conversation/messages/transcript into context; reference a secret as {credential_ref: \"env:NAME\"}. This sets the standing owner, not the live lease",
+  "Hand the work to another runtime (to = its runtime id or kind) and/or leave a note — and in the same call publish what the next agent needs into this work's Work Project: context = key/value facts, preferably the well-known keys goal / next_step / decisions / open_questions / failed_attempts / verified_findings (e.g. {\"next_step\": \"make the reconnect test deterministic\"}), sources = repo-relative file paths (e.g. docs/plan.md). Values are stored only on this device (the server keeps the key, a hash and who wrote it); sources are recorded by path + sha256, not copied. Either all of it lands or none of it does. Never put conversation/messages/transcript into context; reference a secret as {credential_ref: \"env:NAME\"}. This sets the standing owner, not the live lease — so it never takes a work away from a running agent. While another run holds the lease, this is refused (409 lease_held): a human starts that transfer from the Work page",
   workHandoffInputShape,
   async ({ work_id, ...input }) => json("work_handoff", { work_id, ...input }, await tools.work_handoff(work_id, input)),
 );

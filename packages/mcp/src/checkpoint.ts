@@ -53,6 +53,14 @@ export type CheckpointTickResult =
  * 迷ったら**打たない**(fail-safe。次の tick で ambiguity が解ければ自然に再開する)。
  */
 export async function runCheckpointTick(tools: AccountTools, cwd: string): Promise<CheckpointTickResult> {
+  // PBI-0791: **死活は「握っている全部」に打つ。capsule は今までどおり 1 本だけ。**
+  // 死活を進められるのが capsule だけだった為、`work_current` に選ばれなかった 2 本目の work は
+  // 一度も打てず、claim の 90 秒後から誰でも奪える状態だった(2026-09-19 実測: 52 分 握って null)。
+  // **capsule の前・早抜けの前に**打つ —— git worktree でなくても、ambiguous でも、生きてはいる。
+  // 1 本の失敗で残りを落とさない(個別に握り潰す)
+  for (const h of await tools.work_held().catch(() => [])) {
+    await tools.work_heartbeat(h.work_id, h.run_id).catch(() => {});
+  }
   const current = (await tools.work_current()) as {
     work_id: string;
     lease: { holder_run: string | null };

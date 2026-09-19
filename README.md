@@ -40,7 +40,7 @@ Expect things to change.
 ## Try it
 
 Mac/Linux + Claude Code or Codex → [Get started](#get-started) (verified binary + `login` + `pair`).  
-Windows / phone: use the [web app](https://atn.shibubu.ai); connecting an AI still needs a Mac or Linux machine.
+Windows / phone: use the [web app](https://openroly.shibubu.ai); connecting an AI still needs a Mac or Linux machine.
 
 **Not a PTY/session relay** — identity and job continuity across runtimes, not detach/reattach of a terminal.
 
@@ -132,6 +132,10 @@ claude plugin marketplace add OpenRoly/openroly
 ```bash
 codex plugin marketplace add OpenRoly/openroly
 ```
+
+With the Claude Code plugin, three commands keep you inside the terminal: `/start <what this work is>`
+begins a Work and puts this session on it, `/give codex` hands it to another AI, and `/follow` shows
+what the AI holding it is doing.
 
 **Windows / iPhone / Android:** use the web app at [openroly.shibubu.ai](https://openroly.shibubu.ai).
 Connecting an AI still needs a Mac or Linux machine.

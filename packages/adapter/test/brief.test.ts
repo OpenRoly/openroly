@@ -44,7 +44,7 @@ describe("session brief", () => {
 
   test("要件 §19 の表示形になる", () => {
     expect(formatBrief(buildBrief(whoami, messages))).toBe(
-      ["Unread: 4", "- Shibu ×2", "- Ken ×1", "- (requests: 1)"].join("\n"),
+      ["Unread: 4 — 'openroly inbox'", "- Shibu ×2", "- Ken ×1", "- (requests: 1)"].join("\n"),
     );
   });
 
@@ -58,7 +58,7 @@ describe("session brief", () => {
     const brief = buildBrief({ ...whoami, unread: 25 }, messages);
     expect(brief.senders).toEqual([]);
     expect(formatBrief(brief)).toBe(
-      ["Unread: 26", "- and 25 more", "- (requests: 1)"].join("\n"),
+      ["Unread: 26 — 'openroly inbox'", "- and 25 more", "- (requests: 1)"].join("\n"),
     );
   });
 
@@ -71,12 +71,23 @@ describe("session brief", () => {
     }));
     const brief = buildBrief({ ...whoami, unread: 60 }, messages);
     expect(formatBrief(brief)).toBe(
-      ["Unread: 60", "- Alice ×50", "- and 10 more"].join("\n"),
+      ["Unread: 60 — 'openroly inbox'", "- Alice ×50", "- and 10 more"].join("\n"),
     );
   });
 
   test("AC-3: window が全未読を覆っていれば「ほか」は出ない", () => {
     expect(formatBrief(buildBrief(whoami, messages))).not.toContain(" more");
+  });
+
+  // ---- PBI-0762(dogfood F71): 件数の行に読む口を添える ----
+
+  test("AC-10: 未読が在る時は件数の行に読む口が載る", () => {
+    expect(formatBrief(buildBrief(whoami, messages)).split("\n")[0]).toBe("Unread: 4 — 'openroly inbox'");
+  });
+
+  test("AC-X2: 未読 0 には口を足さない(読む物が無い時に口を勧めない)", () => {
+    const brief = buildBrief({ ...whoami, unread: 0 }, []);
+    expect(formatBrief(brief)).toBe("Unread: 0");
   });
 
   test("PBI-0424: 本体は handle を名乗らない(identity は status が 1 度だけ出す)", () => {

@@ -3,7 +3,7 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { apiCall } from "./api.ts";
-import { buildBrief } from "./brief.ts";
+import { buildBrief, unreadTotal } from "./brief.ts";
 import { ensureBinary, type EnsureBinaryOutcome } from "./binary.ts";
 import {
   getAccountUrl,
@@ -281,13 +281,21 @@ export async function doctorRuntime(options: EngineOptions): Promise<Finding[]> 
 
   const who = await apiCall(credential.base_url, "/v1/whoami", { token: credential.token });
   if (who.status !== 200) {
+    // dogfood F60: 5xx の時「自分の credential が悪いのか server が死んでいるのか」を doctor が言う。
+    // `/health` は DB を触らないので、200 なら process は生きていて裏（DB 等）が落ちている。
+    // 届かなくても doctor は落とさない —— 下の 1 行に戻るだけ
+    const health = who.status >= 500
+      ? await apiCall(credential.base_url, "/health", { signal: AbortSignal.timeout(5000) }).then((r) => r.status, () => 0)
+      : 0;
     findings.push({
       ok: false,
       label: "Account connection",
       detail:
         who.status === 401
           ? `the credential was revoked. Reconnect with 'openroly pair ${adapter.id}'`
-          : `whoami returned ${who.status}`,
+          : health === 200
+            ? `the account server is up (/health 200) but its API fails (whoami ${who.status}) — server-side outage (database or quota), not this credential. Nothing to fix on this machine`
+            : `whoami returned ${who.status}`,
     });
   } else {
     let messages: unknown[] = [];
@@ -301,7 +309,7 @@ export async function doctorRuntime(options: EngineOptions): Promise<Finding[]> 
     findings.push({
       ok: true,
       label: "Account connection",
-      detail: `attached as @${who.body.handle} (unread ${brief.unread + brief.requests})`,
+      detail: `attached as @${who.body.handle} (unread ${unreadTotal(brief)})`,
     });
   }
 

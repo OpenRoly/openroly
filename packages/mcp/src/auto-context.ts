@@ -27,6 +27,8 @@ export const AUTO_KEYS = {
 export const AUTO_FILES_MAX = 50;
 export const AUTO_TESTS_MAX = 10;
 export const AUTO_DIRTY_MAX = 50;
+/** 同じ folder の変更がこれを超えたら 1 行に畳む(PBI-0775) */
+export const AUTO_DIRTY_DIR_COLLAPSE = 3;
 /** command の文字列は 200 字で切る(秘密が混じる余地を狭める。値は端末の CAS にしか置かれない) */
 export const AUTO_COMMAND_MAX = 200;
 /** session を env で特定できない時、「直近に更新された transcript が 1 つだけ」を見る窓 */
@@ -298,6 +300,31 @@ export interface GitFacts {
   dirty_total: number;
 }
 
+/**
+ * 変更中の path を**次に入る人が読める形**に畳む(PBI-0775)。
+ * 実測(dogfood F94・2026-09-19): 生成物 313 件が 1 つの folder に居る tree で、`dirty` の 50 件のうち
+ * 47 件が `…/checkpoints/NNN.json` になり、context package の 2000 token 中およそ 1050 を食って
+ * `auto/tests` を丸ごと押し出した。**`AUTO_DIRTY_MAX` は「件数」の上限で、読む人の予算も、
+ * 47 件が同じ folder である事も見ていない。** 同じ folder が 4 件を超えたら `folder/ (N files)` の
+ * 1 行にする —— 次の人に届く情報は増え、大きさは桁で落ちる。件数の上限は畳んだ後に効かせる。
+ */
+export function foldDirtyPaths(paths: readonly string[]): string[] {
+  const byDir = new Map<string, string[]>();
+  for (const p of paths) {
+    const cut = p.lastIndexOf("/");
+    const dir = cut < 0 ? "" : p.slice(0, cut + 1);
+    const group = byDir.get(dir);
+    if (group) group.push(p);
+    else byDir.set(dir, [p]);
+  }
+  const out: string[] = [];
+  for (const [dir, group] of byDir) {
+    if (dir !== "" && group.length > AUTO_DIRTY_DIR_COLLAPSE) out.push(`${dir} (${group.length} files)`);
+    else out.push(...group);
+  }
+  return out.sort().slice(0, AUTO_DIRTY_MAX);
+}
+
 /** git の事実。worktree でなければ null */
 export function readGitFacts(cwd: string): GitFacts | null {
   const git = (args: string[]): string | null => {
@@ -317,7 +344,7 @@ export function readGitFacts(cwd: string): GitFacts | null {
   return {
     branch: branch === "HEAD" ? null : branch, // detached
     head: git(["rev-parse", "HEAD"]),
-    dirty: paths.slice(0, AUTO_DIRTY_MAX),
+    dirty: foldDirtyPaths(paths),
     dirty_total: paths.length,
   };
 }

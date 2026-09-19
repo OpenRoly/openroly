@@ -348,8 +348,9 @@ OpenRoly exported after continuing a handoff and report the same summary as Open
 
 This appendix is **informative**: it is not part of conformance, and a PAAP implementation does not need MCP.
 It shows how the MCP tools of the reference implementation map onto the four objects, so that any harness that
-speaks MCP can leave work with a PAAP implementation the same way. A later version turns this into a normative
-binding.
+speaks MCP can leave work with a PAAP implementation the same way. Tools that carry no v0.1 object are listed
+as such rather than left out, so that the gap between the implementation and this version stays visible. A later
+version turns this into a normative binding.
 
 | MCP tool | PAAP object | What it does in PAAP terms |
 |---|---|---|
@@ -362,8 +363,15 @@ binding.
 | `work_fork` | Work, Checkpoint | Creates a work with `forked_from` and a `profile` (`full` or `reviewer_blind`); its first checkpoint is `based_on` the source version (**I-12**) |
 | `work_freeze` | Work | Releases the lease and advances `lease.epoch`, so commands with the previous epoch are rejected |
 | `work_handoff` | Work | Leaves a note and facts for whoever picks the work up next. It does not move the lease, so it is not a PAAP Handoff |
+| `work_promote` | Work | Creates a work from an inbox thread |
+| `work_assigned` | Work | Lists the works whose standing owner is this runtime, with each one's status and whether a lease is live |
+| `work_task_create` | Work | Creates a task under a project: a work with `parent_work_id`, optionally handed to a runtime in the same call |
+| `work_team` | Work | Lists a project and the works whose `parent_work_id` is it, with each one's assignee and verdict |
 | `work_events` | none in v0.1 | The work's event log; later versions carry this as receipts |
 | `work_proof` | none in v0.1 | Records what a check reported; later versions carry this as receipts |
+| `work_review` | none in v0.1 | A lead's verdict on a task. v0.1 has `profile: reviewer_blind` for what a reviewer may see, but no verdict object |
+| `work_task_merge` | none in v0.1 | Brings a task's file changes back into the project's working tree; v0.1 records repository state in `git_state` but does not move files |
+| `work_message`, `work_context_put`, `work_context_publish`, `work_context_search` | none in v0.1 | Per-work notes, and messages between the tasks of one project; later versions carry these as memory records |
 
 ## Appendix B. Continuity Benchmark (informative)
 

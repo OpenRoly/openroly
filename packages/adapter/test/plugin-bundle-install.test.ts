@@ -1,4 +1,4 @@
-import { existsSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, test } from "bun:test";
@@ -77,6 +77,27 @@ console.log(JSON.stringify(buildPluginBundles()));`;
     expect(finding.ok).toBe(true);
     expect(finding.detail).toContain("could not be built");
     expect(finding.detail).toContain("The binary path still works");
+  }, 120_000);
+
+  // PBI-0777 AC-5: slash command 3 本は **plugin の commands/ として配る**。人が file を置く手順を
+  // 足さないので、marketplace が指す dir にそれが在る事と、install の build がそれを消さない事の
+  // 2 つが「手元に入る」の実体。**名前は plugin.json の dir 構成から引く**(test に綴りを書かない)
+  test("install が配る plugin dir に slash command が入っている(PBI-0777 AC-5)", () => {
+    const marketplace = JSON.parse(
+      readFileSync(join(repoRoot, ".claude-plugin/marketplace.json"), "utf8"),
+    ) as { plugins: { name: string; source: string }[] };
+    const entry = marketplace.plugins.find((p) => p.name === "openroly");
+    expect(entry).toBeDefined();
+    const pluginRoot = join(repoRoot, entry!.source.replace(/^\.\//, ""));
+    const commandsDir = join(pluginRoot, "commands");
+    const found = readdirSync(commandsDir).filter((f) => f.endsWith(".md")).sort();
+    expect(found.length).toBeGreaterThan(2);
+    // build を回した後も残っている(生成物の書き込みが commands/ を巻き込まない)
+    buildPluginBundles();
+    expect(readdirSync(commandsDir).filter((f) => f.endsWith(".md")).sort()).toEqual(found);
+    for (const f of found) {
+      expect(readFileSync(join(commandsDir, f), "utf8")).toStartWith("---\n");
+    }
   }, 120_000);
 
   test("package.json は元のまま(この file 自身が repo を壊したまま終わらない)", () => {

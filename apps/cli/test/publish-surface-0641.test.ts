@@ -35,13 +35,16 @@ async function openroly(args: string[], env: Record<string, string>) {
   return { exitCode: await proc.exited, stdout, stderr };
 }
 
+// 本番 host は `packages/adapter/src/install.ts` の DEFAULT_BASE_URL が正本。2026-09-17 の owner 決定
+// (hp+app を 1 host に統一・PBI-0675)で atn.shibubu.ai → openroly.shibubu.ai に移した。ここは
+// **公開面が名乗る綴り**を測るので literal のまま持つ —— import で揃えると localhost でも緑になる
 describe("公開面の既定 (PBI-0641 ②)", () => {
   test("AC-3: 未 pair の doctor が名乗る行き先は本番 —— 開発機の localhost ではない", async () => {
     const r = await openroly(["doctor", "claude"], await freshHome());
 
     // 未 pair なので NG 自体は正しい。見るのは **どこへ繋ぐと言ったか**
     expect(r.stdout).toContain("not paired");
-    expect(r.stdout).toContain("it will connect to https://atn.shibubu.ai");
+    expect(r.stdout).toContain("it will connect to https://openroly.shibubu.ai");
     expect(r.stdout).not.toContain("localhost");
   }, 30_000);
 
@@ -49,7 +52,7 @@ describe("公開面の既定 (PBI-0641 ②)", () => {
     // 既定は 1 箇所から来るが、面は 2 つある —— 片方だけ直した時に赤くなる側を持つ
     const r = await openroly(["--help"], await freshHome());
 
-    expect(r.stdout).toContain("then https://atn.shibubu.ai");
+    expect(r.stdout).toContain("then https://openroly.shibubu.ai");
     expect(r.stdout).not.toContain("localhost");
   }, 30_000);
 
@@ -60,7 +63,7 @@ describe("公開面の既定 (PBI-0641 ②)", () => {
     const r = await openroly(["doctor", "claude"], env);
 
     expect(r.stdout).toContain("it will connect to http://127.0.0.1:59641");
-    expect(r.stdout).not.toContain("atn.shibubu.ai");
+    expect(r.stdout).not.toContain("openroly.shibubu.ai");
   }, 30_000);
 });
 

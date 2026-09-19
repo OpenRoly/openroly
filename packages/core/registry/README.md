@@ -1,14 +1,18 @@
 # Detector registry — how to add a runtime
 
-`detectors.v1.json` is **generated**. Do not edit it by hand: `diagrams-check.sh` runs
-`bun scripts/catalog-build.ts --check` and fails on any drift.
+`detectors.v1.json` is **generated**. Do not edit it by hand: a check in the development repository
+regenerates it and fails on any drift.
+
+The generator (`scripts/catalog-build.ts`) is not part of this public clone, so a contributor adding a
+runtime edits `overrides.json` and sends that; a maintainer regenerates `detectors.v1.json` in the same
+pull request.
 
 ```
-upstream/agent-catalog/*.csv   (upstream lists, refreshed by the site-api recipes)
+upstream/agent-catalog/*.csv   (upstream lists, re-scraped by a maintainer)
 overrides.json                 (hand-verified entries — the only place `native` may appear)
 packages/core/src/providers.ts (the API provider table -> the `<id>-api` entries)
         |
-        v  bun scripts/catalog-build.ts
+        v  the generator (development repository)
 detectors.v1.json              (signed and served by GET /v1/registry/detectors)
 ```
 
@@ -19,9 +23,9 @@ one of the upstream lists with a marker directory under `$HOME`, it is already g
 `adapter: null` and `detect.dirs`. Binary names are never guessed from the id.
 
 **Wiring it up** (OpenRoly registers its MCP server, ships skills): add an entry to `overrides.json` with
-`adapter: "generic/native"` and a `native` block, then run `bun scripts/catalog-build.ts` and commit
-both files. No TypeScript package is needed — `packages/adapter/src/native.ts` builds the adapter
-from that one entry (see `docs/diagrams.md` figure 66).
+`adapter: "generic/native"` and a `native` block; the generated `detectors.v1.json` comes from the same
+pull request. No TypeScript package is needed — `packages/adapter/src/native.ts` builds the adapter
+from that one entry.
 
 ```jsonc
 {
@@ -100,6 +104,6 @@ up a new runtime's dedicated wake is one entry:
 
 ## Refreshing the upstream lists
 
-The CSVs come from the `site-api` recipes in `~/.claude/skills/site-api/recipes/agent-catalog/`
-(`site_api.py run <name>`; `check` reports upstream drift). Re-run the recipe, replace the CSV, run
-`bun scripts/catalog-build.ts`, and commit the diff.
+The CSVs are scraped from each upstream list by a maintainer's own recipes, which live outside this
+repository. To refresh one, replace the CSV under `upstream/` and regenerate: the build fails if an entry
+loses a field it needs, so a bad scrape cannot land quietly.

@@ -30,10 +30,18 @@ same way for the client.
 
 ## Install
 
+Not on npm yet. It runs from a checkout of this repository and needs [Bun](https://bun.sh) — the CLI's
+shebang is `#!/usr/bin/env bun`, so plain `node` will not run it:
+
 ```bash
-npm install -g openroly-mask
-# or, without installing:
-npx openroly-mask -- <your-mcp-server-command>
+git clone https://github.com/OpenRoly/openroly && cd openroly
+bun packages/mcp-mask/src/cli.ts -- <your-mcp-server-command>
+```
+
+To get the short name the rest of this page uses, link it once:
+
+```bash
+cd packages/mcp-mask && bun link      # then `openroly-mask` is on your PATH
 ```
 
 ## Use

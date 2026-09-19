@@ -175,6 +175,28 @@ describe("ingestAndLink", () => {
     expect(toml).not.toContain("mcp/src/server.ts");
   });
 
+  // PBI-0796: MCP server は起動直後に ingestAndLink を待たずに投げる。env を絞った session
+  // (sandbox / dedicated。HOME を渡さない)では、配り先の探索が `env.HOME ?? homedir()` で
+  // **OS の passwd から実行者本人の home を引いて**しまい、owner の持ち物が OPENROLY_HOME へ
+  // 写っていた。負の対照 = hub.ts の `env.HOME === undefined` の門を外すと ingested が 1 になる。
+  test("PBI-0796 AC-3: HOME を宣言していない env では 1 件も吸わず OPENROLY_HOME に何も作らない", async () => {
+    const claudeDir = join(home, "claude-config");
+    await mkdir(join(claudeDir, "skills", "foo"), { recursive: true });
+    await writeFile(
+      join(claudeDir, "skills", "foo", "SKILL.md"),
+      "---\nname: foo\ndescription: d\n---\nbody",
+    );
+    await writeFile(join(claudeDir, "CLAUDE.md"), "rule");
+    const orHome = join(home, ".openroly");
+    // HOME 無し・配り先だけを明示した env(CLAUDE_CONFIG_DIR は HOME に依存しないので、
+    // 実行者の機械に skill が在るかに関係なく同じ結果になる)
+    const r = await ingestAndLink({ OPENROLY_HOME: orHome, CLAUDE_CONFIG_DIR: claudeDir });
+    expect(r.ingested).toBe(0);
+    expect(r.linked).toEqual([]);
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(orHome)).toBe(false);
+  });
+
   test("Grok home が無ければ config.toml を作らない", async () => {
     const { writeHubMcp } = await import("../src/hub.ts");
     await writeHubMcp("obsidian", { url: "http://x", transport: "http" }, env());

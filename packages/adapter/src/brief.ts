@@ -48,6 +48,15 @@ export function buildBrief(whoami: any, messages: any[]): SessionBrief {
 }
 
 /**
+ * 未読の合計。**この式はここ 1 箇所**（PBI-0765）—— `status` / `doctor` / MCP `whoami` は全部これを呼ぶ。
+ * whoami.unread は inbox bucket だけなので requests を足す。面ごとに足していた頃は同じ食い違いが
+ * status（F43）→ MCP whoami（F54）→ doctor（F58）と 1 面ずつ 3 回出た
+ */
+export function unreadTotal(brief: Pick<SessionBrief, "unread" | "requests">): number {
+  return brief.unread + brief.requests;
+}
+
+/**
  * 要件 §19 の表示形（**未読の数と内訳だけ**）。
  *
  * **handle はここで出さない**（2026-09-11・PBI-0424）。`openroly status` は identity を
@@ -62,9 +71,10 @@ export function buildBrief(whoami: any, messages: any[]): SessionBrief {
  * 差分を必ず 1 行にして見せる。
  */
 export function formatBrief(brief: SessionBrief): string {
-  // dogfood F43: whoami.unread は inbox bucket だけ。requests を足さないと Unread: 0 なのに requests: 1
-  const total = brief.unread + brief.requests;
-  const lines = [`Unread: ${total}`];
+  const total = unreadTotal(brief);
+  // dogfood F71: 件数だけ出して読む口を出さない行は、毎回 help を往復させる。**0 件の時は足さない**
+  // （読む物が無い時に口を勧めない）
+  const lines = [`Unread: ${total}${total > 0 ? " — 'openroly inbox'" : ""}`];
   for (const s of brief.senders) lines.push(`- ${s.name} ×${s.count}`);
   const shown = brief.senders.reduce((n, s) => n + s.count, 0);
   if (brief.unread > shown) lines.push(`- and ${brief.unread - shown} more`);

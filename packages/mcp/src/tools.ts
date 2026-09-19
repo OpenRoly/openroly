@@ -40,6 +40,7 @@ import {
   TASK_REVIEW_VERDICTS,
   type TaskReviewVerdict,
   WORK_LIVENESS_TIMEOUT_SECS,
+  isTransferHolderId,
   mcpSessionRunId,
   type MessageContent,
 } from "@openroly/core";
@@ -47,6 +48,8 @@ import { open, seal, type EncryptedEnvelope } from "@openroly/crypto-envelope";
 import {
   CONTEXT_SEARCH_DEFAULT_MAX_TOKENS,
   buildBrief,
+  unreadTotal,
+  explainApiError,
   credentialRejectedHint,
   listHubMcps,
   listHubSkills,
@@ -92,7 +95,10 @@ export class OpenRolyApiError extends Error {
     /** 401 の時だけ: 戻り道(`openroly pair <kind>`)。無人で動く agent が生の 401 で止まらない(PBI-0264 有界レビュー) */
     hint?: string,
   ) {
-    super(`OpenRoly API error ${status}: ${JSON.stringify(body)}${hint ? ` — ${hint}` : ""}`);
+    // 原文（status + body）は残す —— agent が code で分岐している。人の言葉は後ろに足す（訳は adapter の 1 箇所）
+    // 訳が code の鸚鵡返し（`not_found` / `HTTP 418`）の時は足さない —— 原文に既に在る
+    const plain = hint ?? explainApiError(status, body);
+    super(`OpenRoly API error ${status}: ${JSON.stringify(body)}${plain.includes(" ") ? ` — ${plain}` : ""}`);
   }
 }
 
@@ -194,6 +200,8 @@ interface WorkRow {
   lease_expires_at: string | null;
   /** lease を握った runtime(PBI-0444: 未読 notice を「この runtime が握っている work」に絞る) */
   owner_runtime_id?: string | null;
+  /** 死活の時計(PBI-0780: server の claim が「もう空き」と見なす境目を口も同じ式で見る) */
+  last_heartbeat_at?: string | null;
   handled_runtime_id: string | null;
   handoff_note?: string | null;
   parent_work_id?: string | null;
@@ -207,8 +215,31 @@ interface WorkRow {
  * holder だけ見て期限を見ないと、server が 409 で断る work を口が「今の仕事」と答える
  * (有界レビュー 2026-09-09: 実射で 409 と「今の仕事」が同時に成立した)
  */
-const isLeaseLive = (w: WorkRow, now: number): boolean =>
+const isLeaseHeld = (w: WorkRow, now: number): boolean =>
   w.lease_holder_run != null && (w.lease_expires_at == null || new Date(w.lease_expires_at).getTime() > now);
+
+/**
+ * PBI-0791: **「握っている」と「生きている」を分ける。**
+ * `isLeaseHeld` = holder が立っていて期限内（server が書き込みを許す条件そのもの）。
+ * `isLeaseLive` = その上で **死活が新しい**（= 誰かが今そこに居る / server がまだ奪わない）。
+ *
+ * 分けないと deadlock になる —— `work_current` を死活で絞ると、死活が切れた work は
+ * 選ばれなくなり、その work に死活を打つ tick も回らず、**永久に生き返らない**
+ * (2026-09-19 実測: PBI-0780 を入れた直後にこの形になっていた)。
+ * 自分の持ち物を数える所は `isLeaseHeld`、「今そこに人が居るか」を出す面は `isLeaseLive`。
+ */
+const isLeaseLive = (w: WorkRow, now: number): boolean => {
+  if (!isLeaseHeld(w, now)) return false;
+  // PBI-0780 / dogfood F98: **server(PBI-0779)が「もう空き」と見なす境目を、口も同じ式で見る。**
+  // 死活が WORK_LIVENESS_TIMEOUT_SECS 止まった lease は claim が取れてしまうのに、面は live と
+  // 言っていた —— 口と保存面が別の事を言うと、並ぶ面を見て「誰か動いている」と読んだ人が、
+  // 次の瞬間その work を奪われる。死活は 30 秒 tick(CHECKPOINT_TICK_INTERVAL_SECS)で流れるので
+  // 90 秒 = tick 3 回分の取りこぼし。transfer の予約 holder は誰も動かしていないので live ではない
+  if (isTransferHolderId(w.lease_holder_run)) return false;
+  const beat = w.last_heartbeat_at ?? w.lease_acquired_at;
+  if (beat == null) return true; // 時計が一度も動いていない行は今までどおり(server も奪えない)
+  return new Date(beat).getTime() > now - WORK_LIVENESS_TIMEOUT_SECS * 1000;
+};
 
 export interface WorkProofInput {
   /** 打つ Run の名乗り。server が lease holder と照合する(写しではなく主張) */
@@ -485,6 +516,15 @@ const resolveMe = async (config: OpenRolyClientConfig): Promise<{ runtimeId: str
 const isMine = (handled: string | null | undefined, me: { runtimeId: string | null; kind: string | null }): boolean =>
   handled != null && ((me.runtimeId != null && handled === me.runtimeId) || (me.kind != null && handled === me.kind));
 
+/**
+ * 今その task に居る人(PBI-0780 / dogfood F97)。**lease が生きているなら握っている runtime**、
+ * 居なければ標準の係(handoff が立てる `handled_runtime_id`)。
+ * `work_accept` は係を立てないので、claim だけで働く道 —— 一番普通の道 —— では
+ * 係が永久に空欄で、`assigned_to: null` と `lease_live: true` が同じ行に並んでいた。
+ */
+const taskOwner = (t: WorkRow, live: boolean): string | null =>
+  (live ? (t.owner_runtime_id ?? t.handled_runtime_id) : t.handled_runtime_id) ?? null;
+
 /** task の folder(PBI-0447)。path は task id から決まるので server に保存しない */
 const taskFolder = (taskId: string): string => join(openrolyHome(), "worktrees", taskId);
 
@@ -514,16 +554,27 @@ export function createAccountTools(config: OpenRolyClientConfig) {
         /* stub / 古い server は inbox 件数だけ（F43 と同じ加算を落とす） */
       }
       const brief = buildBrief(who, messages);
-      return { ...who, unread: brief.unread + brief.requests, requests: brief.requests };
+      // PBI-0798 / dogfood F108: **この session が自分で名乗る run id**。work_proof / work_capsule は
+      // 「自分の run id を名乗れ、work から読んだ値を写すな」と要求する(写すと lease を持たない Run の
+      // proof が holder の名前で残る = tools.ts の攻撃③)のに、教える口が work_accept(transfer / fork で
+      // 受け取った時)しか無かった。普通に claim して働く道では誰も名前を教えない。
+      // 既定値を work_proof に足すのではなく、**呼び手が自分の名前を自分から知る**口をここに置く ——
+      // claim が使うのと同じ式なので、名乗れば通り、lease を持たなければ server が 409 not_holder で落とす。
+      return { ...who, unread: unreadTotal(brief), requests: brief.requests, run_id: mcpSessionRunId(config.runtimeKind) };
     },
     inbox_list: async () => {
       // dogfood F49: /v1/inbox/messages は direction=in だけ。CLI は thread の最終行を
       // inbox + requests の 2 bucket で出す。同じ 2 口に揃える。
+      // dogfood F106 / PBI-0795: `unread` は **thread** の未読数(その thread の未読 in message の件数)。
+      // server の listThreads が既に数えて寄越しているのに、ここで落としていた —— whoami が
+      // 「未読 1」と言う一方、その 1 がどの行かを一覧が言えなかった。寄越さない server では
+      // 欄ごと出さない(0 と書くと「未読は無い」という嘘になる)。
       const rows: Record<string, unknown>[] = [];
       for (const bucket of ["inbox", "requests"] as const) {
         const threads = (await call(config, `/v1/inbox?bucket=${bucket}`)) as {
           id: string;
           peer_display?: string;
+          unread?: unknown;
           last_message?: Record<string, unknown> | null;
         }[];
         for (const t of threads) {
@@ -535,6 +586,7 @@ export function createAccountTools(config: OpenRolyClientConfig) {
             bucket,
             thread_id: t.id,
             sender_display: t.peer_display ?? meta.sender_display,
+            ...(typeof t.unread === "number" ? { unread: t.unread } : {}),
           });
         }
       }
@@ -620,7 +672,7 @@ export function createAccountTools(config: OpenRolyClientConfig) {
     },
     // 自然言語 rule(EP-0013 W4 / REQ-54)。compile は runtime、正規化と layer 導出は server。
     // 応答の正規化 rule を owner に echo する(REQ-54「解釈を同一 thread で返す」)
-    rules_put: (input: { nl: string; scope?: unknown; action: unknown }) =>
+    rules_put: (input: { nl: string; scope?: unknown; action: unknown; confirm?: boolean }) =>
       call(config, "/v1/rules", { body: input }),
     // rule の一覧。content rule の nl / sender / keywords は content_scope(envelope)で
     // 返る為、device 鍵で開いて scope に戻す(封入平文が MessageContent 形でない為、
@@ -680,9 +732,17 @@ export function createAccountTools(config: OpenRolyClientConfig) {
       const now = Date.now();
       const me = await resolveMe(config);
       const held = works
-        .filter((w) => isLeaseLive(w, now) && w.status !== "done")
+        .filter((w) => isLeaseHeld(w, now) && w.status !== "done") // PBI-0791 AC-6: 死活では絞らない(絞ると tick が回らず生き返らない)
         .sort((a, b) => leaseTime(b) - leaseTime(a));
       // F55: live が複数でも係が自分なら newest 1 本。probe が ambiguous を立てない（continue --to 自分と同じ）
+      // PBI-0797 / dogfood F107: 係(`handled_runtime_id`)は **選ぶ材料ではない**。この口の説明書が
+      // "Picked by the lease alone; handled_runtime_id is the standing owner … never read it as
+      // 'running now'" と書いているとおり、名乗るのは **lease が一番新しい 1 本**。係で絞ると、
+      // claim だけで働く道(係が永久に空欄)では、いつか handoff を受けた古い work が lease の
+      // 新しさに関係なく永久に勝ち続け、**今そこで書いている work を製品が一度も名乗れない**
+      // (実測: 1.5 時間書き込んでいる work を差し置いて 3 日前の task を返していた)。
+      // checkpoint.ts のコメントがこの口を「lease だけで選ぶ既存の口」と呼んでいる —— これまで嘘だった。
+      // `mineHeld` は ambiguous の判定にだけ残す —— そこを触ると tick の fail-safe が折れる
       const mineHeld = held.filter((w) => isMine(w.handled_runtime_id, me));
       // PBI-0557: 別の runtime が usage limit で止まった work を候補として出す(自分の runtime で
       // 止まった物は出さない — それは自分が続けるべき仕事であって移し先の候補ではない)。
@@ -709,7 +769,7 @@ export function createAccountTools(config: OpenRolyClientConfig) {
           break;
         }
       }
-      const w = mineHeld[0] ?? held[0];
+      const w = held[0];
       if (w) {
         return {
           work_id: w.id,
@@ -1037,7 +1097,7 @@ export function createAccountTools(config: OpenRolyClientConfig) {
         const [me, works] = await Promise.all([resolveMe(config), call(config, "/v1/works") as Promise<WorkRow[]>]);
         if (me.runtimeId == null) return null;
         const lines: string[] = [];
-        for (const w of works.filter((x) => x.owner_runtime_id === me.runtimeId && isLeaseLive(x, now))) {
+        for (const w of works.filter((x) => x.owner_runtime_id === me.runtimeId && isLeaseHeld(x, now))) {
           const index = (await call(config, `/v1/works/${encodeURIComponent(w.id)}/context?prefix=inbox%2F`)) as {
             entries: ContextIndexRow[];
           };
@@ -1125,8 +1185,8 @@ export function createAccountTools(config: OpenRolyClientConfig) {
           address: t.id,
           title: t.title,
           status: t.status,
-          assigned_to: t.handled_runtime_id ?? null,
-          is_you: isMine(t.handled_runtime_id, me),
+          assigned_to: taskOwner(t, isLeaseLive(t, now)),
+          is_you: isMine(taskOwner(t, isLeaseLive(t, now)), me),
           lease_live: isLeaseLive(t, now),
           /** PBI-0447: 最新の合流(work_task_merge)の結果 */
           merge: t.merge ?? "not_started",
@@ -1297,7 +1357,11 @@ export function createAccountTools(config: OpenRolyClientConfig) {
         work = committed.work;
         version = committed.transfer.capsule_version;
       } else {
-        work = (await call(config, `${path}/claim`, { body: { runId } })) as WorkRow;
+        // PBI-0746: **この端末の folder を 1 回名乗る**(`runs.workspace`)。web の Give はこれを見て
+        // 「どこで起こすか」を決める —— 名乗らないと server は folder を知らず、人は端末の CLI しか使えない
+        work = (await call(config, `${path}/claim`, {
+          body: { runId, workspace: config.cwd ?? process.cwd() },
+        })) as WorkRow;
       }
       const [capsules, index] = await Promise.all([
         call(config, `${path}/capsules`) as Promise<WorkCapsuleRow[]>,
@@ -1392,6 +1456,31 @@ export function createAccountTools(config: OpenRolyClientConfig) {
      * claim には権限段が無い(held な work を上書きできないので transfer にならない — 0400 が
      * MCP 口を作らなかったままで、この PBI でも足さない)
      */
+    /**
+     * この runtime が **今 握っている** work 全部(PBI-0791)。
+     * 死活を打つ先はここ —— `work_current` は 1 本しか返さないので、2 本目は一度も打てなかった。
+     * transfer の予約 holder は自分の run ではないので外す。
+     */
+    work_held: async (): Promise<{ work_id: string; run_id: string }[]> => {
+      const [me, works] = await Promise.all([
+        resolveMe(config),
+        call(config, "/v1/works") as Promise<WorkRow[]>,
+      ]);
+      if (me.runtimeId == null) return [];
+      const now = Date.now();
+      return works
+        .filter(
+          (w) =>
+            isLeaseHeld(w, now) &&
+            w.owner_runtime_id === me.runtimeId &&
+            !isTransferHolderId(w.lease_holder_run) &&
+            w.status !== "done",
+        )
+        .map((w) => ({ work_id: w.id, run_id: w.lease_holder_run! }));
+    },
+    /** holder が「まだ生きている」と名乗る(PBI-0791)。**行は増えない**(時刻だけ) */
+    work_heartbeat: (workId: string, runId: string) =>
+      call(config, `/v1/works/${encodeURIComponent(workId)}/heartbeat`, { body: { runId } }),
     work_freeze: (workId: string, input: { intent?: string } = {}) =>
       call(config, `/v1/works/${encodeURIComponent(workId)}/freeze`, {
         body: { intent: input.intent ?? null },

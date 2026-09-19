@@ -46,7 +46,7 @@ export const API_PROVIDERS: readonly ApiProvider[] = [
   { id: "cerebras", label: "Cerebras", baseUrl: "https://api.cerebras.ai/v1", defaultModel: "gpt-oss-120b", auth: "key" },
   { id: "moonshot", label: "Moonshot (Kimi)", baseUrl: "https://api.moonshot.ai/v1", defaultModel: "kimi-latest", auth: "key" },
   // owner が使っているのは Z.AI(国際)。`open.bigmodel.cn` は中国本土の別 endpoint で、owner の鍵は通らない
-  { id: "zhipu", label: "Z.AI (GLM)", baseUrl: "https://api.z.ai/api/openrolys/v4", defaultModel: "glm-5.3", auth: "key" },
+  { id: "zhipu", label: "Z.AI (GLM)", baseUrl: "https://api.z.ai/api/paas/v4", defaultModel: "glm-5.3", auth: "key" },
   { id: "dashscope", label: "DashScope (Qwen)", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", defaultModel: "qwen3.7-plus", auth: "key" },
   { id: "perplexity", label: "Perplexity", baseUrl: "https://api.perplexity.ai", defaultModel: "sonar", auth: "key" },
   // local の既定 model は端末が持つ物次第(検知した runtime の `models` が実物を出す)。ここは最後の fallback

@@ -2,6 +2,7 @@
 import {
   accountBaseUrl,
   apiCall,
+  explainApiError,
   binDir,
   DEFAULT_BASE_URL,
   doctorRuntime,
@@ -37,8 +38,8 @@ import {
   type ExtensionAdapter,
   type RuntimeCredential,
 } from "@openroly/adapter";
-import { ApiUnreachableError, countPendingContextValues, e2eeCallFor, prepareContextValue, resolveContextEntries, type ContextIndexRow } from "@openroly/adapter";
-import { adoptLegacyEnv, buildCapsule, countInbox, buildManifest, briefPaths, CAPSULE_FIELDS, decideTaskMerge, taskReviewCell, taskReviewVerdict, TASK_BRIEF_KEYS, TASK_REVIEW_KEY, TASK_REVIEW_VERDICTS, WORK_CONTEXT_BRIEF_KEYS, CapsuleConversationError, CapsuleCredentialRefError, type CapsuleManifest, CREDENTIAL_CHECK_FAILED, CREDENTIAL_OWNED_BY_HUMAN, egressEnforcementText, egressScopeText, isWakeableKind, legacyDir, LEGACY_STATE_DIR, matchWorkId, mcpSessionRunId, normalizeHandle, parseEgressByRuntime, parseEgressEnforcement, pickContinueWork, resolvePairedRuntimeKind, STATE_DIR, TASK_MERGE_PATHS_MAX, uniqueWorkIdPrefix, WORK_LIVENESS_TIMEOUT_SECS, type ContinueWorkInput, type MergeDecision } from "@openroly/core";
+import { ApiUnreachableError, countPendingContextValues, e2eeCallFor, prepareContextValue, resolveContextEntries, syncPendingContextValues, type ContextIndexRow } from "@openroly/adapter";
+import { adoptLegacyEnv, buildCapsule, countInbox, buildManifest, briefPaths, findReservedContextKeys, WORK_CONTEXT_RESERVED_PREFIXES, CAPSULE_FIELDS, decideTaskMerge, taskReviewCell, taskReviewVerdict, TASK_BRIEF_KEYS, TASK_REVIEW_KEY, TASK_REVIEW_VERDICTS, WORK_CONTEXT_BRIEF_KEYS, CapsuleConversationError, CapsuleCredentialRefError, type CapsuleManifest, CREDENTIAL_CHECK_FAILED, CREDENTIAL_OWNED_BY_HUMAN, egressEnforcementText, egressScopeText, isWakeableKind, legacyDir, LEGACY_STATE_DIR, matchWorkId, mcpSessionRunId, normalizeHandle, parseEgressByRuntime, parseEgressEnforcement, pickContinueWork, resolvePairedRuntimeKind, STATE_DIR, TASK_MERGE_PATHS_MAX, uniqueWorkIdPrefix, WORK_LIVENESS_TIMEOUT_SECS, type ContinueWorkInput, type MergeDecision } from "@openroly/core";
 import { applyGitCheckpoint, checkoutForkFolder, mergeTaskFolder, prepareRollback, RollbackFailedError, rollbackWorkingTree, type GitState } from "@openroly/core/node";
 // PBI-0557: usage-limit resume の判定(core の正本)。別行なのは並行 pane(0550)が上の行を
 // 未 commit で触っている為 — hunk を分けて commit に混ぜない為だけの形
@@ -97,8 +98,9 @@ Usage: openroly <command>
   connections [--json]  Everything your account is connected to, with what each one can do
   whoami                This account (handle / agent id). Counts only, never bodies
   inbox                 Inbox and requests (counts and titles, never bodies)
-  status                Who is attached and what is unread (counts only, never bodies).
-                        Also lists live sessions reported by the local broker
+  status [--all]        Who is attached and what is unread (counts only, never bodies).
+                        Also lists live sessions reported by the local broker. The attached list
+                        shows what is NG or running; --all lists every paired runtime
   cancel <request_id>   Stop a live session (broker kills the child process; SIGTERM → 5s → SIGKILL)
   statusline [--refresh] One line for a status bar (--refresh re-fetches and writes the cache)
   doctor [runtime]      Diagnose the connection
@@ -142,7 +144,7 @@ Usage: openroly <command>
                         person can start one, so this uses the credential 'openroly login' gave
                         this terminal (an AI runtime gets 403 human_only and adds work under an
                         existing one instead). --to hands it to a runtime right away
-  work list [--status <s>] [--json]
+  work list [--status <s>] [--all] [--json]
                         Works that belong to your account (not to a session) with their write
                         lease epoch and holder
   work get <id> [--json]
@@ -212,6 +214,9 @@ Usage: openroly <command>
 Supported runtimes: ${SUPPORTED_IDS.join(", ")}`;
 
 const ctx: AdapterContext = { env: process.env };
+
+/** PBI-0766(dogfood F72): `work list` の既定が伏せる「触られていない todo」の境目(日) */
+const UNTOUCHED_TODO_DAYS = Number(process.env.OPENROLY_UNTOUCHED_TODO_DAYS) || 7;
 
 /**
  * 明示された Account API の URL。指定が無ければ undefined を返す ——
@@ -1300,6 +1305,9 @@ const JSON_COMMANDS = new Set([
   "status", "doctor", "runtimes", "extensions", "sync", "share", "work", "context",
   "runs", // PBI-0657: Work をまたぐ Run の roll-up
   "connect", "connections", // PBI-0658: 繋ぐ / 繋がっている物の一覧
+  // PBI-0764(dogfood F78): この 3 つは `if (jsonMode)` の実装を持っていたのに、ここに居なかった ——
+  // flag を受け取って黙って捨てていた(exit 0 で人間向けの本文が出る)。REQ-90 は「全操作が機械可読」
+  "whoami", "inbox", "continue",
 ]);
 const jsonMode = command != null && JSON_COMMANDS.has(command) && args.includes("--json");
 /** PBI-0645: 人間向けの面で「全長の id」「内部の数え（epoch）」まで見たい時だけ。既定は静かに */
@@ -1331,6 +1339,34 @@ function place(owner: unknown, myAccountId: string | undefined): string | null {
 function shortId(v: unknown, verbose: boolean): string {
   const s = String(v ?? "");
   return verbose || s.length <= 16 ? s : `${s.slice(0, 12)}…`;
+}
+
+/**
+ * PBI-0762(dogfood F68): continue の成功行に足す「次に何をするか」の 1 行。
+ * work context の `next_step` を 1 回引くだけ —— **取れなければ空文字**を返して、引き継ぎ本体は通す。
+ */
+async function nextStepLine(
+  url: string,
+  cred: { token: string },
+  workId: string,
+  credKind: string,
+): Promise<string> {
+  try {
+    const res = await apiCall(url, `/v1/works/${encodeURIComponent(workId)}/context?key=next_step`, {
+      token: cred.token,
+    });
+    if (res.status !== 200) return "";
+    const resolved = await resolveContextEntries((res.body as { entries: ContextIndexRow[] }).entries ?? [], {
+      account: { call: e2eeCallFor(url, cred.token, credKind), deviceKind: credKind },
+      cwd: process.cwd(),
+    });
+    const hit = resolved.entries.find((e) => e.key === "next_step" && e.kind === "context" && !e.missing_on_device);
+    const value = typeof hit?.value === "string" ? hit.value : hit?.value == null ? "" : JSON.stringify(hit.value);
+    const line = value.trim().replace(/\s+/g, " ");
+    return line === "" ? "" : `\nnext: ${line}`;
+  } catch {
+    return "";
+  }
 }
 
 /** list に出した短縮 id を get / events も受ける（PBI-0689・実測: continue だけが prefix を受けて get が 404） */
@@ -1868,16 +1904,19 @@ switch (command) {
     if (!cred) fail("Not connected. Start with 'openroly login'");
     const url = (baseUrl ?? cred.base_url).replace(/\/$/, "");
     const buckets = ["inbox", "requests"] as const;
-    const rows: { bucket: string; id: string; title: string }[] = [];
+    // PBI-0766(dogfood F76): thread は `unread` を返しているのに捨てていた。`status` の `Unread: N` を見て
+    // ここに来た人が、**数字と同じ行を指せる**必要がある(印と、見出しの同じ数字)
+    const rows: { bucket: string; id: string; title: string; unread: number }[] = [];
     for (const bucket of buckets) {
       const res = await apiCall(url, `/v1/inbox?bucket=${bucket}`, { token: cred.token });
       if (res.status !== 200) fail(`NG inbox ${bucket}: HTTP ${res.status}`);
       const threads = Array.isArray(res.body) ? res.body : [];
-      for (const t of threads as { id?: unknown; peer_display?: unknown; last_message?: { id?: unknown } }[]) {
+      for (const t of threads as { id?: unknown; peer_display?: unknown; unread?: unknown; last_message?: { id?: unknown } }[]) {
         rows.push({
           bucket,
           id: String(t.last_message?.id ?? t.id ?? ""),
           title: String(t.peer_display ?? "(no title)"),
+          unread: Number(t.unread ?? 0) || 0,
         });
       }
     }
@@ -1885,8 +1924,15 @@ switch (command) {
       jsonOut(true, { items: rows });
       break;
     }
-    console.log(`${rows.length} item${rows.length === 1 ? "" : "s"}`);
-    for (const r of rows) console.log(`  ${r.bucket.padEnd(8)} ${r.id}  ${r.title}`);
+    {
+      // 見出しの数字は **status の `Unread:` と同じ物**(未読 message の合計)にする。thread 数に
+      // 変えると、同じ画面の 2 つの数字が別の物を数える(F76 が直らない)
+      const unread = rows.reduce((n, r) => n + r.unread, 0);
+      console.log(`${rows.length} item${rows.length === 1 ? "" : "s"}${unread > 0 ? ` (${unread} unread)` : ""}`);
+      for (const r of rows) {
+        console.log(`  ${r.unread > 0 ? "●" : " "} ${r.bucket.padEnd(8)} ${r.id}  ${r.title}`);
+      }
+    }
     break;
   }
 
@@ -1920,18 +1966,19 @@ switch (command) {
     // 全 runtime は同じ account に attach しているので、handle と未読は **1 度だけ**出し、
     // runtime はその下の一覧に落とす。**取れた brief が 1 つも無い時に handle を名乗らない**
     // (reportConnected と同じ線 —— 「繋がっている」と「どの account かは確かめられなかった」を混ぜない)
-    const rows: { label: string; name: string; brief?: SessionBrief; error?: string }[] = [];
+    const rows: { kind: string; label: string; name: string; brief?: SessionBrief; error?: string }[] = [];
     for (const [kind, credential] of entries) {
       const adapter = findAdapter(kind);
       try {
         // 要件 §19: session 開始時に見せるのは metadata のみ(本文は出さない)
         rows.push({
+          kind,
           label: adapter?.displayName ?? kind,
           name: credential.name,
           brief: await fetchBrief(credential.base_url, credential.token),
         });
       } catch (e) {
-        rows.push({ label: adapter?.displayName ?? kind, name: credential.name, error: (e as Error).message });
+        rows.push({ kind, label: adapter?.displayName ?? kind, name: credential.name, error: (e as Error).message });
       }
     }
     const account = rows.find((r) => r.brief)?.brief;
@@ -1942,9 +1989,33 @@ switch (command) {
       console.log("\nThe account could not be confirmed (no runtime answered)");
     }
     console.log("\n[Attached runtimes]");
-    for (const r of rows) {
+    // PBI-0762(dogfood F70): 既定は **NG と、今動いている物**だけ。26 runtime を 26 行出すと
+    // 異常が埋もれる(F60 と同じ病)。**伏せた結果が空になる時は全部出す** —— 空の節は 26 行より悪い。
+    // 同じ error が並ぶ時(server 500 で全滅)は 1 行に畳む
+    const statusShowAll = args.includes("--all");
+    const running = await runningRuntimes();
+    const active = new Set<string>([
+      ...(live?.sessions ?? []).map((s) => s.runtime),
+      ...(running ?? []).map((r) => r.kind),
+    ]);
+    const interesting = rows.filter((r) => r.error !== undefined || active.has(r.kind));
+    const visible = statusShowAll || interesting.length === 0 ? rows : interesting;
+    const sameError = new Map<string, number>();
+    for (const r of visible) if (r.error !== undefined) sameError.set(r.error, (sameError.get(r.error) ?? 0) + 1);
+    const printedError = new Set<string>();
+    for (const r of visible) {
+      if (r.error !== undefined && !statusShowAll) {
+        const n = sameError.get(r.error) ?? 1;
+        if (printedError.has(r.error)) continue;
+        printedError.add(r.error);
+        console.log(`  ${r.label} · ${r.name}  NG ${r.error}`);
+        if (n > 1) console.log(`  … ${n - 1} more with the same error — --all`);
+        continue;
+      }
       console.log(`  ${r.label} · ${r.name}${r.error ? `  NG ${r.error}` : ""}`);
     }
+    const hiddenRuntimes = rows.length - visible.length;
+    if (hiddenRuntimes > 0) console.log(`  … ${hiddenRuntimes} more attached — --all`);
     console.log("\n[Live sessions]");
     if (!live) {
       console.log("  No live sessions (broker not running)");
@@ -1964,7 +2035,6 @@ switch (command) {
     // 「この機械で今 走っている AI」を足す。**`live` / `detected` とは別の語 `running`**
     // (PBI-0622 の定義には触らない —— あちらは「起こせるか」「入っているか」の話)
     console.log("\n[AI on this machine]");
-    const running = await runningRuntimes();
     if (running === undefined) {
       // 「分からない」を「0 件」と言わない(ps が答えない時に嘘の Idle を作らない)
       console.log("  Could not be checked (ps did not answer)");
@@ -2576,7 +2646,7 @@ switch (command) {
     WORK_SUBS.add("done");
     if (!WORK_SUBS.has(sub as string)) {
       fail(
-        `Usage: openroly work <start|list|get|claim|freeze|intent|transfer|fork|task|events|proof|promote|handoff|capsule|capsules|checkpoint-apply|rollback|context>\n  work start \"<title>\" [--to <runtime>] [--note <s>]  (start a work yourself — needs the terminal's own credential from 'openroly login')\n  work list [--status <s>]\n  work get <id>\n  work intent <id> --action <transfer_primary|stop_primary>  (issues a one-time token — human callers only)\n  work claim <id> --run <runId>\n  work freeze <id> --intent <token>  (stop_primary — requires a token from 'work intent')\n  work transfer <id> --to <runtime> [--note <s>] [--set key=value ...]  (a runtime credential also needs --run <runId> --intent <token>)\n  work fork <id> --to <runtime> [--review] [--note <s>]  (branch the work without stopping it; --review = a blind reviewer)\n  work task merge <project> <task>  (apply the task's folder to this working tree — no commit; nothing is applied on a conflict; needs a passed proof and an accept verdict)\n  work team <project>  (the tasks under a Work Project, with their merge, review and scope)\n  work review <task> --accept|--changes-requested|--reject [--feedback <s>]  (rule on a task you handed out — accept opens its merge)\n  work brief <task> [--allowed <prefix>]... [--forbidden <prefix>]... [--done \"<text>\"] [--clear]  (the scope you hand out; paths match by prefix only — a merge touching a forbidden prefix stops as outside_scope)\n  work runs <id>  (the runs on this work — WORKING / BLOCKED / DONE and how long)\n  work done <id>  (finish it — drops a dead holder's lease and marks the work done)\n  work events <id> [--after <n>]\n  work proof <id> --status <s> [--passed <n>] [--failed <n>]\n  work promote <threadId>\n  work handoff <id> [--to <runtimeId>] [--note <s>]\n  work capsule <id> --set key=value [--set key2=value2 ...]  (keys: ${CAPSULE_FIELDS.join(", ")})\n  work capsule show <id> [--version <n>]  (reads the payload from this device's local store)\n  work capsules <id>\n  work context <id> [--key <k> ...] [--prefix <p>] [--kind context|source] [--query <q>]  (values come from this device's local store)\n  work context publish <task> --key <k> [--key <k2> ...]  (copy the task's keys to its Work Project)\n  work checkpoint-apply <id> [--version <n>] [--remote <name>] [--cwd <path>]\n  work rollback <id> [--to <version>] [--cwd <path>]  (back to the version before the latest; your state first becomes a version)`,
+        `Usage: openroly work <start|list|get|claim|freeze|intent|transfer|fork|task|events|proof|promote|handoff|capsule|capsules|checkpoint-apply|rollback|context>\n  work start \"<title>\" [--to <runtime>] [--note <s>]  (start a work yourself — needs the terminal's own credential from 'openroly login')\n  work list [--status <s>] [--all]  (the default hides finished work)\n  work get <id>\n  work intent <id> --action <transfer_primary|stop_primary>  (issues a one-time token — human callers only)\n  work claim <id> --run <runId>\n  work freeze <id> --intent <token>  (stop_primary — requires a token from 'work intent')\n  work transfer <id> --to <runtime> [--note <s>] [--set key=value ...]  (a runtime credential also needs --run <runId> --intent <token>)\n  work fork <id> --to <runtime> [--review] [--note <s>]  (branch the work without stopping it; --review = a blind reviewer)\n  work task merge <project> <task>  (apply the task's folder to this working tree — no commit; nothing is applied on a conflict; needs a passed proof and an accept verdict)\n  work team <project>  (the tasks under a Work Project, with their merge, review and scope)\n  work review <task> --accept|--changes-requested|--reject [--feedback <s>]  (rule on a task you handed out — accept opens its merge)\n  work brief <task> [--allowed <prefix>]... [--forbidden <prefix>]... [--done \"<text>\"] [--clear]  (the scope you hand out; paths match by prefix only — a merge touching a forbidden prefix stops as outside_scope)\n  work runs <id>  (the runs on this work — WORKING / BLOCKED / DONE and how long)\n  work done <id>  (finish it — drops a dead holder's lease and marks the work done)\n  work events <id> [--after <n>]\n  work proof <id> --status <s> [--passed <n>] [--failed <n>]\n  work promote <threadId>\n  work handoff <id> [--to <runtimeId>] [--note <s>]\n  work capsule <id> --set key=value [--set key2=value2 ...]  (keys: ${CAPSULE_FIELDS.join(", ")})\n  work capsule show <id> [--version <n>]  (reads the payload from this device's local store)\n  work capsules <id>\n  work context <id> [--key <k> ...] [--prefix <p>] [--kind context|source] [--query <q>]  (values come from this device's local store)\n  work context set <id> --set key=value [--set key2=value2 ...]  (leave the next hand something to read — e.g. next_step)\n  work context publish <task> --key <k> [--key <k2> ...]  (copy the task's keys to its Work Project)\n  work checkpoint-apply <id> [--version <n>] [--remote <name>] [--cwd <path>]\n  work rollback <id> [--to <version>] [--cwd <path>]  (back to the version before the latest; your state first becomes a version)`,
       );
     }
     const creds = await loadCredentials();
@@ -2587,8 +2657,7 @@ switch (command) {
     const url = (baseUrl ?? cred.base_url).replace(/\/$/, "");
     const worksErr = (status: number, body: any): string =>
       status === 404 ? "NG no such work (wrong account or unknown id)"
-      : status === 409 ? `NG lease conflict: ${body?.error?.code ?? "conflict"}`
-      : `NG HTTP ${status}`;
+      : `NG ${explainApiError(status, body)}`;
     if (sub === "list") {
       const status = flagValue("--status");
       const q = status ? `?status=${encodeURIComponent(status)}` : "";
@@ -2597,21 +2666,41 @@ switch (command) {
       const works = res.body as Record<string, unknown>[];
       const who = await apiCall(url, "/v1/whoami", { token: cred.token }).catch(() => null);
       if (jsonMode) {
-        jsonOut(true, { works: works.map((w) => ({ ...w, place: place(w.owner, who?.body?.id) })) });
+        jsonOut(true, { works: works.map((w) => ({ ...w, place: place(w.owner, who?.body?.account_id) })) });
         break;
       }
-      console.log(`@${who?.body?.handle ?? "you"} · ${works.length} work${works.length === 1 ? "" : "s"}`);
+      // PBI-0762(dogfood F67): 既定は**終わっていない物だけ**。列が 13 行になった時点で、一覧は
+      // 「読む物」から「探す物」に変わっていた(実測: 13 works 中 11 が終わった probe)。
+      // `--status` を自分で指定した時は言われた通りに出す。`--json` は上で抜けているので機械は全部受け取る
+      const showAll = args.includes("--all") || status !== undefined;
+      // PBI-0766(dogfood F72): 残骸は `done` ではなく **`todo` のまま放置された probe** だった
+      // (2026-09-19 実測: 13 行のうち伏せられたのは 3 件だけ)。**誰も持っておらず、何日も触られていない
+      // todo** も同じ残骸なので伏せる。軸が 2 つになったので、伏せた数も軸ごとに言う
+      const staleBefore = Date.now() - UNTOUCHED_TODO_DAYS * 86_400_000;
+      const untouched = (w: Record<string, unknown>): boolean =>
+        String(w.status) === "todo"
+        && w.lease_holder_run == null
+        && Date.parse(String(w.updated_at ?? w.created_at ?? "")) < staleBefore;
+      const shown = showAll ? works : works.filter((w) => String(w.status) !== "done" && !untouched(w));
+      const hiddenDone = showAll ? 0 : works.filter((w) => String(w.status) === "done").length;
+      const hiddenUntouched = showAll ? 0 : works.filter(untouched).length;
+      console.log(`@${who?.body?.handle ?? "you"} · ${shown.length} work${shown.length === 1 ? "" : "s"}`);
       const listedIds = works.map((row) => String(row.id));
-      for (const w of works) {
+      for (const w of shown) {
         // PBI-0645: epoch は --verbose・owner は自分の物なら言わない・欠落値は列ごと出さない
         const lease = w.lease_holder_run
           ? `lease: ${shortId(w.lease_holder_run, verboseMode)}${verboseMode ? ` (epoch ${w.lease_epoch})` : ""}`
           : "lease: free";
-        const owned = place(w.owner, who?.body?.id);
+        const owned = place(w.owner, who?.body?.account_id);
         const idCol = verboseMode ? String(w.id) : uniqueWorkIdPrefix(listedIds, String(w.id));
         const cols = [idCol, String(w.status).padEnd(8), String(w.title), lease];
         if (owned !== null && owned !== "Personal") cols.push(owned);
         console.log(fitLine(`  ${cols.join("  ")}`));
+      }
+      {
+        const parts = [hiddenDone > 0 ? `${hiddenDone} done` : null, hiddenUntouched > 0 ? `${hiddenUntouched} untouched` : null];
+        const said = parts.filter((x): x is string => x !== null).join(", ");
+        if (said) console.log(`  … ${said} hidden — --all`);
       }
       break;
     }
@@ -2691,12 +2780,12 @@ switch (command) {
       const w = res.body as Record<string, unknown>;
       const who = await apiCall(url, "/v1/whoami", { token: cred.token }).catch(() => null);
       if (jsonMode) {
-        jsonOut(true, { work: { ...w, place: place(w.owner, who?.body?.id) } });
+        jsonOut(true, { work: { ...w, place: place(w.owner, who?.body?.account_id) } });
         break;
       }
       console.log(`${w.id}  ${w.title}`);
       {
-        const owned = place(w.owner, who?.body?.id); // PBI-0645: 欠落値は列ごと出さない
+        const owned = place(w.owner, who?.body?.account_id); // PBI-0645: 欠落値は列ごと出さない
         console.log(
           `  status: ${w.status} · visibility: ${w.visibility} · priority: ${w.priority}${owned === null ? "" : ` · place: ${owned}`}`,
         );
@@ -3092,7 +3181,8 @@ switch (command) {
       const res = await apiCall(url, `/v1/works/${encodeURIComponent(id)}/claim`, {
         method: "POST",
         token: cred.token,
-        body: { runId: run },
+        // PBI-0746: この端末の folder を名乗る(web の Give が holder をここで起こす)
+        body: { runId: run, workspace: process.cwd() },
       });
       if (res.status !== 200) fail(worksErr(res.status, res.body));
       const w = res.body as Record<string, unknown>;
@@ -3136,10 +3226,15 @@ switch (command) {
         break;
       }
       const fr = await apiCall(doneUrl, at("/freeze"), { method: "POST", token: doneCred.token, body: {} });
-      if (fr.status === 403) {
+      // 人の credential が無い時 server が返すのは 403 human_only とは限らない —— runtime actor は
+      // `stop_primary` の intent 門で **409 explicit_user_intent_required** になる。両方を同じ案内に
+      // 畳まないと `worksErr` が 409 を「lease conflict」と訳し、**lease は何も競合していないのに
+      // 競合したと読ませる**（module review A3 の実測）
+      const intentBlocked = fr.status === 403 || fr.body?.error?.code === "explicit_user_intent_required";
+      if (intentBlocked) {
         fail(
           "NG human_only: only a person can finish a work — this terminal has no credential of its own.\n" +
-            "  Run 'openroly login' on this Mac.",
+            "  Run 'openroly login' on this Mac (an AI runtime cannot release someone else's lease).",
         );
       }
       if (fr.status !== 200) fail(worksErr(fr.status, fr.body));
@@ -3567,6 +3662,42 @@ switch (command) {
     // PBI-0433: Work Project の context / source を読む。組み直しは MCP の work_context_search と同じ
     // (@openroly/adapter の resolveContextEntries) —— value は端末の CAS から、source は手元で再 hash
     // PBI-0443: task の key を Work Project へ公開する(project に出す口はこれだけ)
+    // PBI-0766(dogfood F77): **端末から書く口**。F68 で `continue` が読むようにした `next_step` を、
+    // 端末で運転している人が置けなかった(MCP か web だけだった)。書く経路は `work brief` と同じ
+    // (値は端末の CAS・server には索引だけ)で、予約 prefix だけは断る(機械の置き場を人が汚さない)
+    if (sub === "context" && args[1] === "set") {
+      const id = args[2];
+      const pairs = args.flatMap((a, i) => (a === "--set" && args[i + 1] !== undefined ? [args[i + 1]!] : []));
+      if (!id || id.startsWith("--") || pairs.length === 0) {
+        fail("Usage: openroly work context set <id> --set key=value [--set key2=value2 ...]");
+      }
+      const context: Record<string, string> = {};
+      for (const pair of pairs) {
+        const at = pair.indexOf("=");
+        if (at <= 0) fail(`NG --set takes key=value (got '${pair}')`);
+        context[pair.slice(0, at)] = pair.slice(at + 1);
+      }
+      const reserved = findReservedContextKeys(Object.keys(context));
+      if (reserved.length > 0) {
+        fail(`NG reserved key: ${reserved.join(", ")} — ${WORK_CONTEXT_RESERVED_PREFIXES.join(" / ")} は機械の置き場です`);
+      }
+      const entries = await Promise.all(Object.entries(context).map(([k, v]) => prepareContextValue(k, v)));
+      const res = await apiCall(url, `/v1/works/${encodeURIComponent(id)}/context`, { method: "PUT", token: cred.token, body: { entries } });
+      if (res.status !== 200) {
+        fail(res.status === 404 ? worksErr(404, res.body) : `NG ${(res.body as any)?.error?.code ?? `HTTP ${res.status}`}`);
+      }
+      // 書いた値は **account へ上げる**(PBI-0446 と同じ経路)。上げないと、継ぐ相手が別の端末に居る時に
+      // 索引だけが届いて値が開けない = 次の一手を残せていない。落ちても put は通す(印が残り tick が再送)
+      const setKind = Object.keys(creds.runtimes).find((k) => creds.runtimes[k] === cred) ?? "default";
+      await syncPendingContextValues(e2eeCallFor(url, cred.token, setKind)).catch(() => {});
+      const written = (res.body as { entries: ContextIndexRow[] }).entries;
+      if (jsonMode) {
+        jsonOut(true, { work_id: id, entries: written });
+        break;
+      }
+      for (const e of written) console.log(`OK ${e.key} v${e.version} on ${id}`);
+      break;
+    }
     if (sub === "context" && args[1] === "publish") {
       const id = args[2];
       const keys = args.flatMap((a, i) => (a === "--key" && args[i + 1] !== undefined ? [args[i + 1]!] : []));
@@ -4072,6 +4203,9 @@ switch (command) {
     const W = pick.work;
     // 止まった work が 1 本だけ(= 絞り込みを通らない普段の形)でも成功行に止まりの節を出す
     if (W.stalled === undefined) W.stalled = await readStall(W.id);
+    // PBI-0766(dogfood F74): **runtime を聞く前に「この work を渡す」と名乗る**。自分で選んだ時に黙っていると、
+    // NG ambiguous を見て `--to` を足した 2 回目に意図しない work が渡る(2026-09-19 に同じ周で 2 回踏んだ)
+    if (namedId == null && !jsonMode) console.log(`continuing "${W.title}" (${W.id})`);
     // --to 無し: headless で起こせる pairing 済み runtime に 1 本に絞れる時だけ黙って選ぶ(V10 の「候補まで」)
     if (target === undefined) {
       if (pairedKinds.length === 0) fail(`NG cannot list runtimes (HTTP ${rres.status}) — pass --to <runtime>`);
@@ -4086,7 +4220,10 @@ switch (command) {
       const kinds = narrowed.length > 0 ? narrowed : wakeable;
       if (kinds.length > 1) {
         const left = kinds.length < wakeable.length ? `\n  (${stalledKind} left out — stopped at a usage limit)` : "";
-        fail(`NG ambiguous — more than one runtime could take over; pass one:\n${kinds.map((k) => `  --to ${k}`).join("\n")}${left}`, 2);
+        fail(
+          `NG ambiguous — more than one runtime could take over "${W.title}" (${W.id}); pass one:\n${kinds.map((k) => `  --to ${k}`).join("\n")}${left}`,
+          2,
+        );
       }
       // PBI-0720: `kinds` は必ず 1 本以上(上で wakeable の空を落とし、narrowed が空なら wakeable に戻す)。
       // それでも index access は `string | undefined` なので、ここで 1 度だけ締める ——
@@ -4109,7 +4246,16 @@ switch (command) {
       // 出なくなる = continue が intent を迂回している形になる
       body: { to: target, runId: "continue", expectedWriteEpoch: w.lease_epoch },
     });
-    if (tres.status !== 201) fail(`NG ${tres.body?.error?.code ?? `HTTP ${tres.status}`}`);
+    if (tres.status !== 201) {
+      // PBI-0764(dogfood F80): server の code をそのまま出さない。`no_lease` は「誰も持っていない」の意味で、
+      // 自分で `work start` した work を続けようとすると必ずここに来る(F69 と同じ病が continue 側に残っていた)
+      const code = tres.body?.error?.code ?? `HTTP ${tres.status}`;
+      fail(
+        code === "no_lease"
+          ? `NG no one is holding "${W.title}" — there is nothing to take over. Hand it out with 'openroly work transfer ${W.id} --to <runtime>'`
+          : `NG ${code}`,
+      );
+    }
     const frozen = tres.body as { transfer_id: string; reserved_epoch: number; holder_run: string };
     const stopped = (state: string, detail: string): never =>
       fail(`NG continue ${frozen.transfer_id} stopped at ${state}: ${detail}`);
@@ -4128,11 +4274,15 @@ switch (command) {
       const written = await writeCasPayload(built.body);
       manifest = buildManifest(built.body, { hash: written.hash, size: written.size, mode: "0600" });
     }
-    const checkpoint = formatContinueCheckpoint({
-      payload: sourcePayload,
-      handoffNote: typeof w.handoff_note === "string" ? w.handoff_note : null,
-      title: W.title,
-    });
+    // PBI-0762(dogfood F68): 継ぐ側が一番欲しいのは「誰が持っていたか」ではなく「次に何をするか」。
+    // work context の `next_step` を 1 回だけ引いて成功行の下に足す。**取れない時は黙る** ——
+    // 値がこの端末に無い / server が落ちている、は引き継ぎそのものの失敗ではない(AC-X1)
+    const checkpoint =
+      formatContinueCheckpoint({
+        payload: sourcePayload,
+        handoffNote: typeof w.handoff_note === "string" ? w.handoff_note : null,
+        title: W.title,
+      }) + (await nextStepLine(url, cred, W.id, Object.keys(creds.runtimes).find((k) => creds.runtimes[k] === cred) ?? "default"));
     const cres = await apiCall(url, `${path}/capsules`, {
       method: "POST",
       token: cred.token,

@@ -1,6 +1,7 @@
+import { checkoutMcpNewerThanBinary } from "./mcp-config.ts";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { binDir } from "./binary.ts";
-import { chmod, lstat, mkdir, readdir, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readdir, readFile, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -495,10 +496,12 @@ async function ensureMcpLaunch(env: Env): Promise<{ command: string; args: strin
     await tryCompileMcp(compiled);
     if (isCompiledMcp(compiled)) return { command: compiled, args: [] };
   }
-  if (existsSync(MCP_SERVER_ENTRY)) {
-    const compiledStale =
-      !isCompiledMcp(compiled) || statSync(MCP_SERVER_ENTRY).mtimeMs > statSync(compiled).mtimeMs;
-    if (compiledStale) return { command: process.execPath, args: [MCP_SERVER_ENTRY] };
+  // PBI-0709 / 0722: 「checkout が compiled より新しいか」の判定は **1 つ**（`checkoutMcpNewerThanBinary`）。
+  // ここに同じ意味の式を書き直すと 3 つ目の口になり、実際そうなっていた —— 自前の式は
+  // `!isCompiledMcp(compiled)`（= compiled がまだ無い）も「古い」と読むので、**binary をこれから
+  // 作る道（下の shim）へ二度と進まなくなる**。config には bun の行が書かれ、hub の 5 本が落ちた
+  if (checkoutMcpNewerThanBinary(MCP_SERVER_ENTRY, compiled)) {
+    return { command: process.execPath, args: [MCP_SERVER_ENTRY] };
   }
   if (isCompiledMcp(compiled)) return { command: compiled, args: [] };
   const bun = process.execPath;
@@ -557,6 +560,13 @@ async function sweepDanglingSkillLinks(root: string): Promise<string[]> {
 }
 
 export async function ingestAndLink(env: Env = process.env): Promise<LinkResult> {
+  // **HOME を宣言していない env では 1 件も読まない・書かない**(PBI-0796)。配り先の探索
+  // (`officialClaudePaths` / `namelessHomes` / 下の CLAUDE.md)は `env.HOME ?? homedir()` で、
+  // homedir() は HOME が無いと **OS の passwd から実行者本人の home を引く**。MCP server は
+  // 起動直後にこれを待たずに投げる(server.ts)ので、env を絞った session(sandbox / dedicated)
+  // でも owner の本物の ~/.claude/skills が OPENROLY_HOME へ丸ごと写っていた —— 誰の機械かを
+  // 名乗っていない env に、実行者の持ち物を配らない。
+  if (env.HOME === undefined) return { ingested: 0, linked: [], skipped: [], removed: [] };
   let ingested = 0;
   for (const root of wellKnownSkillRoots(env)) {
     ingested += await ingestRoot(root, env);
@@ -583,6 +593,15 @@ export async function ingestAndLink(env: Env = process.env): Promise<LinkResult>
       const dest = join(root, name);
       const st = await lstat(dest).catch(() => null);
       if (st?.isSymbolicLink()) {
+        // **hub を指していない symlink は人の物** —— 潰さずに残す(unmanaged dir と同じ扱い)。
+        // 消すと、人が自分で張った `~/.claude/skills/x -> ~/archive/x` が黙って hub link に
+        // 置き換わり、その skill は「managed」になって以後 export されない(= `sync <dest> --from claude`
+        // の plan から消える)。壊れた link(読めない)は sweep と同じく張り替えてよい
+        const current = await readlink(dest).catch(() => null);
+        if (current !== null && resolve(dirname(dest), current) !== target) {
+          skipped.push(`${root}/${name}`);
+          continue;
+        }
         await rm(dest);
       } else if (st) {
         if (!(await exists(join(dest, MARKER)))) {
@@ -606,17 +625,20 @@ export async function ingestAndLink(env: Env = process.env): Promise<LinkResult>
       await mkdir(dir, { recursive: true });
       const dest = join(dir, ins.filename.replaceAll("${name}", HUB_RULE_NAME));
       const st = await lstat(dest).catch(() => null);
-      if (st?.isSymbolicLink()) await rm(dest);
-      else if (st) {
-        const existing = await readFile(dest, "utf8").catch(() => null);
-        if (existing !== rule && stripOpenrolyBlocks(existing ?? "") !== stripOpenrolyBlocks(rule)) {
-          skipped.push(dest);
-        } else {
-          await rm(dest);
-          await symlink(join(hubRulesDir(env), `${HUB_RULE_NAME}.md`), dest);
-          linked.push(dest);
-        }
+      // **張り替えは必ず rm → symlink の 1 本**(skill 側の loop と同じ形)。分岐ごとに symlink を
+      // 書いていた頃は「既に symlink」の枝が rm だけして張り直さず、**2 回目の ingestAndLink で
+      // rules の link が消えていた**(1 回目で作り、2 回目で消す)。sync は先頭と copyExtensions の
+      // 末尾で 2 回回るので、`sync <dest> --from claude` の後は毎回 rules が無い状態になっていた
+      const human =
+        st != null &&
+        !st.isSymbolicLink() &&
+        (await readFile(dest, "utf8").catch(() => null).then(
+          (existing) => existing !== rule && stripOpenrolyBlocks(existing ?? "") !== stripOpenrolyBlocks(rule),
+        ));
+      if (human) {
+        skipped.push(dest);
       } else {
+        if (st) await rm(dest);
         await symlink(join(hubRulesDir(env), `${HUB_RULE_NAME}.md`), dest);
         linked.push(dest);
       }
