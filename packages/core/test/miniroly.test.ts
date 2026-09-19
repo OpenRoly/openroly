@@ -95,6 +95,16 @@ describe("miniroly の brief(AC-2)", () => {
     expect(headings).toEqual(summary.latest_checkpoint.brief_sections);
     expect(headings).toEqual(CAPSULE_FIELDS.filter((field) => headings.includes(field)));
   }, TIMEOUT);
+
+  // PBI-0667: based_on.work_id は optional(同じ work の前の版)。無い時に「based on  v1」(空白 2 つ)を出さない
+  test("checkpoint 行の based_on は work_id が在れば「based on <work_id> v<n>」、無ければ「based on v<n>」", () => {
+    const named = miniroly("read", join(FIXTURES, "valid", "reviewer-blind", "capsule"));
+    expect(named.code).toBe(0);
+    expect(named.out).toContain("\ncheckpoint v1, write epoch 1, based on wrk_01936b2a7c4e7a1b9f3d2e8c6a5b4d21 v1\n");
+    const unnamed = miniroly("read", join(FIXTURES, "valid", "basic", "capsule"));
+    expect(unnamed.code).toBe(0);
+    expect(unnamed.out).toContain("\ncheckpoint v3, write epoch 1, based on v1\n");
+  }, TIMEOUT);
 });
 
 describe("miniroly L2 Writer(AC-3・AC-X1・spec §8 L2)", () => {

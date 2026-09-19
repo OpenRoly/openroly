@@ -40,7 +40,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, rmdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
-import { decideMerge, type MergeDecision } from "./work.ts";
+import { decideMerge, decideMergePaths, type MergeDecision } from "./work.ts";
 
 export const CHECKPOINT_MAX_UNTRACKED_BYTES = 1024 * 1024; // 1 MiB(v0 の既定上限。AC-6)
 export const CHECKPOINT_MAX_UNTRACKED_FILES = 64; // AC-6
@@ -377,9 +377,11 @@ function snapshotTree(gitDir: string, workTree: string, seed: string): string {
  * 差分を project の repo の object で取り(folder には書かない)、project の `index.lock` を取ってから `git apply --check` →
  * 通った時だけ `git apply`。**working tree だけを書き、index / HEAD / refs は触らない**(commit しない)。ぶつかれば 1 byte も当てない。
  * `--3way` は使わない —— `--index` を含むので project の未 stage の変更を一律に断り、staged の衝突では check が通って
- * conflict marker を当てる(実測)。folder に base が無ければ `worktree_missing` で throw(project に触らない)
+ * conflict marker を当てる(実測)。folder に base が無ければ `worktree_missing` で throw(project に触らない)。
+ * `forbidden`(PBI-0649・task の `brief/forbidden`)に当たる path が 1 本でも在れば、**`index.lock` を取る前に**
+ * `outside_scope` を返す —— 2 本の task が同時に合流しても、両方が「busy」ではなく持ち場の外として断られる(AC-X3)
  */
-export function mergeTaskFolder(folder: string, projectCwd: string): MergeDecision {
+export function mergeTaskFolder(folder: string, projectCwd: string, forbidden: readonly string[] = []): MergeDecision {
   const missing = `worktree_missing: ${folder} is not a task folder of this repo on this device — nothing was merged`;
   // patch の path は repo の root 基準。subdir で git apply すると外の path を黙って飛ばす
   const top = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: projectCwd, encoding: "utf8" }).trim();
@@ -393,6 +395,9 @@ export function mergeTaskFolder(folder: string, projectCwd: string): MergeDecisi
   const git = { cwd: top, maxBuffer: GIT_OUTPUT_MAX_BYTES };
   const changed = execFileSync("git", ["diff", "--name-only", "-z", base, now], { ...git, encoding: "utf8" }).split("\0").filter(Boolean);
   if (changed.length === 0) return decideMerge({ changed, busy: false, checkError: null });
+  // PBI-0649: 持ち場の門。lock も patch も取る前に断る(断った時は 1 byte も当たらない・他の合流も止めない)
+  const scope = decideMergePaths(changed, forbidden);
+  if (!scope.ok) return { result: "outside_scope", paths: scope.hit };
   const lockPath = join(gitDir, "index.lock");
   let lock: number;
   try {

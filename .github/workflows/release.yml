@@ -21,6 +21,13 @@ permissions:
   attestations: write # store the attestation so `gh attestation verify` can find it
 
 jobs:
+  # public-ci ignores tags, so nothing checks the commit a tag points at unless it is called here
+  # (PBI-0647). Build provenance proves a digest came from this workflow and commit — it does not
+  # prove that commit passed anything, so without this gate a broken build gets the same signature.
+  # The job list is not copied here: one file owns it, this only calls it.
+  verify:
+    uses: ./.github/workflows/public-ci.yml
+
   binaries:
     runs-on: ubuntu-latest
     steps:
@@ -93,8 +100,11 @@ jobs:
           path: dist/*
           retention-days: 1
 
+  # `binaries` / `broker-*` deliberately do not wait for `verify` — they only produce artifacts with
+  # `retention-days: 1`, which nobody can download. **This job is the only gate**, so it is the only
+  # one that needs `verify`.
   release:
-    needs: [binaries, broker-darwin, broker-linux]
+    needs: [verify, binaries, broker-darwin, broker-linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8

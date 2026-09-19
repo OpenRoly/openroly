@@ -275,10 +275,38 @@ const ACL_DIR: &str = "list,add_file,search,delete,add_subdirectory,delete_child
 /// 資格情報 file に渡す ACL。**読めて、refresh で書き戻せる分だけ** —— dir の権限一式は渡さない。
 const ACL_CRED: &str = "read,write";
 
+/// peek(`peek.jsonl`)の置き場と持ち主(PBI-0644)。**broker が 0600 で先に置き、専用 uid には
+/// `ACL_PEEK`(append)だけ渡す** —— 資格情報の drop と同じ形(持ち主は broker)。
+///
+/// session に dir の `add_file` を渡して自分で作らせる道も在るが、**そうすると file の持ち主が
+/// 使い捨ての uid になり、0600 のまま owner が読めない**(実測 2026-09-16: e2e が
+/// `EACCES: open peek.jsonl` で落ちた)。peek は「model が何を見たか」を **owner が読む**ための
+/// 記録なので、持ち主は owner のままでなければ意味が無い。
+/// hub(PBI-0230)は turn を跨いで同じ file に足すので、**在る file は truncate しない**。
+pub const PEEK_FILE: &str = "peek.jsonl";
+
+/// peek file に渡す ACL。**`append` だけ** —— `peek.ts` は `appendFileSync`(O_APPEND)で開くので
+/// これで足り、`write`(truncate)も `read` も渡らない(実測 2026-09-16: `read,write` では O_APPEND が
+/// EACCES・`append` だけで append は通り truncate と read は落ちる)。**session は自分が見た物を
+/// 書き足せるが、消せないし読み返せない** —— 記録として、渡す権限はこれが一番狭い。
+const ACL_PEEK: &str = "append";
+
+/// hub / dedicated の peek を、broker の持ち物として 0600 で用意する(在れば触らない)。
+pub fn prepare_peek_file(path: &Path) -> io::Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+    write_0600(path, b"")
+}
+
 /// 子に持たせる env の名前。`sudo` は既定で env を落とすので名指しで通す(**値はここに書かない**)。
 /// proxy の 4 変数と `NO_PROXY` が落ちると、閉じ込めた子が proxy を通らず「繋がらない」だけになる。
 pub const PRESERVE_ENV: &[&str] = &[
     "HOME",
+    // peek(PBI-0224)の置き場。落とすと `peek.ts` の `brokerHome(env)` が保存された `HOME`
+    // (= **broker の HOME**。pool の uid の home ではない)へ落ち、実 user 所有の dir に
+    // 専用 uid が `mkdir` しようとして EPERM = 一番閉じ込めた session だけが無記録になる(PBI-0644)
+    "OPENROLY_BROKER_HOME",
     "HTTPS_PROXY",
     "HTTP_PROXY",
     "https_proxy",
@@ -606,6 +634,8 @@ pub struct Session {
     folder: Option<PathBuf>,
     home_acl: bool,
     cred_acl: Option<PathBuf>,
+    /// 書けるように `ACL_CRED` を足した peek file(PBI-0644)。teardown で外す。
+    peek_acl: Option<PathBuf>,
     /// 辿れるように `search` を足した祖先 dir(`dirs_blocking_pool`)。teardown で外す。
     search_acl: Vec<PathBuf>,
     /// drop した時の refreshToken の指紋。teardown で変わっていたら 1 行出す(値は出さない)。
@@ -625,6 +655,7 @@ pub(crate) fn fake_session_for_test(user: &str, home: &Path) -> Session {
         folder: None,
         home_acl: false,
         cred_acl: None,
+        peek_acl: None,
         search_acl: Vec::new(),
         cred_sig: "none".to_string(),
         _lease: Lease { uid: u32::MAX },
@@ -658,6 +689,9 @@ impl Session {
         }
         if let Some(folder) = self.folder.take() {
             run_quiet(&acl_revoke_argv(&self.user, &folder, ACL_DIR));
+        }
+        if let Some(peek) = self.peek_acl.take() {
+            run_quiet(&acl_revoke_argv(&self.user, &peek, ACL_PEEK));
         }
         if self.home_acl {
             run_quiet(&acl_revoke_argv(&self.user, &self.home, ACL_DIR));
@@ -719,6 +753,8 @@ pub fn setup_session(
     c1: &C1Status,
     session_dir: &Path,
     folder: &Path,
+    // この session の peek(`<session_dir>/peek.jsonl`。hub は turn を跨ぐ会話 dir の下)
+    peek: &Path,
 ) -> Result<Option<Session>, String> {
     if effective_enforcement(runtime, base, c1) == base {
         return Ok(None);
@@ -759,6 +795,7 @@ pub fn setup_session(
         folder: None,
         home_acl: false,
         cred_acl: None,
+        peek_acl: None,
         search_acl: Vec::new(),
         cred_sig: refresh_token_sig(&cred),
         _lease: lease,
@@ -767,6 +804,12 @@ pub fn setup_session(
         run_checked(&acl_grant_argv(&user, &dir, ACL_SEARCH), "granting search on an ancestor dir")?;
         session.search_acl.push(dir);
     }
+    // peek: broker の持ち物として 0600 で置き、専用 uid には read,write だけ渡す(資格情報と同じ形)。
+    // これが無いと peek(PBI-0224)は 1 行も残らない —— session_dir は 0755 でも **owner の持ち物**なので、
+    // 専用 uid は中に file を作れない(実測 2026-09-16)
+    prepare_peek_file(peek).map_err(|e| format!("could not prepare the peek file: {e}"))?;
+    run_checked(&acl_grant_argv(&user, peek, ACL_PEEK), "granting the peek ACL")?;
+    session.peek_acl = Some(peek.to_path_buf());
     // HOME: claude は `~/.claude` の下に自分の state を書くので、専用 uid に書かせる
     run_checked(&acl_grant_argv(&user, &home, ACL_DIR), "granting the session HOME ACL")?;
     session.home_acl = true;
@@ -943,7 +986,7 @@ mod tests {
         set_run_as_reply(Some((true, "probe:0\n".into())));
         let dir = std::env::temp_dir().join(format!("openroly-c1-setup-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        let err = setup_session("claude", "port_scoped", &up, &dir, &dir).err().expect("穴が開いているのに起こした");
+        let err = setup_session("claude", "port_scoped", &up, &dir, &dir, &dir.join(PEEK_FILE)).err().expect("穴が開いているのに起こした");
         assert!(err.contains("not blocking"), "{err}");
         assert!(!dir.join("c1-home").exists(), "HOME を作ってから断った");
         let log = take_run_as_log();
@@ -1044,6 +1087,28 @@ mod tests {
         let _ = fs::remove_dir_all(&home);
     }
 
+    // peek は **broker の持ち物**として 0600 で置く(PBI-0644)。持ち主が使い捨ての uid になると
+    // 0600 のまま owner が読めない —— peek は owner が読む為の記録なので、それは記録が無いのと同じ。
+    // hub(PBI-0230)は turn を跨いで同じ file に足すので、**在る file は truncate しない**。
+    #[test]
+    fn peek_file_is_ours_at_0600_and_keeps_what_earlier_turns_wrote() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = std::env::temp_dir().join(format!("openroly-c1-peek-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(PEEK_FILE);
+        prepare_peek_file(&path).unwrap();
+        let meta = fs::metadata(&path).unwrap();
+        assert_eq!(meta.mode() & 0o777, 0o600, "peek が 0600 でない");
+        // SAFETY: geteuid は引数も失敗も無い
+        assert_eq!(meta.uid(), unsafe { libc::geteuid() }, "peek の持ち主が broker でない");
+        // 2 turn 目: 前の turn の行を消さない(負の対照: truncate すると空になる)
+        fs::write(&path, b"{\"session\":\"t1\"}\n").unwrap();
+        prepare_peek_file(&path).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{\"session\":\"t1\"}\n", "前の turn の peek を消した");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     // raised_by_runtime: 上げた runtime だけが載る。**上げる物が無ければ空**(wire が旧 broker と同じ)。
     #[test]
     fn raised_by_runtime_lists_only_what_went_above_the_floor() {
@@ -1084,6 +1149,14 @@ mod tests {
         assert_ne!(dir[0], SUDO, "ACL に root を使っている");
         assert_eq!(dir[1], "+a");
         assert_eq!(acl_revoke_argv("_openroly_s556", Path::new("/proj"), ACL_DIR)[1], "-a", "外す側が +a のまま");
+        // peek の ACL(PBI-0644)は file 1 つへの read,write だけ —— dir の権限(`add_file` /
+        // `delete_child`)は渡さない。渡すと agent が broker の置いた `stdout.log` / `sandbox.sb` を
+        // 消して symlink に差し替えられ、後で読む broker(本人 uid)が session の外の file を読む
+        let peek = acl_grant_argv("_openroly_s556", Path::new("/h/.openroly/broker/sessions/r1/peek.jsonl"), ACL_PEEK);
+        assert!(peek[2].ends_with("allow append"), "peek の ACL が広い: {:?}", peek[2]);
+        assert!(!peek[2].contains("add_file"), "session_dir に file を置ける: {:?}", peek[2]);
+        assert!(!peek[2].contains("delete"), "session_dir の file を消せる: {:?}", peek[2]);
+        assert!(!peek[2].contains("write"), "見た物を消して書き換えられる: {:?}", peek[2]);
         // 資格情報の ACL は read,write だけ(dir の権限一式を渡さない)
         assert!(cred[2].ends_with("allow read,write"), "cred の ACL が広い: {:?}", cred[2]);
         assert!(!cred[2].contains("delete_child"), "cred に dir の権限を渡している: {:?}", cred[2]);
@@ -1102,7 +1175,8 @@ mod tests {
         assert_eq!(&args[1..3], &["-u".to_string(), "_openroly_s556".to_string()]);
         // env を名指しで通す(sudo は既定で落とす)。proxy の 4 変数が落ちると閉じ込めが「繋がらない」に化ける
         let preserve = args.iter().find(|a| a.starts_with("--preserve-env=")).expect("--preserve-env が無い");
-        for key in ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "NO_PROXY", "HOME"] {
+        // `OPENROLY_BROKER_HOME` が落ちると peek が session の外を向く(PBI-0644)
+        for key in ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "NO_PROXY", "HOME", "OPENROLY_BROKER_HOME"] {
             assert!(preserve.contains(key), "{key} を通していない: {preserve}");
         }
         // `--` の後ろが program。`-` で始まる program / args でも sudo の flag に化けない
@@ -1152,6 +1226,7 @@ mod tests {
             folder: None,
             home_acl: false,
             cred_acl: None,
+            peek_acl: None,
             search_acl: Vec::new(),
             cred_sig: sig,
             _lease: lease_uid().expect("lease"),

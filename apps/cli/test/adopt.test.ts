@@ -83,6 +83,58 @@ describe("openroly adopt (PBI-0023)", () => {
     expect(argv).not.toContain(TOKEN);
   });
 
+  test("PBI-0685: adapter が無い kind は credential だけ保存し MCP を書かない", async () => {
+    const home2 = await mkdtemp(join(tmpdir(), "openroly-adopt-aider-"));
+    const grokToml = join(home2, ".grok", "config.toml");
+    const res = await adopt(
+      [
+        "--kind",
+        "aider",
+        "--runtime-id",
+        "rt_aider_1",
+        "--base-url",
+        "http://localhost:9999",
+        "--name",
+        "Mac / Aider",
+        "--token-stdin",
+      ],
+      `${TOKEN}\n`,
+      { OPENROLY_HOME: home2, HOME: home2 },
+    );
+    expect(res.code, res.err).toBe(0);
+    expect(res.out).toContain("openroly-mcp");
+    const file = JSON.parse(await readFile(join(home2, "credentials.json"), "utf8"));
+    expect(file.runtimes.aider).toMatchObject({ runtime_id: "rt_aider_1", token: TOKEN });
+    expect(existsSync(grokToml)).toBe(false);
+    await rm(home2, { recursive: true, force: true });
+  });
+
+  test("PBI-0699 AC-3: grok adopt は .grok があれば openroly-mcp を書く（--from 不要）", async () => {
+    const home2 = await mkdtemp(join(tmpdir(), "openroly-adopt-grok-"));
+    await mkdir(join(home2, ".grok"), { recursive: true });
+    const res = await adopt(
+      [
+        "--kind",
+        "grok",
+        "--runtime-id",
+        "rt_grok_1",
+        "--base-url",
+        "http://localhost:9999",
+        "--name",
+        "Mac / Grok",
+        "--token-stdin",
+      ],
+      `${TOKEN}\n`,
+      { OPENROLY_HOME: home2, HOME: home2, OPENROLY_MCP_COMPILE: "0" },
+    );
+    expect(res.code, res.err).toBe(0);
+    const toml = await readFile(join(home2, ".grok", "config.toml"), "utf8");
+    expect(toml).toContain("openroly-mcp");
+    expect(toml).toContain("OPENROLY_RUNTIME_KIND");
+    expect(toml).not.toContain("mcp/src/server.ts");
+    await rm(home2, { recursive: true, force: true });
+  });
+
   // AC-11: credentials.json は kind 単位の 1 entry なので、上書きすると Cloud の既定 runtime と
   // 実際に認証する runtime がずれる。human が入れた生きている credential は奪わない
   test("human が入れた別 runtime_id の credential は奪わない(exit 2 / ファイル不変)", async () => {

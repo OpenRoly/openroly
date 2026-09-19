@@ -747,6 +747,112 @@
       "verified": "cli:2.21.1"
     },
     {
+      "id": "grok",
+      "display_name": "Grok Build",
+      "kind": "cli",
+      "detect": {
+        "binaries": [
+          "grok"
+        ],
+        "apps": [],
+        "services": []
+      },
+      "version": {
+        "args": [
+          "--version"
+        ]
+      },
+      "launch": {
+        "new": [],
+        "existing": [
+          "--continue"
+        ],
+        "headless": {
+          "argv": [
+            "-p",
+            "${instruction}",
+            "--output-format",
+            "json",
+            "--always-approve"
+          ]
+        }
+      },
+      "capabilities": [
+        "coding",
+        "shell",
+        "files"
+      ],
+      "adapter": "generic/native",
+      "native": {
+        "home": {
+          "env": "GROK_HOME",
+          "default": "~/.grok"
+        },
+        "bin": "grok",
+        "version_args": [
+          "--version"
+        ],
+        "install": "Grok Build was not found on this machine (https://docs.x.ai/build/overview). The binary lives at ~/.grok/bin/grok",
+        "mcp": {
+          "strategy": "cli",
+          "bin": "grok",
+          "add": [
+            "mcp",
+            "add",
+            "--scope",
+            "user",
+            "${name}",
+            "-e...",
+            "${env}",
+            "--",
+            "${command}",
+            "${args...}"
+          ],
+          "add_url": [
+            "mcp",
+            "add",
+            "--scope",
+            "user",
+            "--transport",
+            "${transport}",
+            "${name}",
+            "${url}"
+          ],
+          "remove": [
+            "mcp",
+            "remove",
+            "--scope",
+            "user",
+            "${name}"
+          ],
+          "read": {
+            "path": "config.toml",
+            "format": "toml",
+            "key": "mcp_servers",
+            "shape": "map"
+          }
+        },
+        "skills": {
+          "dir": "skills"
+        },
+        "instructions": {
+          "dir": "rules",
+          "filename": "openroly-${name}.md"
+        }
+      },
+      "egress": {
+        "hosts": [
+          "api.x.ai"
+        ]
+      },
+      "note": "実測 2026-09-17 grok 1.0.34。`mcp add-json` は無い（unrecognized subcommand）。隔離 GROK_HOME で `grok mcp add --scope user <name> -e KEY=val -- <command> <args>` が $GROK_HOME/config.toml の [mcp_servers.<name>] に command/args/enabled と [mcp_servers.<name>.env] を書いた。binary は ~/.grok/bin/grok。sandbox_verified は未実測なので書かない（dedicated wake は not_verified）。",
+      "sources": [
+        "https://docs.x.ai/build/overview",
+        "https://github.com/vercel-labs/skills/blob/main/src/agents.ts"
+      ],
+      "verified": "cli:1.0.34"
+    },
+    {
       "id": "claude-desktop",
       "display_name": "Claude Desktop",
       "kind": "app",

@@ -772,15 +772,20 @@ mod linux {
                 deny_read: vec![secret.to_path_buf()],
                 proxy_port: allowed_port,
             };
-            // 5 と 6 は対照を持つ: 7 = 同じ cat が folder の中なら読める / 4 = 同じ /dev/tcp が許した port なら繋がる
+            // 5 と 6 は対照を持つ: 7 = 同じ open が folder の中なら通る / 4 = 同じ /dev/tcp が許した port なら繋がる。
+            // **外部 binary に頼らない**(seatbelt の probe と同じ線) —— 読む側も `bash` の redirect で開く。
+            // `cat` を PATH で引いていた時は、PATH の痩せた broker(e2e の `PATH=fakebin` / 素の launchd)で
+            // 5 も 7 も「command not found」になり、**5=deny が閉じ込めではなく binary 不在で通って**
+            // 7 だけが落ちた(2026-09-16 CI 実測: `probe: reading inside the folder was denied` で
+            // Linux の全 dedicated wake が sandbox_unavailable)。下の `PATH` 空はその再発を止める。
             let script = format!(
                 "echo p > \"{f}/probe\" 2>/dev/null && echo 1=ok || echo 1=deny\n\
                  echo p > \"{o}/probe\" 2>/dev/null && echo 2=ok || echo 2=deny\n\
                  {bash} -c 'exec 3<>/dev/tcp/127.0.0.1/{other}' 2>/dev/null && echo 3=ok || echo 3=deny\n\
                  {bash} -c 'exec 3<>/dev/tcp/127.0.0.1/{allowed}' 2>/dev/null && echo 4=ok || echo 4=deny\n\
-                 cat \"{s}/key\" >/dev/null 2>&1 && echo 5=ok || echo 5=deny\n\
+                 {bash} -c 'exec 3< \"{s}/key\"' 2>/dev/null && echo 5=ok || echo 5=deny\n\
                  {bash} -c 'exec 3<>/dev/udp/127.0.0.1/{allowed}' 2>/dev/null && echo 6=ok || echo 6=deny\n\
-                 cat \"{f}/probe\" >/dev/null 2>&1 && echo 7=ok || echo 7=deny\n",
+                 {bash} -c 'exec 3< \"{f}/probe\"' 2>/dev/null && echo 7=ok || echo 7=deny\n",
                 f = folder.display(),
                 o = outside.display(),
                 s = secret.display(),
@@ -789,6 +794,9 @@ mod linux {
             );
             let mut cmd = Command::new("/bin/sh");
             cmd.arg("-c").arg(&script);
+            // probe が測るのは **閉じ込め**であって、この機の PATH ではない。空にして走らせると
+            // 「bare command を足した」瞬間に CI の `landlock_self_test_passes_on_this_linux` が赤くなる
+            cmd.env("PATH", "");
             let wrapped = self.wrap(cmd, &spec)?;
             let mut std_cmd = wrapped.into_std();
             std_cmd.stdin(std::process::Stdio::null());

@@ -18,21 +18,26 @@ import { join } from "node:path";
 
 // 旧 `~/.atn` だけが在る端末ではそれを引き継ぐ(PBI-0344 AC-3)。この package は単体 OSS
 // (依存 0)なので @openroly/core の legacyDir を使えず、同じ規則をここに置く。警告は 1 process 1 行
-const FRESH_SECRETS = join(homedir(), ".openroly", "secrets.json");
-const LEGACY_SECRETS = join(homedir(), ".atn", "secrets.json");
+// HOME が無い環境では bun の homedir() が throw する(uv_os_homedir ENOENT・PBI-0676)ので
+// import 時に評価せず secretsPath() の中で取る
+const secretsCandidates = (): readonly [string, string] => {
+  const home = homedir();
+  return [join(home, ".openroly", "secrets.json"), join(home, ".atn", "secrets.json")];
+};
 let legacyDirWarned = false;
 
 export const secretsPath = (): string => {
   const override = process.env.OPENROLY_SECRETS_PATH;
   if (override) return override;
-  if (existsSync(FRESH_SECRETS) || !existsSync(LEGACY_SECRETS)) return FRESH_SECRETS;
+  const [fresh, legacy] = secretsCandidates();
+  if (existsSync(fresh) || !existsSync(legacy)) return fresh;
   if (!legacyDirWarned) {
     legacyDirWarned = true;
     console.error(
       `[openroly-mask] legacy state directory ${join(homedir(), ".atn")} is in use — move it to ${join(homedir(), ".openroly")} (support ends in a future release)`,
     );
   }
-  return LEGACY_SECRETS;
+  return legacy;
 };
 
 function checkPermissions(path: string): void {
@@ -166,7 +171,10 @@ const PHONE_RE = /\B\+\d{1,3}(?:[ -]?\d{2,4}){2,5}\b|\b0\d{1,4}-\d{1,4}-\d{3,4}\
 const CARD_RE = /\b\d(?:[ -]?\d){12,18}\b/g;
 // 特定の形(sk-… / ghp_… / xoxb-… / JWT)。他 pattern より先に走らせる — 電話/card の緩い数字
 // pattern が token の一部(末尾の数字列)を先食いすると、鍵の残りが平文で漏れる為
-const KEY_RE = /\bsk-[A-Za-z0-9]{10,}\b|\bghp_[A-Za-z0-9]{20,}\b|\bxoxb-[A-Za-z0-9-]{10,}\b|\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g;
+// 特定形(sk-proj / sk-ant / github_pat / AKIA / AIza / password=)を generic sk- より先に置く。
+// dogfood F15: 13 形中 6 形が素通りしていた。
+const KEY_RE =
+  /\bsk-proj-[A-Za-z0-9_-]+\b|\bsk-ant-[A-Za-z0-9_-]+\b|\bsk-[A-Za-z0-9]{10,}\b|\bghp_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b|\bxoxb-[A-Za-z0-9-]{10,}\b|\bAKIA[A-Z0-9]{16}\b|\bAIza[A-Za-z0-9_-]{35}\b|\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b|\bpassword=["']?[^\s"'\\]{8,}["']?/g;
 
 /** pattern 一致箇所を `replace(matched)` の返り値に置き換える。既に mask 済み(⟨s:n⟩)の箇所は
  * 対象にしない(static secrets 置換の後に呼ぶ前提 — masking.ts の呼び出し順が不変条件)。

@@ -11,6 +11,11 @@ export * from "./work.ts";
 export * from "./capsule.ts";
 export * from "./work-context.ts";
 export * from "./memory.ts";
+export * from "./run.ts";
+// PBI-0464 の続きの判定と集計(web の Continued が同じ物差しを使う。2 つ目の判定を面に作らない)
+export * from "./continuity-metrics.ts";
+export * from "./resume-metrics.ts";
+export * from "./connection.ts";
 export * from "./context.ts";
 export * from "./native.ts";
 export * from "./env.ts";

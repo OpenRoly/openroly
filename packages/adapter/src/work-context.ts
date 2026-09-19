@@ -16,6 +16,7 @@ import {
   validateContextKey,
   verifySealedValue,
   WORK_CONTEXT_SYNC_MAX_BYTES,
+  WORK_CONTEXT_BRIEF_KEYS,
   WORK_CONTEXT_WELL_KNOWN_KEYS,
   type ContextSyncReason,
   type ContextValuePayload,
@@ -110,11 +111,17 @@ export interface ContextSearchBudget {
 }
 
 /**
+ * 決まった key の並び(先頭ほど残る)。**持ち場と完了条件(`brief/`)が goal より先**(PBI-0649 AC-6)——
+ * 渡された仕事の境界は、目的より先に知っていないと守れない
+ */
+const PRIORITY_KEYS: readonly string[] = [...WORK_CONTEXT_BRIEF_KEYS, ...WORK_CONTEXT_WELL_KNOWN_KEYS];
+
+/**
  * 並び: work → project、同じ scope の中は 決まった key(定数の順)→ 自由 key → source → auto/ → inbox/。
- * 上限で外れるのは後ろから —— 次の agent が最初に要る物(goal / next_step)ほど残る
+ * 上限で外れるのは後ろから —— 次の agent が最初に要る物(brief/ → goal / next_step)ほど残る
  */
 const priorityOf = (e: ResolvedContextEntry): [number, number, number] => {
-  const known = (WORK_CONTEXT_WELL_KNOWN_KEYS as readonly string[]).indexOf(e.key);
+  const known = PRIORITY_KEYS.indexOf(e.key);
   const group =
     e.kind === "source" ? 2 : e.key.startsWith("auto/") ? 3 : e.key.startsWith("inbox/") ? 4 : known >= 0 ? 0 : 1;
   return [e.scope === "project" ? 1 : 0, group, group === 0 ? known : 0];

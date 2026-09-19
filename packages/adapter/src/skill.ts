@@ -146,9 +146,8 @@ async function removeSkillIfPresent(ctx: AdapterContext, skillsDir: SkillsDirFn,
 }
 
 /**
- * 吸い上げ(PBI-0212)の上限。1 file 64KiB / 1 skill 256KiB を超えたら **その skill を丸ごと落とす**
- * —— 参照 file を黙って落として SKILL.md だけ配ると、配布先では「本文が自分の references を
- * 指しているのに無い」skill になる(壊れた物を成功として配る)。落とすなら丸ごと。
+ * 吸い上げ(PBI-0212)の上限。1 file 64KiB / 参照合計 256KiB を超えた **参照 file は飛ばす**。
+ * SKILL.md 本体は上限の外(巨大 tree でも skill 名と本文は配る)。
  */
 const MAX_SKILL_FILE_BYTES = 64 * 1024;
 const MAX_SKILL_TOTAL_BYTES = 256 * 1024;
@@ -169,38 +168,45 @@ function splitSkillMd(text: string): { description: string; instructions: string
 }
 
 /**
- * skill dir の SKILL.md 以外の file(再帰)。上限超え・非 UTF-8 は null = skill ごと落とす。
+ * skill dir の SKILL.md 以外の file(再帰)。上限超え・非 UTF-8 はその file だけ飛ばす。
+ * SKILL.md は別経路で必ず載せる(gstack のような巨大 tree を skill ごと落とさない)。
  * **`.` で始まる名前は丸ごと飛ばす**(PBI-0212 有界レビュー) —— 実測で 2 つ壊れていた:
  *   ① `.env` / `.netrc` が spec.files に入って Account へ行った(「秘密は端末に留まる」の反例)
  *   ② `git clone` で入れた skill は `.git` の binary object で **skill ごと黙って落ちて**いた
  * `.openroly-managed` の除外もこの 1 行に含まれる(marker は dot file)。
  */
+const MAX_SKILL_WALK_ENTRIES = 200;
+
 async function readSkillFiles(skillDir: string): Promise<Record<string, string> | null> {
   const files: Record<string, string> = {};
   let total = 0;
-  const walk = async (dir: string): Promise<boolean> => {
+  let visited = 0;
+  const walk = async (dir: string): Promise<void> => {
     for (const entry of await readdir(dir, { withFileTypes: true })) {
       if (entry.name.startsWith(".")) continue;
+      if (++visited > MAX_SKILL_WALK_ENTRIES) return;
       const full = join(dir, entry.name);
       const rel = relative(skillDir, full);
       if (rel === "SKILL.md") continue;
-      if (entry.isDirectory()) {
-        if (!(await walk(full))) return false;
+      const st = await stat(full).catch(() => null);
+      if (!st) continue;
+      if (st.isDirectory()) {
+        await walk(full);
         continue;
       }
-      if (!entry.isFile()) continue;
-      const size = (await stat(full)).size;
-      total += size;
-      if (size > MAX_SKILL_FILE_BYTES || total > MAX_SKILL_TOTAL_BYTES) return false;
+      if (!st.isFile()) continue;
+      if (st.size > MAX_SKILL_FILE_BYTES) continue;
+      if (total + st.size > MAX_SKILL_TOTAL_BYTES) return;
       const buf = Buffer.from(await readFile(full));
       const text = buf.toString("utf8");
       // 非 UTF-8(画像等)は round-trip が壊れる。spec.files は string しか運べない
-      if (!Buffer.from(text, "utf8").equals(buf)) return false;
+      if (!Buffer.from(text, "utf8").equals(buf)) continue;
+      total += st.size;
       files[rel.split(sep).join("/")] = text;
     }
-    return true;
   };
-  return (await walk(skillDir)) ? files : null;
+  await walk(skillDir);
+  return files;
 }
 
 /**
@@ -223,23 +229,23 @@ async function exportSkills(ctx: AdapterContext, skillsDir: SkillsDirFn): Promis
   }
   const out: ExportedExtension[] = [];
   for (const entry of listing) {
-    if (!entry.isDirectory()) continue;
+    // symlink 先の skill dir も拾う(この Mac の ~/.claude/skills は archive への symlink が混ざる)
     const skillDir = join(dir, entry.name);
+    const st = await stat(skillDir).catch(() => null);
+    if (!st?.isDirectory()) continue;
     const managed = await stat(join(skillDir, OPENROLY_MANAGED_MARKER)).then(() => true, () => false);
     if (managed) continue;
     const md = await readFile(join(skillDir, "SKILL.md"), "utf8").catch(() => null);
     if (md === null) continue;
-    const parsed = splitSkillMd(md);
-    if (!parsed) continue;
+    const parsed = splitSkillMd(md) ?? { description: entry.name, instructions: md };
     const files = await readSkillFiles(skillDir);
-    if (files === null) continue;
     out.push({
       kind: "skill",
       name: entry.name,
       spec: {
         description: parsed.description,
         instructions: parsed.instructions,
-        ...(Object.keys(files).length > 0 ? { files } : {}),
+        ...(files && Object.keys(files).length > 0 ? { files } : {}),
       },
       secretEnv: {},
     });
@@ -265,7 +271,8 @@ export function withSkills(base: ExtensionAdapter, skillsDir: SkillsDirFn): Exte
       const names = new Set((await base.listExtensions(ctx)).map((e) => e.name));
       try {
         for (const entry of await readdir(skillsDir(ctx), { withFileTypes: true })) {
-          if (entry.isDirectory()) names.add(entry.name);
+          const st = await stat(join(skillsDir(ctx), entry.name)).catch(() => null);
+          if (st?.isDirectory()) names.add(entry.name);
         }
       } catch {
         // skills/ が無ければ skill は 0 件(mcp のみ返す)

@@ -280,3 +280,42 @@ export function renderCapsule(
   }
   return { rendered, omitted, est_tokens: estimateTokens(rendered) };
 }
+
+/** continue 成功行の次に必ず出す 1 行(PBI-0684)。capsule が空でも title まで落ちる。 */
+export function formatContinueCheckpoint(input: {
+  payload?: unknown;
+  handoffNote?: string | null;
+  title: string;
+}): string {
+  const fromBody = checkpointText(input.payload);
+  const note = typeof input.handoffNote === "string" ? input.handoffNote.trim() : "";
+  const title = input.title.trim();
+  const text = fromBody || note || title || "(empty)";
+  return `checkpoint: ${text}`;
+}
+
+function checkpointText(payload: unknown): string {
+  if (payload == null || typeof payload !== "object") return "";
+  const o = payload as Record<string, unknown>;
+  const inner =
+    o.body != null && typeof o.body === "object" && !Array.isArray(o.body)
+      ? (o.body as Record<string, unknown>)
+      : o;
+  for (const key of ["current_state", "goal"] as const) {
+    const line = oneLine(inner[key] ?? o[key]);
+    if (line !== "") return line;
+  }
+  const decisions = oneLine(inner.decisions ?? o.decisions);
+  return decisions;
+}
+
+function oneLine(value: unknown): string {
+  if (typeof value === "string") return value.trim().replace(/\s+/g, " ");
+  if (Array.isArray(value)) {
+    return value
+      .map((x) => (typeof x === "string" ? x.trim() : ""))
+      .filter((x) => x !== "")
+      .join("; ");
+  }
+  return "";
+}

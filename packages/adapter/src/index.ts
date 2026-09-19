@@ -14,5 +14,7 @@ export * from "./binary.ts";
 export * from "./devicekeys.ts";
 export * from "./reconcile.ts";
 export * from "./share.ts";
+export * from "./copy.ts";
+export * from "./hub.ts";
 export * from "./profiles.ts";
 export * from "./e2ee.ts";

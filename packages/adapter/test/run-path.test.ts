@@ -29,6 +29,26 @@ afterAll(async () => {
 const launchdEnv = () => ({ PATH: "/usr/bin:/bin", HOME: home });
 
 describe("run() の PATH 補強 (PBI-0050)", () => {
+  test("PATH に無い openroly を $HOME/.openroly/bin から absolute path で解決できる", async () => {
+    const bin = join(home, ".openroly", "bin");
+    await mkdir(bin, { recursive: true });
+    await writeFile(join(bin, "openroly"), "#!/bin/sh\necho resolved \"$0\"\n");
+    await chmod(join(bin, "openroly"), 0o755);
+    const r = await run({ env: launchdEnv() }, ["openroly", "--version"]);
+    expect(r.ok).toBe(true);
+    expect(r.stdout.trim()).toBe(`resolved ${join(bin, "openroly")}`);
+  });
+
+  test("PATH に無い grok を $HOME/.grok/bin から absolute path で解決できる", async () => {
+    const grokBin = join(home, ".grok", "bin");
+    await mkdir(grokBin, { recursive: true });
+    await writeFile(join(grokBin, "grok"), "#!/bin/sh\necho resolved \"$0\"\n");
+    await chmod(join(grokBin, "grok"), 0o755);
+    const r = await run({ env: launchdEnv() }, ["grok", "--version"]);
+    expect(r.ok).toBe(true);
+    expect(r.stdout.trim()).toBe(`resolved ${join(grokBin, "grok")}`);
+  });
+
   test("PATH に無い bare command を $HOME/.local/bin から absolute path で解決できる", async () => {
     // OPENROLY_EXTRA_PATH_DIRS で補強 dir を temp 側へ差し替える(review 2026-08-28) — 実機の
     // /usr/local/bin に claude が居ても(この Mac は 2026-08-28 から居る)fake が shadow されない

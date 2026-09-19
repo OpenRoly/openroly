@@ -371,5 +371,12 @@ export async function openIfEnvelope<T extends { content: MessageContent }>(
       /* 次の鍵で試す */
     }
   }
-  return { ...message, content: { undecryptable: true } };
+  const have = (await readerKeys(deviceKind, call)).map((k) => k.keyId);
+  const reason =
+    ids.length === 0
+      ? "no_recipients"
+      : have.some((id) => ids.includes(id))
+        ? "open_failed"
+        : "no_matching_device_key";
+  return { ...message, content: { undecryptable: true, undecryptable_reason: reason } };
 }

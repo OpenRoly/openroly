@@ -14,7 +14,8 @@
  * PBI-0439 で work_transfer / work_accept の 2 本(28 → 30・CAP-3 V7 runtime transfer の source 側と target 側)・
  * PBI-0440 で work_fork の 1 本(30 → 31・CAP-3 V8 fork / review。枝を拾うのは同じ work_accept)・
  * PBI-0443 で work_context_publish の 1 本(31 → 32・task → Work Project へ出す唯一の口)・
- * PBI-0447 で work_task_merge の 1 本(32 → 33・task の folder を Work Project の作業ツリーへ合流)。
+ * PBI-0447 で work_task_merge の 1 本(32 → 33・task の folder を Work Project の作業ツリーへ合流)・
+ * PBI-0648 で work_review の 1 本(33 → 34・渡した仕事の裁定。accept が合流の門を開ける)。
  *
  * **この一覧は 1 箇所しか無い**（有界レビュー 2026-09-09）: plugin-launcher.test.ts と
  * launcher-live.test.ts が同じ物を 2 回書いていて、PBI-0400 は前者だけを 19 本に直した ——
@@ -27,7 +28,9 @@ export const CONTRACT_TOOLS = [
   "contacts_list",
   "inbox_list",
   "inbox_read",
+  "instructions_get",
   "mark_read",
+  "mcp_servers_list",
   // Memory v1(PBI-0378 / CAP-7・図86): 候補を出す口と承認済みを引く口の 2 本だけ
   "memory_propose",
   "memory_search",
@@ -36,6 +39,8 @@ export const CONTRACT_TOOLS = [
   "rules_list",
   "rules_put",
   "send",
+  "skill_get",
+  "skills_list",
   "whoami",
   // Work Core の口(PBI-0400 / CAP-3 V9・図79)。claim は held な work を上書きできず権限段自体が要らないので
   // 口を足していない(握りを移すのは work_transfer / work_accept = PBI-0439・枝を立てるのは work_fork = PBI-0440)
@@ -55,6 +60,7 @@ export const CONTRACT_TOOLS = [
   "work_message",
   "work_promote",
   "work_proof",
+  "work_review",
   "work_task_create",
   "work_task_merge",
   "work_team",

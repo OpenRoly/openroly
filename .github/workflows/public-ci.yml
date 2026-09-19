@@ -13,6 +13,10 @@ on:
     branches: ["**"]
     tags-ignore: ["**"] # tags are release.yml's job
   pull_request:
+  # release.yml calls this on a tag (PBI-0647). A tag runs none of these checks on its own
+  # (`tags-ignore` above), so without this the publishing job has nothing to wait for.
+  # Called, not copied — the job list stays in one file.
+  workflow_call:
 
 concurrency:
   group: public-ci-${{ github.ref }}

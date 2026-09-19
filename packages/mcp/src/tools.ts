@@ -28,15 +28,31 @@ import {
   renderCapsule,
   stallOf,
   summarizeContextIndex,
+  decideTaskMerge,
+  briefPaths,
+  taskReviewCell,
+  taskReviewVerdict,
+  type BriefCounts,
+  TASK_BRIEF_KEYS,
   TASK_MERGE_PATHS_MAX,
+  TASK_REVIEW_KEY,
+  WORK_CONTEXT_BRIEF_KEYS,
+  TASK_REVIEW_VERDICTS,
+  type TaskReviewVerdict,
   WORK_LIVENESS_TIMEOUT_SECS,
+  mcpSessionRunId,
   type MessageContent,
 } from "@openroly/core";
 import { open, seal, type EncryptedEnvelope } from "@openroly/crypto-envelope";
 import {
   CONTEXT_SEARCH_DEFAULT_MAX_TOKENS,
+  buildBrief,
   credentialRejectedHint,
+  listHubMcps,
+  listHubSkills,
   openrolyHome,
+  readHubRule,
+  readHubSkill,
   readCasPayload,
   readerKeys,
   openIfEnvelope as openEnvelope,
@@ -203,6 +219,18 @@ export interface WorkProofInput {
   detail?: string;
 }
 
+/**
+ * task の裁定 1 行(PBI-0648)。書けるのは project の lease を持つ run と human だけ。
+ * `run_id` = 呼び手が名乗る自分の run(MCP の口では必須)。**名乗らないと server は runtime の owner 経路で判定する**ので、
+ * Lead と task が同じ runtime(この Mac の既定 = 両方 claude)の時、task 自身が自分に accept を書けてしまう
+ * (module review 2026-09-16 で実測)。名乗れば task を握る run の裁定は reserved_key で落ちる
+ */
+export interface WorkReviewInput {
+  verdict: TaskReviewVerdict;
+  feedback?: string;
+  run_id?: string;
+}
+
 /** Immutable Work Capsule(PBI-0406)。8 要素はどれも optional(打ちたい分だけ渡す) */
 export interface WorkCapsuleInput {
   run_id: string;
@@ -313,24 +341,112 @@ interface MemoryIndexRow {
 
 /**
  * PBI-0437: `auto/`(30 秒 tick の事実)と `inbox/`(work_message)は agent の手書きで上書きさせない。
- * 壁は agent が呼ぶ口に置き、tick だけが allowReserved で通る(CAS に書く前・task を作る前に落とす)
+ * 壁は agent が呼ぶ口に置き、tick だけが `allow` で通る(CAS に書く前・task を作る前に落とす)。
+ * PBI-0649: `brief`(持ち場と完了条件)は **渡す時だけ** 通る —— `work_task_create` が `brief` で呼び、
+ * 受け取った task 自身は他の予約 key と同じに落ちる(本物の壁は server の `decideContextWrite`)
  */
-const assertNoReservedKeys = (context: Record<string, unknown> | undefined): void => {
-  const reserved = findReservedContextKeys(Object.keys(context ?? {}));
+type ReservedMode = "reject" | "brief" | "allow";
+const assertNoReservedKeys = (context: Record<string, unknown> | undefined, mode: ReservedMode = "reject"): void => {
+  if (mode === "allow") return;
+  const allowed = mode === "brief" ? (WORK_CONTEXT_BRIEF_KEYS as readonly string[]) : [];
+  const reserved = findReservedContextKeys(Object.keys(context ?? {})).filter((k) => !allowed.includes(k));
   if (reserved.length === 0) return;
   throw new Error(
-    `reserved_key: ${reserved.join(", ")} — auto/ is written by the 30-second checkpoint tick and inbox/ by work_message. ` +
+    `reserved_key: ${reserved.join(", ")} — auto/ is written by the 30-second checkpoint tick, inbox/ by work_message, ` +
+      `review/ by work_review and brief/ only by whoever hands the task out (${WORK_CONTEXT_BRIEF_KEYS.join(", ")} on work_task_create). ` +
       "Use your own keys (goal, next_step, decisions, open_questions, failed_attempts, verified_findings)",
   );
+};
+
+/** 渡す側が書く持ち場と完了条件。`null` = 行は在るが本文をこの端末で開けない / 形が違う(= 合流は断る) */
+export interface TaskBrief {
+  allowed: string[] | null;
+  forbidden: string[] | null;
+}
+
+const briefRowsOf = (entries: readonly ContextIndexRow[]): ContextIndexRow[] =>
+  entries.filter((e) => e.kind === "context" && e.scope !== "project" && (WORK_CONTEXT_BRIEF_KEYS as readonly string[]).includes(e.key));
+
+/**
+ * PBI-0649: 索引の `brief/` 行から持ち場を開く。無ければ null(brief 無し = 今まで通り全部許す)。
+ * **行が在るのに値が来なかった時は `null`**(この端末に無い・予算で外れた・形が違う)—— 呼び手は
+ * fail-closed に倒す(AC-X2「読めないから全部許す」を作らない)
+ */
+const resolveBrief = async (config: OpenRolyClientConfig, entries: readonly ContextIndexRow[]): Promise<TaskBrief | null> => {
+  const rows = briefRowsOf(entries);
+  if (rows.length === 0) return null;
+  const resolved = await resolveContextEntries(rows, {
+    cwd: config.cwd ?? process.cwd(),
+    account: { call: e2eeCall(config), deviceKind: deviceKindOf(config) },
+  });
+  const pick = (key: string): string[] | null => {
+    if (!rows.some((r) => r.key === key)) return [];
+    const e = resolved.entries.find((x) => x.key === key) as { value?: unknown; missing_on_device?: boolean } | undefined;
+    return e == null || e.missing_on_device === true ? null : briefPaths(e.value);
+  };
+  return { allowed: pick(TASK_BRIEF_KEYS.allowed), forbidden: pick(TASK_BRIEF_KEYS.forbidden) };
+};
+
+/** task の持ち場を 1 往復で読む(`work_team` と合流の門が使う。索引を既に持っているなら resolveBrief を直に呼ぶ) */
+const readTaskBrief = async (config: OpenRolyClientConfig, taskId: string): Promise<TaskBrief | null> => {
+  const res = (await call(
+    config,
+    `/v1/works/${encodeURIComponent(taskId)}/context?prefix=${encodeURIComponent("brief/")}`,
+  )) as { entries: ContextIndexRow[] };
+  return resolveBrief(config, res.entries);
+};
+
+/** 索引 1 行に出す持ち場の数(AC-6)。brief が無い work では出さない */
+const briefCountsOf = (brief: TaskBrief | null): BriefCounts | null =>
+  brief == null ? null : { allowed: brief.allowed?.length ?? null, forbidden: brief.forbidden?.length ?? null };
+
+/** 表の 1 マス(`work_team` / `openroly work team`)。brief 無しは `-` */
+const briefScopeCell = (brief: TaskBrief | null): string => {
+  const c = briefCountsOf(brief);
+  return c == null ? "-" : `${c.allowed ?? "?"} allowed / ${c.forbidden ?? "?"} forbidden`;
+};
+
+/** PBI-0649 AC-X2: 持ち場が在るのに本文を開けない時の断り方(合流は 1 byte も当てずに止まる) */
+const BRIEF_UNREADABLE = (taskId: string): string =>
+  `brief_unreadable: ${taskId} has ${TASK_BRIEF_KEYS.forbidden}, but its text cannot be read on this device — ` +
+  "nothing was merged. Merge from the device that wrote the brief, or have a human rewrite it there";
+
+/**
+ * PBI-0648: task の裁定 1 行を読む。索引 1 行(`review/verdict`)+ 本文(この端末の CAS、無ければ account)。
+ * **親の Work Project の行(scope project)は数えない** —— task 自身に付いた裁定だけが門を開ける。
+ * 本文がこの端末で開けなければ `body: null` = 未裁定(「読めないから通す」に倒さない・AC-X2)。
+ * `round` = その key の版 = 裁定を書いた回数(差し戻しの周)
+ */
+const readTaskReview = async (config: OpenRolyClientConfig, taskId: string): Promise<{ body: unknown; round: number }> => {
+  const res = (await call(
+    config,
+    `/v1/works/${encodeURIComponent(taskId)}/context?key=${encodeURIComponent(TASK_REVIEW_KEY)}`,
+  )) as { entries: ContextIndexRow[] };
+  const row = res.entries.find((e) => e.kind === "context" && e.key === TASK_REVIEW_KEY && e.scope !== "project");
+  if (!row) return { body: null, round: 0 };
+  const resolved = await resolveContextEntries([row], {
+    cwd: config.cwd ?? process.cwd(),
+    account: { call: e2eeCall(config), deviceKind: deviceKindOf(config) },
+  });
+  const entry = resolved.entries[0] as { value?: unknown; missing_on_device?: boolean } | undefined;
+  return { body: entry?.missing_on_device === true ? null : (entry?.value ?? null), round: row.version };
+};
+
+/** PBI-0648: 門が断った理由を「次に何をすればよいか」に訳す(4 値は core の decideTaskMerge が決める) */
+const TASK_MERGE_GATE_HINTS: Record<"no_proof" | "not_reviewed" | "changes_requested" | "rejected", (taskId: string) => string> = {
+  no_proof: (t) => `the last proof on ${t} is not passed — the run doing the task records one with work_proof`,
+  not_reviewed: (t) => `no verdict on ${t} that this device can read — the Work Project's lead writes one with work_review`,
+  changes_requested: (t) => `the lead sent ${t} back (changes_requested) — read review/verdict with work_context_search and fix it first`,
+  rejected: (t) => `the lead rejected ${t}`,
 };
 
 /** context / sources を端末で準備し、server へ送る索引だけを返す(value は返り値に入らない) */
 const prepareEntries = async (
   config: OpenRolyClientConfig,
   input: WorkContextPutInput,
-  allowReserved = false,
+  reserved: ReservedMode = "reject",
 ): Promise<ContextIndexEntryInput[]> => {
-  if (!allowReserved) assertNoReservedKeys(input.context);
+  assertNoReservedKeys(input.context, reserved);
   const cwd = config.cwd ?? process.cwd();
   const out: ContextIndexEntryInput[] = [];
   for (const [key, value] of Object.entries(input.context ?? {})) out.push(await prepareContextValue(key, value));
@@ -342,8 +458,8 @@ const prepareEntries = async (
 };
 
 /** handoff の 1 回(work_handoff と work_task_create が共用する —— POST の組み立てを 2 箇所に書かない) */
-const handoffCall = async (config: OpenRolyClientConfig, workId: string, input: WorkHandoffInput) => {
-  const entries = input.context || input.sources ? await prepareEntries(config, input) : [];
+const handoffCall = async (config: OpenRolyClientConfig, workId: string, input: WorkHandoffInput, reserved: ReservedMode = "reject") => {
+  const entries = input.context || input.sources ? await prepareEntries(config, input, reserved) : [];
   return call(config, `/v1/works/${encodeURIComponent(workId)}/handoff`, {
     body: {
       ...(input.to !== undefined ? { runtimeId: input.to } : {}),
@@ -354,19 +470,20 @@ const handoffCall = async (config: OpenRolyClientConfig, workId: string, input: 
   });
 };
 
-/** この credential の runtime(id と kind)。human の credential は runtime を持たないので両方 null */
+/** この credential の runtime(id と kind)。token が human でも config.runtimeKind があれば kind は残る */
 const resolveMe = async (config: OpenRolyClientConfig): Promise<{ runtimeId: string | null; kind: string | null }> => {
   const agents = (await call(config, "/v1/agents")) as {
     me: { runtime_id: string | null };
     runtimes: { id: string; kind: string }[];
   };
   const runtimeId = agents.me.runtime_id;
-  return { runtimeId, kind: runtimeId ? (agents.runtimes.find((r) => r.id === runtimeId)?.kind ?? null) : null };
+  const kindFromId = runtimeId ? (agents.runtimes.find((r) => r.id === runtimeId)?.kind ?? null) : null;
+  return { runtimeId, kind: kindFromId ?? config.runtimeKind ?? null };
 };
 
 /** 係がこの runtime か(handoff の `to` は runtime id でも kind でも受ける) */
 const isMine = (handled: string | null | undefined, me: { runtimeId: string | null; kind: string | null }): boolean =>
-  handled != null && me.runtimeId != null && (handled === me.runtimeId || handled === me.kind);
+  handled != null && ((me.runtimeId != null && handled === me.runtimeId) || (me.kind != null && handled === me.kind));
 
 /** task の folder(PBI-0447)。path は task id から決まるので server に保存しない */
 const taskFolder = (taskId: string): string => join(openrolyHome(), "worktrees", taskId);
@@ -387,8 +504,42 @@ export function createAccountTools(config: OpenRolyClientConfig) {
   // PBI-0444: 未読 notice の cache。server を叩くのは最大 tick の間隔に 1 回。既読にした直後は捨てる
   let notice: { at: number; text: Promise<string | null> } | null = null;
   return {
-    whoami: () => call(config, "/v1/whoami"),
-    inbox_list: () => call(config, "/v1/inbox/messages"),
+    whoami: async () => {
+      const who = (await call(config, "/v1/whoami")) as Record<string, unknown>;
+      let messages: unknown[] = [];
+      try {
+        const body = await call(config, "/v1/inbox/messages");
+        if (Array.isArray(body)) messages = body;
+      } catch {
+        /* stub / 古い server は inbox 件数だけ（F43 と同じ加算を落とす） */
+      }
+      const brief = buildBrief(who, messages);
+      return { ...who, unread: brief.unread + brief.requests, requests: brief.requests };
+    },
+    inbox_list: async () => {
+      // dogfood F49: /v1/inbox/messages は direction=in だけ。CLI は thread の最終行を
+      // inbox + requests の 2 bucket で出す。同じ 2 口に揃える。
+      const rows: Record<string, unknown>[] = [];
+      for (const bucket of ["inbox", "requests"] as const) {
+        const threads = (await call(config, `/v1/inbox?bucket=${bucket}`)) as {
+          id: string;
+          peer_display?: string;
+          last_message?: Record<string, unknown> | null;
+        }[];
+        for (const t of threads) {
+          const m = t.last_message;
+          if (!m) continue;
+          const { content: _content, ...meta } = m;
+          rows.push({
+            ...meta,
+            bucket,
+            thread_id: t.id,
+            sender_display: t.peer_display ?? meta.sender_display,
+          });
+        }
+      }
+      return rows;
+    },
     inbox_read: async (messageId: string) => {
       const message = (await call(config, `/v1/messages/${messageId}`)) as { content: MessageContent };
       return openEnvelope(deviceKindOf(config), message, e2eeCall(config));
@@ -455,7 +606,17 @@ export function createAccountTools(config: OpenRolyClientConfig) {
         }
         body.summary = { envelope: sealed.envelope };
       }
-      return call(config, `/v1/messages/${messageId}/label`, { body });
+      try {
+        return await call(config, `/v1/messages/${messageId}/label`, { body });
+      } catch (e) {
+        if (e instanceof OpenRolyApiError && e.status === 403) {
+          throw new OpenRolyApiError(403, {
+            error: "scope_required",
+            hint: "MCP triage needs a broker session (OPENROLY_SESSION_SCOPE). Label from a woken runtime, not a desktop-started Grok.",
+          });
+        }
+        throw e;
+      }
     },
     // 自然言語 rule(EP-0013 W4 / REQ-54)。compile は runtime、正規化と layer 導出は server。
     // 応答の正規化 rule を owner に echo する(REQ-54「解釈を同一 thread で返す」)
@@ -511,15 +672,18 @@ export function createAccountTools(config: OpenRolyClientConfig) {
      * 今の仕事 1 件。**選ぶ条件は lease だけ**(`isLeaseLive` = holder が立っていて期限内 —
      * server が書き込みを許す条件と同じ)。係(`handled_runtime_id`)は持続する割り当てであって「動いている証拠」では
      * ないので **選ぶ条件に混ぜず別 field で返す**(PBI-0397 の破れ 1・図78 と同じ読み方)。
-     * lease 付きが複数在る時は最新 1 件 + `ambiguous: true` —— 黙って 1 件に見せない。
-     * 無ければ `null`(空配列でも error でもない = 呼び手の分岐を 1 つに保つ)
+     * lease 付きが複数在る時は最新 1 件。係が自分なら `ambiguous: false`（F55 / continue --to 自分と同じ）。
+     * 係が無い live が複数だけ `ambiguous: true`。無ければ `null`
      */
     work_current: async () => {
       const works = (await call(config, "/v1/works")) as WorkRow[];
       const now = Date.now();
+      const me = await resolveMe(config);
       const held = works
         .filter((w) => isLeaseLive(w, now) && w.status !== "done")
         .sort((a, b) => leaseTime(b) - leaseTime(a));
+      // F55: live が複数でも係が自分なら newest 1 本。probe が ambiguous を立てない（continue --to 自分と同じ）
+      const mineHeld = held.filter((w) => isMine(w.handled_runtime_id, me));
       // PBI-0557: 別の runtime が usage limit で止まった work を候補として出す(自分の runtime で
       // 止まった物は出さない — それは自分が続けるべき仕事であって移し先の候補ではない)。
       // live の work の event 末尾だけが根拠(stallOf)。複数止まっていたら lease の新しい方 1 本
@@ -545,15 +709,55 @@ export function createAccountTools(config: OpenRolyClientConfig) {
           break;
         }
       }
-      const w = held[0];
-      if (!w) return candidate == null ? null : { continue_candidate: candidate };
+      const w = mineHeld[0] ?? held[0];
+      if (w) {
+        return {
+          work_id: w.id,
+          title: w.title,
+          status: w.status,
+          lease: { epoch: w.lease_epoch, holder_run: w.lease_holder_run },
+          handled_runtime_id: w.handled_runtime_id ?? null,
+          lease_live: true,
+          ambiguous: mineHeld.length > 0 ? false : held.length > 1,
+          ...(candidate ? { continue_candidate: candidate } : {}),
+        };
+      }
+      // dogfood F47: continue で grok に渡したあと合成 run がすぐ空き、live lease が 0 になる。
+      // 係が自分の未完了 work を今の仕事として返す（書き込み lease ではないので standing）。
+      const standing = works
+        .filter((row) => row.status !== "done" && isMine(row.handled_runtime_id, me))
+        .sort((a, b) => leaseTime(b) - leaseTime(a));
+      const s = standing[0];
+      if (!s) return candidate == null ? null : { continue_candidate: candidate };
+      // dogfood F50: continue-wtr_ の合成 run は心拍せずすぐ空く。この MCP process が claim する。
+      const runId = mcpSessionRunId(config.runtimeKind);
+      try {
+        const claimed = (await call(config, `/v1/works/${encodeURIComponent(s.id)}/claim`, {
+          body: { runId },
+        })) as WorkRow;
+        return {
+          work_id: claimed.id,
+          title: claimed.title,
+          status: claimed.status,
+          lease: { epoch: claimed.lease_epoch, holder_run: claimed.lease_holder_run },
+          handled_runtime_id: claimed.handled_runtime_id ?? s.handled_runtime_id ?? null,
+          lease_live: true,
+          standing: false,
+          ambiguous: standing.length > 1,
+          ...(candidate ? { continue_candidate: candidate } : {}),
+        };
+      } catch {
+        /* claim できなければ standing のまま返す */
+      }
       return {
-        work_id: w.id,
-        title: w.title,
-        status: w.status,
-        lease: { epoch: w.lease_epoch, holder_run: w.lease_holder_run },
-        handled_runtime_id: w.handled_runtime_id ?? null,
-        ambiguous: held.length > 1,
+        work_id: s.id,
+        title: s.title,
+        status: s.status,
+        lease: { epoch: s.lease_epoch, holder_run: s.lease_holder_run },
+        handled_runtime_id: s.handled_runtime_id ?? null,
+        lease_live: false,
+        standing: true,
+        ambiguous: standing.length > 1,
         ...(candidate ? { continue_candidate: candidate } : {}),
       };
     },
@@ -632,7 +836,7 @@ export function createAccountTools(config: OpenRolyClientConfig) {
     work_handoff: (workId: string, input: WorkHandoffInput) => handoffCall(config, workId, input),
     /** handoff せずに Work Project へ publish する(並列で動いている agent が途中で書く口) */
     work_context_put: async (workId: string, input: WorkContextPutInput, opts: { allowReserved?: boolean } = {}) => {
-      const entries = await prepareEntries(config, input, opts.allowReserved === true);
+      const entries = await prepareEntries(config, input, opts.allowReserved === true ? "allow" : "reject");
       if (entries.length === 0) throw new Error("nothing to put — pass context and/or sources");
       return call(config, `/v1/works/${encodeURIComponent(workId)}/context`, {
         method: "PUT",
@@ -800,8 +1004,10 @@ export function createAccountTools(config: OpenRolyClientConfig) {
       const mine = works.filter((w) => isMine(w.handled_runtime_id, me));
       return Promise.all(
         mine.map(async (w) => {
-          // PBI-0437: 値を読まずに「何の key が在るか」の 1 行(server の索引の key 名だけから組む)
+          // PBI-0437: 値を読まずに「何の key が在るか」の 1 行(server の索引の key 名だけから組む)。
+          // PBI-0649: 持ち場だけは数が意味を持つので、`brief/` 行が在る時だけ値を開いて数を足す(往復は増やさない)
           const index = (await call(config, `/v1/works/${encodeURIComponent(w.id)}/context`)) as { entries: ContextIndexRow[] };
+          const brief = await resolveBrief(config, index.entries);
           return {
             work_id: w.id,
             title: w.title,
@@ -812,7 +1018,7 @@ export function createAccountTools(config: OpenRolyClientConfig) {
             /** PBI-0447: この端末に task の folder が在ればその path(そこで書く)。無ければ null */
             folder: existsSync(taskFolder(w.id)) ? taskFolder(w.id) : null,
             lease_live: isLeaseLive(w, now),
-            context_index: summarizeContextIndex(index.entries),
+            context_index: summarizeContextIndex(index.entries, briefCountsOf(brief)),
           };
         }),
       );
@@ -854,15 +1060,34 @@ export function createAccountTools(config: OpenRolyClientConfig) {
      */
     work_task_create: async (parentWorkId: string, input: WorkTaskCreateInput) => {
       const { title, ...handoff } = input;
-      assertNoReservedKeys(handoff.context);
+      assertNoReservedKeys(handoff.context, "brief");
+      // PBI-0649: 持ち場は書けた時に形を見る。`*.sql` を glob のつもりで書いた brief を黙って受けると、
+      // 1 つも当たらない門を「守っている」顔で持つ事になる(合流の側は fail-closed で断るだけで理由を言えない)
+      for (const key of [TASK_BRIEF_KEYS.allowed, TASK_BRIEF_KEYS.forbidden]) {
+        const v = handoff.context?.[key];
+        if (v !== undefined && briefPaths(v) === null) {
+          throw new Error(
+            `invalid_brief: ${key} must be a list of repo-relative path prefixes matched by prefix only — ` +
+              'no globs, no leading "/", no ".." (e.g. ["migrations/", "server/src/auth"])',
+          );
+        }
+      }
+      // PBI-0648(AC-4): folder が作れないなら渡さない。**task を作る前に**落とす —— 折れた後に
+      // 宙に浮いた task を残さない。folder が無い task は Lead と同じ作業ツリーに座り、合流の門も
+      // 「誰が書いたか」も意味を失う(実測 6: `if (state?.baseCommit)` の else がその道だった)
+      const cwd = config.cwd ?? process.cwd();
+      const state = handoff.to !== undefined ? computeGitState(cwd) : null;
+      if (handoff.to !== undefined && !state?.baseCommit) {
+        throw new Error(
+          `no_base_commit: ${cwd} has no commit, so a folder for the task cannot be built — nothing was created and nothing was handed off. ` +
+            "Make the first commit here, then hand the task off again",
+        );
+      }
       const task = (await call(config, "/v1/works", { body: { title, parent_work_id: parentWorkId } })) as WorkRow;
       const wants = handoff.to !== undefined || handoff.note !== undefined || handoff.context !== undefined || handoff.sources !== undefined;
       if (!wants) return { task_id: task.id, task, folder: null, handed_off: null };
-      // PBI-0447: runtime に渡す task は自分の folder で書く(この cwd の今の状態から・fork と同じ作り方)。
-      // commit の在る git repo でなければ作らない(今まで通りこの cwd で書く)
+      // PBI-0447: runtime に渡す task は自分の folder で書く(この cwd の今の状態から・fork と同じ作り方)
       let folder: string | null = null;
-      const cwd = config.cwd ?? process.cwd();
-      const state = handoff.to !== undefined ? computeGitState(cwd) : null;
       if (state?.baseCommit) {
         try {
           checkoutForkFolder(cwd, state, taskFolder(task.id));
@@ -875,7 +1100,7 @@ export function createAccountTools(config: OpenRolyClientConfig) {
         }
       }
       try {
-        return { task_id: task.id, task, folder, handed_off: await handoffCall(config, task.id, handoff) };
+        return { task_id: task.id, task, folder, handed_off: await handoffCall(config, task.id, handoff, "brief") };
       } catch (e) {
         throw new Error(
           `task ${task.id} was created under ${parentWorkId}, but handing it off failed — retry work_handoff on ${task.id}: ${e instanceof Error ? e.message : String(e)}`,
@@ -890,9 +1115,13 @@ export function createAccountTools(config: OpenRolyClientConfig) {
         resolveMe(config),
       ]);
       const now = Date.now();
+      // PBI-0648 / PBI-0649: 裁定と持ち場の本文は端末の CAS に在る(server は索引しか持てない)ので、面を出す側が task ごとに開く。
+      // ponytail: task の数だけ往復する。task が数十を超えて重くなったら server に「裁定の有無と版」だけを /team に足す
+      const reviews = await Promise.all(team.tasks.map((t) => readTaskReview(config, t.id)));
+      const briefs = await Promise.all(team.tasks.map((t) => readTaskBrief(config, t.id)));
       return {
         project: { work_id: team.project.id, title: team.project.title, status: team.project.status },
-        tasks: team.tasks.map((t) => ({
+        tasks: team.tasks.map((t, i) => ({
           address: t.id,
           title: t.title,
           status: t.status,
@@ -901,8 +1130,45 @@ export function createAccountTools(config: OpenRolyClientConfig) {
           lease_live: isLeaseLive(t, now),
           /** PBI-0447: 最新の合流(work_task_merge)の結果 */
           merge: t.merge ?? "not_started",
+          /** PBI-0648: Lead の裁定。`-` / `accept` / `changes_requested (2)`(数 = 裁定を書いた回数) */
+          review: taskReviewCell(taskReviewVerdict(reviews[i]!.body), reviews[i]!.round),
+          /** PBI-0649: 渡した持ち場。`-` = brief 無し(全部許す) / `2 allowed / 1 forbidden`(`?` = この端末で読めない) */
+          scope: briefScopeCell(briefs[i]!),
         })),
       };
+    },
+
+    /**
+     * task に裁定を 1 行書く(PBI-0648・図80c ⑦)。`review/` は予約 prefix なので、書けるのは human と
+     * **その task の Work Project の lease を握っている run** だけ(自分の task に自分で accept は書けない = 422 reserved_key)。
+     * 本文(verdict / feedback)は他の context と同じ端末の CAS に載り、server には索引だけが出る。
+     * `accept` が付いて初めて work_task_merge の門が開く
+     */
+    work_review: async (taskId: string, input: WorkReviewInput) => {
+      if (!(TASK_REVIEW_VERDICTS as readonly string[]).includes(input.verdict)) {
+        throw new Error(`invalid_verdict: ${String(input.verdict)} — one of ${TASK_REVIEW_VERDICTS.join(" / ")}`);
+      }
+      const body = { verdict: input.verdict, ...(input.feedback !== undefined ? { feedback: input.feedback } : {}), at: new Date().toISOString() };
+      // 同時に 2 人が裁定したら 1 本だけ通す(負けた側は 409 stale_version)。読んだ版を名乗って書く
+      const { round } = await readTaskReview(config, taskId);
+      const entries = await prepareEntries(config, { context: { [TASK_REVIEW_KEY]: body }, expected_versions: { [TASK_REVIEW_KEY]: round } }, "allow");
+      let res: { entries: { version: number }[] };
+      try {
+        res = (await call(config, `/v1/works/${encodeURIComponent(taskId)}/context`, {
+          method: "PUT",
+          // 名乗る(module review 2026-09-16)。省くと server は runtime の owner 経路で見る = 同じ runtime の task が自分に書ける
+          body: { entries, ...(input.run_id ? { runId: input.run_id } : {}) },
+        })) as { entries: { version: number }[] };
+      } catch (e) {
+        if (e instanceof OpenRolyApiError && e.status === 422 && (e.body as { error?: { code?: string } })?.error?.code === "reserved_key") {
+          throw new Error(
+            `reserved_key: a task cannot rule on itself — review/verdict on ${taskId} is written by a human or by the run holding its Work Project (name yourself with run_id)`,
+            { cause: e },
+          );
+        }
+        throw e;
+      }
+      return { task_id: taskId, verdict: input.verdict, round: res.entries[0]?.version ?? 1 };
     },
     /**
      * task の folder を呼び手の cwd(= Work Project の作業ツリー)へ合流する(PBI-0447・図80c ⑥)。cwd に触る前に
@@ -914,16 +1180,26 @@ export function createAccountTools(config: OpenRolyClientConfig) {
       if (team.project.id !== projectWorkId || !team.tasks.some((t) => t.id === taskId)) {
         throw new Error(`not_on_team: ${taskId} is not a task of Work Project ${projectWorkId} — nothing was merged`);
       }
+      // PBI-0648: 証拠と裁定の門。**cwd に触る前**に通す(断った時は 1 byte も当たらない)
+      const [proofs, review, brief] = await Promise.all([
+        call(config, `/v1/works/${encodeURIComponent(taskId)}/proofs`) as Promise<{ status: string }[]>,
+        readTaskReview(config, taskId),
+        readTaskBrief(config, taskId),
+      ]);
+      const gate = decideTaskMerge(proofs, review.body);
+      if (!gate.ok) throw new Error(`${gate.reason}: ${TASK_MERGE_GATE_HINTS[gate.reason](taskId)} — nothing was merged`);
+      // PBI-0649: 持ち場が在るのに読めないなら断る(「読めないから全部許す」に倒さない・AC-X2)
+      if (brief != null && brief.forbidden === null) throw new Error(BRIEF_UNREADABLE(taskId));
       const cwd = config.cwd ?? process.cwd();
-      const d = mergeTaskFolder(taskFolder(taskId), cwd);
-      if (d.result === "applied" || d.result === "conflict") {
+      const d = mergeTaskFolder(taskFolder(taskId), cwd, brief?.forbidden ?? []);
+      if (d.result === "applied" || d.result === "conflict" || d.result === "outside_scope") {
         try {
           await call(config, `/v1/works/${encodeURIComponent(taskId)}/merges`, {
             body: { projectWorkId, merge: d.result, paths: d.paths.slice(0, TASK_MERGE_PATHS_MAX) },
           });
         } catch (e) {
           throw new Error(
-            `${d.result === "applied" ? `merged ${taskId} into ${cwd}` : `${taskId} conflicts with ${cwd} (nothing applied)`}, but recording it on the task failed: ${e instanceof Error ? e.message : String(e)}`,
+            `${d.result === "applied" ? `merged ${taskId} into ${cwd}` : `${taskId} ${d.result === "conflict" ? `conflicts with ${cwd}` : "changed files outside its scope"} (nothing applied)`}, but recording it on the task failed: ${e instanceof Error ? e.message : String(e)}`,
             { cause: e },
           );
         }
@@ -1011,7 +1287,7 @@ export function createAccountTools(config: OpenRolyClientConfig) {
      */
     work_accept: async (workId: string, input: { transfer_id?: string; run_id?: string }) => {
       const path = `/v1/works/${encodeURIComponent(workId)}`;
-      const runId = input.run_id ?? `run-${crypto.randomUUID()}`;
+      const runId = input.run_id ?? mcpSessionRunId(config.runtimeKind);
       let work: WorkRow;
       let version: number | null = null;
       if (input.transfer_id !== undefined) {
@@ -1045,7 +1321,7 @@ export function createAccountTools(config: OpenRolyClientConfig) {
       } else if (body == null) {
         preamble.push(`capsule v${version} is not on this device, so its content cannot be shown (pushed from another device or cleaned up)`);
       }
-      preamble.push(`context index: ${summarizeContextIndex(index.entries)}`);
+      preamble.push(`context index: ${summarizeContextIndex(index.entries, briefCountsOf(await resolveBrief(config, index.entries)))}`);
       const r = renderCapsule(shown.kept, { maxTokens: CONTEXT_SEARCH_DEFAULT_MAX_TOKENS, preamble });
       return {
         work_id: workId,
@@ -1120,6 +1396,13 @@ export function createAccountTools(config: OpenRolyClientConfig) {
       call(config, `/v1/works/${encodeURIComponent(workId)}/freeze`, {
         body: { intent: input.intent ?? null },
       }),
+    skills_list: () => listHubSkills(),
+    skill_get: (name: string) => readHubSkill(name),
+    instructions_get: async (name?: string) => {
+      if (name) return readHubRule(name);
+      return (await readHubRule("common-rules")) ?? (await readHubRule("claude-rules"));
+    },
+    mcp_servers_list: () => listHubMcps(),
   };
 }
 

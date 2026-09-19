@@ -9,6 +9,7 @@ import {
   CapsuleConversationError,
   CapsuleCredentialRefError,
   CAPSULE_FIELDS,
+  formatContinueCheckpoint,
   hashCapsuleBody,
   isValidCasHash,
   validateCredentialRefs,
@@ -181,5 +182,26 @@ describe("isValidCasHash(攻撃②の核心)", () => {
     expect(isValidCasHash("f".repeat(64))).toBe(true);
     expect(isValidCasHash("../../../etc/passwd")).toBe(false);
     expect(isValidCasHash("/absolute/path")).toBe(false);
+  });
+});
+
+describe("formatContinueCheckpoint(PBI-0684)", () => {
+  test("current_state があればそれを出す。空 capsule でも title まで落ちて必ず checkpoint: で始まる", () => {
+    expect(formatContinueCheckpoint({ payload: { current_state: "wrote the test" }, title: "t" }))
+      .toBe("checkpoint: wrote the test");
+    expect(formatContinueCheckpoint({ payload: { body: { goal: "ship" } }, title: "t" }))
+      .toBe("checkpoint: ship");
+    expect(formatContinueCheckpoint({ payload: { decisions: ["picked grok"] }, title: "t" }))
+      .toBe("checkpoint: picked grok");
+    expect(formatContinueCheckpoint({ payload: {}, handoffNote: "limit hit", title: "t" }))
+      .toBe("checkpoint: limit hit");
+    expect(formatContinueCheckpoint({ payload: null, title: "operator chain" }))
+      .toBe("checkpoint: operator chain");
+  });
+
+  test("負の対照: current_state を読まないと空 capsule は title に落ちる", () => {
+    const payload = { current_state: "real progress", goal: "ship" };
+    expect(formatContinueCheckpoint({ payload, title: "t" })).not.toBe("checkpoint: t");
+    expect(formatContinueCheckpoint({ payload: {}, title: "t" })).toBe("checkpoint: t");
   });
 });

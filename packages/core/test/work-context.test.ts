@@ -7,7 +7,9 @@ import {
   summarizeContextIndex,
   countInbox,
   inboxDeliveredKeys,
+  WORK_CONTEXT_BRIEF_KEYS,
   WORK_CONTEXT_WELL_KNOWN_KEYS,
+  TASK_BRIEF_KEYS,
   buildContextValue,
   ContextValueError,
   validateContextEntries,
@@ -136,6 +138,18 @@ describe("summarizeContextIndex — 値を読まずに「何の key が在るか
     expect(summarizeContextIndex(rows)).toBe(`context: ${WORK_CONTEXT_WELL_KNOWN_KEYS.join(", ")}`);
   });
 
+  test("AC-6: 持ち場は先頭に `scope: N allowed / M forbidden`。渡していない work では 1 文字も出ない", () => {
+    const rows = [c("goal"), c(TASK_BRIEF_KEYS.done), c(TASK_BRIEF_KEYS.allowed), c(TASK_BRIEF_KEYS.forbidden)];
+    expect(summarizeContextIndex(rows, { allowed: 2, forbidden: 1 })).toBe("scope: 2 allowed / 1 forbidden · context: goal");
+    // brief/ は予約 prefix なので「+N keys」にも数えない(自由 key の数を持ち場で水増ししない)
+    expect(summarizeContextIndex(rows, null)).toBe("context: goal");
+    expect(summarizeContextIndex([], null)).toBe("context: (empty)");
+  });
+
+  test("AC-X2: 本文をこの端末で開けない持ち場は `?`(数えられない物を 0 と言わない)", () => {
+    expect(summarizeContextIndex([c(TASK_BRIEF_KEYS.forbidden)], { allowed: 0, forbidden: null })).toBe("scope: 0 allowed / ? forbidden");
+  });
+
   test("task の索引で同じ key が 2 行(task と project)来ても 1 つに数える / 空なら (empty)", () => {
     expect(summarizeContextIndex([c("goal"), c("goal"), c("x"), c("x"), src("a.md"), src("a.md")])).toBe("context: goal · +1 key · 1 source");
     expect(summarizeContextIndex([])).toBe("context: (empty)");
@@ -172,9 +186,18 @@ describe("inbox の既読 — 数え方と、既読にしてよい key(PBI-0444)
   });
 });
 
-describe("findReservedContextKeys — 機械の置き場は agent の手書きで書かない(PBI-0437)", () => {
-  test("auto/ と inbox/ だけが予約。名前が似ているだけの key は通る", () => {
-    expect(findReservedContextKeys(["auto/git", "inbox/x/1", "goal", "autos", "inbox", "my/auto/x"])).toEqual(["auto/git", "inbox/x/1"]);
+describe("findReservedContextKeys — 機械と渡す側の置き場は agent の手書きで書かない(PBI-0437 / 0648 / 0649)", () => {
+  test("auto/ inbox/ review/ brief/ が予約。名前が似ているだけの key は通る", () => {
+    expect(
+      findReservedContextKeys([
+        "auto/git", "inbox/x/1", "review/verdict", "brief/forbidden",
+        "goal", "autos", "inbox", "my/auto/x", "reviewed", "briefing",
+      ]),
+    ).toEqual(["auto/git", "inbox/x/1", "review/verdict", "brief/forbidden"]);
+  });
+  test("持ち場の 3 key は全部予約で、`brief/done` が先頭(索引で切られない側)", () => {
+    expect(findReservedContextKeys([...WORK_CONTEXT_BRIEF_KEYS])).toEqual([...WORK_CONTEXT_BRIEF_KEYS]);
+    expect(WORK_CONTEXT_BRIEF_KEYS[0]).toBe(TASK_BRIEF_KEYS.done);
   });
 });
 
@@ -201,6 +224,23 @@ describe("decideContextWrite — project に出すのは publish だけ(PBI-0443
     ["別 project の task の holder → project は not_found(AC-X1)", P, [U], ["decisions"], { ok: false, reason: "not_found" }],
     ["別 project の task の holder → その task も not_found(AC-X1)", T, [U], ["decisions"], { ok: false, reason: "not_found" }],
     ["task の holder → 単独の work も not_found", P2, [T], ["decisions"], { ok: false, reason: "not_found" }],
+    // PBI-0648: 裁定(review/)を書けるのは human と target の project を握る run だけ
+    ["human は裁定を書ける", T, null, ["review/verdict"], ok],
+    ["project の holder は task に裁定を書ける", T, [P], ["review/verdict"], ok],
+    ["task 自身の裁定は reserved_key(自己承認)", T, [T], ["review/verdict"], { ok: false, reason: "reserved_key" }],
+    ["兄弟の task の裁定も reserved_key", T2, [T], ["review/verdict"], { ok: false, reason: "reserved_key" }],
+    ["lease を 1 つも握らない run の裁定も reserved_key", T, [], ["review/verdict"], { ok: false, reason: "reserved_key" }],
+    ["project 自身に裁定は置かない", P, [P], ["review/verdict"], { ok: false, reason: "reserved_key" }],
+    ["混ぜても review/ が 1 つ在れば同じ門を通る", T, [T], ["goal", "review/verdict"], { ok: false, reason: "reserved_key" }],
+    ["review/ を含まない key は今まで通り", T, [T], ["reviewed"], ok],
+    // PBI-0649: 持ち場(brief/)も裁定と同じ壁 —— 渡された側が自分の持ち場を広げられない
+    ["human は持ち場を書ける", T, null, ["brief/forbidden"], ok],
+    ["project の holder は task に持ち場を書ける(渡す側)", T, [P], ["brief/forbidden"], ok],
+    ["task 自身が自分の持ち場を書き換えるのは reserved_key", T, [T], ["brief/forbidden"], { ok: false, reason: "reserved_key" }],
+    ["兄弟の task の持ち場も reserved_key", T2, [T], ["brief/allowed"], { ok: false, reason: "reserved_key" }],
+    ["lease を 1 つも握らない run の持ち場も reserved_key", T, [], ["brief/done"], { ok: false, reason: "reserved_key" }],
+    ["混ぜても brief/ が 1 つ在れば同じ門を通る", T, [T], ["goal", "brief/allowed"], { ok: false, reason: "reserved_key" }],
+    ["brief/ を含まない key は今まで通り", T, [T], ["briefing"], ok],
   ];
   for (const [name, target, held, keys, want] of cases) {
     test(name, () => expect(decideContextWrite(target, held, keys)).toEqual(want));

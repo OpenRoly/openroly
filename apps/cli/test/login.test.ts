@@ -295,10 +295,10 @@ describe("openroly login / openroly broker (PBI-0046)", () => {
     const { env } = await freshEnv();
     const res = await openroly(["login", "--no-open"], env);
     expect(res.code).toBe(0);
-    // ① code が独立した 1 行として出る(人がここから読んで打つ)
-    expect(res.out).toContain("Type this code:    LOGN2345");
+    // ① code が独立した 1 行として出る(人がここから読んで打つ。PBI-0716 で短縮した文言)
+    expect(res.out).toContain("Code: LOGN2345");
     // ② 出す URL は打つ欄だけの定数 path。**code を 1 文字も含まない**
-    expect(res.out).toContain("Open in a browser: http://localhost:5173/connect");
+    expect(res.out).toContain("Opening http://localhost:5173/connect in your browser...");
     expect(res.out).not.toContain("/connect?");
     expect(res.out).not.toContain("user_code=");
     // ③ 出力全体で「code の入った URL」が 1 本も無い —— 行を割って、URL を含む行に

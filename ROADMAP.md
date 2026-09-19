@@ -37,7 +37,7 @@ Steps 1 and 2 are the next milestones. Step 3 comes with schedules.
 | 🚧 | Linux wake-ups | The Linux sandbox works; next, incoming mail wakes real AIs inside it on Linux |
 | ✅ | Pick up where you left off | Hit a usage limit and keep going in another session — engineering smoke benchmark (the handoff reached the other AI and it acted on the checkpoint): 3 of 3 live runs, picked up in 14.1s (median), no handoff left the work without an owner |
 | ✅ | Switch AI mid-task | Start in Claude, continue in OpenCode, in one step — engineering smoke benchmark (the handoff reached the other AI and it acted on the checkpoint): 6 of 6 live runs, picked up in 13.1s (median), no handoff left the work without an owner. Codex next |
-| ⏳ | Shared memory and skills | What Claude learned today, another AI can use tomorrow |
+| 🚧 | Shared memory and skills | What Claude learned today, another AI can use tomorrow — Memory v1 ships, and the same memory now reaches a second AI (cross-engine handoff implemented); the headline benchmark run is next |
 | ✅ | Account protocol v0.1 | Identity, work, checkpoints, and handoffs as an open spec, read by two small independent implementations and checked on every push; memory, skills, and history follow |
 | ⏳ | Add your AI | A small engine interface, and a guide to connect a new AI in about 30 minutes |
 | ⏳ | Self-hosting | Run the account server yourself |
@@ -310,6 +310,7 @@ The last step: your agent doesn't depend on this product either.
 | 🚧 | CI on every pull request in this repository: typecheck, tests, and broker tests on macOS and Linux | [`.github/workflows/public-ci.yml`](.github/workflows/public-ci.yml) |
 | 🚧 | Installs that match this repository's lockfile exactly | |
 | 🚧 | Build provenance attestations on release binaries | [`.github/workflows/release.yml`](.github/workflows/release.yml) |
+| ⏳ | Linux on ARM (`linux-arm64`) release binary — today's binaries are `darwin-arm64`, `darwin-x64`, `linux-x64` | |
 | ⏳ | Restarts never lose work in flight | |
 | ⏳ | `openroly doctor` checks your account, network, and engines live | |
 | ⏳ | The account server's source, and a way to run it yourself | |

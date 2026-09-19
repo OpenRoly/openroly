@@ -62,7 +62,9 @@ export function buildBrief(whoami: any, messages: any[]): SessionBrief {
  * 差分を必ず 1 行にして見せる。
  */
 export function formatBrief(brief: SessionBrief): string {
-  const lines = [`Unread: ${brief.unread}`];
+  // dogfood F43: whoami.unread は inbox bucket だけ。requests を足さないと Unread: 0 なのに requests: 1
+  const total = brief.unread + brief.requests;
+  const lines = [`Unread: ${total}`];
   for (const s of brief.senders) lines.push(`- ${s.name} ×${s.count}`);
   const shown = brief.senders.reduce((n, s) => n + s.count, 0);
   if (brief.unread > shown) lines.push(`- and ${brief.unread - shown} more`);

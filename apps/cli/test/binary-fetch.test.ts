@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -359,5 +360,39 @@ describe("release workflow の形 (PBI-0137 AC-1)", () => {
     expect(binaryTarget("darwin", "x64")).toBe("darwin-x64");
     expect(binaryTarget("linux", "x64")).toBe("linux-x64");
     expect(binaryTarget("win32", "x64")).toBeUndefined();
+  });
+});
+
+// ---- 公開する前に検査を通す(PBI-0647) ----
+//
+// public-ci は tag を無視する(`tags-ignore: ["**"]`)ので、**tag が指す commit には検査が 1 つも
+// 走らない**。そこを塞ぐ配線がこの 2 つで、外れると typecheck も `bun test` も PAAP conformance も
+// 通っていない binary に Sigstore の provenance が付き、`openroly install` が全利用者に配る。
+//
+// **上の block の `toContain` と違い、ここは YAML として読む** —— 綴りを本文から grep すると
+// 「そう書いてあるコメント」にも当たり、配線が消えていても緑になる。
+//
+// これが測るのは **配線が在る事だけ**。門が実際に公開を止めるかは、赤い commit に tag を打って
+// Release が出ない事を見るまで分からない(AC-3・owner 実施)。
+
+describe("release は検査が緑の時だけ公開する (PBI-0647)", () => {
+  // biome-ignore lint/suspicious/noExplicitAny: workflow YAML は外形だけ見る
+  const workflow = (name: string): any =>
+    Bun.YAML.parse(
+      readFileSync(fileURLToPath(new URL(`../../../.github/workflows/${name}`, import.meta.url)), "utf8"),
+    );
+
+  test("AC-1: 公開する job は verify を待ち、verify は public-ci を呼ぶ(job を書き写さない)", () => {
+    const release = workflow("release.yml");
+    expect(release.jobs.release.needs).toContain("verify");
+    expect(release.jobs.verify.uses).toBe("./.github/workflows/public-ci.yml");
+    // 呼ぶ側に job の中身が生えていたら、2 箇所に置いた時点でずれ始める
+    expect(release.jobs.verify.steps).toBeUndefined();
+  });
+
+  test("AC-2: public-ci は呼び出せて、tag では今までどおり自分では走らない(二重に走らせない)", () => {
+    const publicCi = workflow("public-ci.yml");
+    expect(publicCi.on).toHaveProperty("workflow_call");
+    expect(publicCi.on.push["tags-ignore"]).toEqual(["**"]);
   });
 });

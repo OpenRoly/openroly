@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { API_PROVIDERS } from "@openroly/core";
-import { readFile, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ADAPTERS, findAdapter, SUPPORTED_IDS } from "../src/registry.ts";
-import { ADAPTER_OPS } from "@openroly/adapter";
+import { ADAPTERS, CATALOG_DETECTOR_COUNT, catalogAgentRuntimes, catalogBinaryDetected, findAdapter, SUPPORTED_IDS } from "../src/registry.ts";
+import { ADAPTER_OPS, localCatalogPath } from "@openroly/adapter";
 
 // AC-14 / AC-15 / AC-16: Extension Adapter Contract(配布戦略 §8)の conformance。
 // community adapter が増えてもこの検査に通ることを条件にする。
@@ -53,6 +55,7 @@ describe("runtime adapter contract", () => {
     // catalog に載っている generic entry は TS を 1 行も書かずに解決する(PBI-0210 の主張そのもの)
     expect(findAdapter("hermes")?.id).toBe("hermes");
     expect(findAdapter("kiro")?.id).toBe("kiro");
+    expect(findAdapter("grok")?.id).toBe("grok");
     // catalog にも official にも無い id は解決しない。**例を名前で書かない**(PBI-0296) ——
     // 検知のみの entry は catalog の引き直しでいつでも昇格する側なので、名指しした瞬間から
     // 「昇格したら赤くなるが、赤の理由はこの test が測りたい性質と無関係」になる
@@ -66,6 +69,61 @@ describe("runtime adapter contract", () => {
     expect(detectOnly).toBeTruthy();
     expect(findAdapter(detectOnly!)).toBeUndefined();
     expect(findAdapter("no-such-runtime")).toBeUndefined();
+  });
+
+  test("PBI-0690: catalogAgentRuntimes は adapter 無しを含み local_model_server を含まない", () => {
+    const agents = catalogAgentRuntimes();
+    expect(CATALOG_DETECTOR_COUNT).toBe(91);
+    expect(agents.length).toBeLessThan(CATALOG_DETECTOR_COUNT);
+    expect(agents.some((a) => a.adapter == null)).toBe(true);
+    expect(agents.some((a) => a.id === "ollama")).toBe(false);
+    expect(agents.some((a) => a.id === "grok")).toBe(true);
+  });
+
+  test("PBI-0690: adapter 無しでも binaries が PATH にあれば検出", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "openroly-detect-bin-"));
+    await writeFile(join(dir, "aider"), "#!/bin/sh\n", { mode: 0o755 });
+    expect(catalogBinaryDetected(["aider"], [dir])).toBe(true);
+    expect(catalogBinaryDetected(["aider"], ["/no/such/path"])).toBe(false);
+  });
+
+  test("PBI-0678: catalog.local.json の local-* を findAdapter が解決する", async () => {
+    const home = await mkdtemp(join(tmpdir(), "openroly-local-adapter-"));
+    const prev = process.env.OPENROLY_HOME;
+    process.env.OPENROLY_HOME = home;
+    try {
+      await mkdir(join(home), { recursive: true });
+      await writeFile(
+        localCatalogPath({ OPENROLY_HOME: home }),
+        JSON.stringify({
+          version: 1,
+          entries: [
+            {
+              id: "local-grok",
+              display_name: "grok",
+              detect: { binaries: ["grok"] },
+              native: {
+                bin: "grok",
+                mcp: {
+                  strategy: "file",
+                  path: "~/.grok/config.toml",
+                  format: "toml",
+                  key: "mcp_servers",
+                  entry: { command: "${command}", args: "${args}", env: "${env}" },
+                },
+              },
+            },
+          ],
+        }),
+      );
+      const a = findAdapter("local-grok");
+      expect(a?.id).toBe("local-grok");
+      expect(a?.displayName).toBe("grok");
+      expect(a?.extensionKinds).toContain("mcp");
+    } finally {
+      if (prev === undefined) delete process.env.OPENROLY_HOME;
+      else process.env.OPENROLY_HOME = prev;
+    }
   });
 });
 

@@ -110,6 +110,24 @@ describe("Masker(stateful table。AC-1/2/3)", () => {
     expect(masker.restoreText(out)).toBe("token sk-abcdefghij1234567890 end");
   });
 
+  test("PBI-0687 / F15: 辞書無しでも sk-proj / sk-ant / github_pat / AKIA / AIza / password= を伏せる", () => {
+    const masker = new Masker([]);
+    const src =
+      "sk-proj-abcdefghijklmnopqrstuvwxyz012345 sk-ant-api03-abcdefghijklmnopqrstuvwxyz github_pat_abcdefghijklmnopqrstuvwxyz0123456789 AKIAIOSFODNN7EXAMPLE AIzaSyDaGmWKa4JsXZ-HjGw7ISLn_3namBGewQe password=hunter2secret";
+    const out = masker.maskText(src, DEFAULT_PATTERNS);
+    expect(out).not.toContain("sk-proj-");
+    expect(out).not.toContain("sk-ant-");
+    expect(out).not.toContain("github_pat_");
+    expect(out).not.toContain("AKIAIOSFODNN7EXAMPLE");
+    expect(out).not.toContain("AIzaSyDaGmWKa4JsXZ-HjGw7ISLn_3namBGewQe");
+    expect(out).not.toContain("hunter2secret");
+    expect(masker.restoreText(out)).toBe(src);
+    const off = new Masker([]);
+    const raw = off.maskText(src, { ...DEFAULT_PATTERNS, keys: false });
+    expect(raw).toContain("sk-proj-abcdefghijklmnopqrstuvwxyz012345");
+    expect(raw).toContain("AKIAIOSFODNN7EXAMPLE");
+  });
+
   test("AC-X1: 未知/負/空の index は例外を投げずそのまま通す(別 index の値を出さない)", () => {
     const masker = new Masker(["secret-a"]);
     expect(() => masker.restoreText("⟨s:999⟩ ⟨s:-1⟩ ⟨s:⟩ ⟨s:abc⟩")).not.toThrow();

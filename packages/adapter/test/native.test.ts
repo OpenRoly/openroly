@@ -263,6 +263,21 @@ describe("file strategy — AC-2: format × shape ごとに同じ(1 entry だけ
   });
 });
 
+/** 実測 2026-09-17 grok 1.0.34。`mcp add-json` は無い */
+const grokNative = () => ({
+  home: { env: "GROK_HOME", default: "~/.grok" },
+  bin: "grok",
+  mcp: {
+    strategy: "cli" as const,
+    bin: "grok",
+    add: ["mcp", "add", "--scope", "user", "${name}", "-e...", "${env}", "--", "${command}", "${args...}"],
+    add_url: ["mcp", "add", "--scope", "user", "--transport", "${transport}", "${name}", "${url}"],
+    remove: ["mcp", "remove", "--scope", "user", "${name}"],
+    read: { path: "config.toml", format: "toml", key: "mcp_servers", shape: "map" },
+  },
+  skills: { dir: "skills" },
+});
+
 describe("cli strategy(openclaw / grok)AC-3: argv template どおりに runtime CLI を叩く", () => {
   test("`--env...` の要素展開と remove → add の順(冪等)。read の場所が無ければ doctor は「登録済み」と言う", async () => {
     await installFakeCli("openclaw");
@@ -286,22 +301,78 @@ describe("cli strategy(openclaw / grok)AC-3: argv template どおりに runtime 
     expect((await argvLines()).at(-1)).toBe("mcp unset openroly");
   });
 
-  test("add-json は JSON 1 引数(grok)。CLI が exit 非 0 なら throw、CLI 不在なら runtime CLI の不在として失敗", async () => {
+  test("grok 1.0.34 は mcp add --scope user / -e / -- command args。exit 非 0 なら throw、CLI 不在なら runtime CLI の不在として失敗", async () => {
     await installFakeCli("grok");
-    const a = createNativeAdapter("grok", "Grok", {
-      bin: "grok",
-      mcp: { strategy: "cli", add: ["mcp", "add-json", "${name}", "${json}"], remove: ["mcp", "remove", "${name}"] },
-    });
+    const a = createNativeAdapter("grok", "Grok Build", grokNative());
     await a.register(ctx(), input("grok"));
-    const line = (await argvLines()).at(-1)!;
-    expect(line.startsWith("mcp add-json openroly ")).toBe(true);
-    expect(JSON.parse(line.slice("mcp add-json openroly ".length))).toEqual({
-      command: "bun", args: ["/repo/mcp.ts"], env: { OPENROLY_RUNTIME_KIND: "grok", OPENROLY_URL: "http://localhost:8787" },
-    });
+    expect(await argvLines()).toEqual([
+      "mcp remove --scope user openroly",
+      "mcp add --scope user openroly -e OPENROLY_RUNTIME_KIND=grok -e OPENROLY_URL=http://localhost:8787 -- bun /repo/mcp.ts",
+    ]);
     await installFakeCli("grok", 3);
     await expect(a.register(ctx(), input("grok"))).rejects.toThrow(/grok mcp add failed/);
     await rm(join(bin, "grok"));
-    await expect(a.register(ctx(), input("grok"))).rejects.toThrow();
+    await expect(a.register(ctx(), input("grok"))).rejects.toThrow(/was not found/);
+  });
+
+  test("grok export は stdio と HTTP を上げ、openroly 自身は上げない", async () => {
+    const grokHome = join(root, "grok-home");
+    await mkdir(grokHome, { recursive: true });
+    await writeFile(
+      join(grokHome, "config.toml"),
+      [
+        "[mcp_servers.obsidian]",
+        'url = "https://mcp.example.invalid/obsidian"',
+        "enabled = true",
+        "",
+        "[mcp_servers.probe-stdio]",
+        'command = "/bin/echo"',
+        'args = ["hello-from-probe"]',
+        "enabled = true",
+        "",
+        "[mcp_servers.probe-stdio.env]",
+        'OPENROLY_PROBE = "1"',
+        "",
+        "[mcp_servers.openroly]",
+        'command = "bun"',
+        'args = ["/repo/mcp.ts"]',
+        "",
+      ].join("\n"),
+    );
+    const a = createNativeAdapter("grok", "Grok Build", grokNative());
+    const items = await a.exportExtensions({
+      env: { PATH: bin, HOME: root, GROK_HOME: grokHome, OPENROLY_HOME: join(root, ".openroly") },
+    });
+    expect(items).toEqual([
+      {
+        kind: "mcp",
+        name: "obsidian",
+        spec: { url: "https://mcp.example.invalid/obsidian", transport: "http" },
+        secretEnv: {},
+      },
+      {
+        kind: "mcp",
+        name: "probe-stdio",
+        spec: { command: "/bin/echo", args: ["hello-from-probe"] },
+        secretEnv: { OPENROLY_PROBE: "1" },
+      },
+    ]);
+  });
+
+  test("grok HTTP MCP は add_url の argv（--transport http NAME URL）で足す", async () => {
+    await installFakeCli("grok");
+    const a = createNativeAdapter("grok", "Grok Build", grokNative());
+    await a.applyExtension(ctx(), {
+      action: "install",
+      kind: "mcp",
+      name: "obsidian",
+      spec: { url: "https://mcp.example.invalid/obsidian", transport: "http" },
+      env: {},
+    });
+    expect(await argvLines()).toEqual([
+      "mcp remove --scope user obsidian",
+      "mcp add --scope user --transport http obsidian https://mcp.example.invalid/obsidian",
+    ]);
   });
 });
 

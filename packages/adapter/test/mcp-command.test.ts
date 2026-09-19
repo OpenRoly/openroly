@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveMcpServerCommand } from "../src/mcp-config.ts";
@@ -94,6 +94,19 @@ describe("resolveMcpServerCommand (PBI-0132)", () => {
     expect(resolveMcpServerCommand(ENTRY, { OPENROLY_HOME: home })).toEqual({
       command: "bun",
       args: [ENTRY],
+    });
+  });
+
+  test("PBI-0709 AC-2: compiled より新しい entry なら bun", async () => {
+    const installed = await put(join(bin, "openroly-mcp"), 0o755);
+    const entry = join(home, "server.ts");
+    await writeFile(entry, "export {}\n");
+    const past = new Date(Date.now() - 60_000);
+    await utimes(installed, past, past);
+    await utimes(entry, new Date(), new Date());
+    expect(resolveMcpServerCommand(entry, { OPENROLY_HOME: home })).toEqual({
+      command: "bun",
+      args: [entry],
     });
   });
 });

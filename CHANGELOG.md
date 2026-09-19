@@ -19,7 +19,8 @@ they are marked **(server)**. Everything else runs from the released binary.
   at (live first, then a lapsed lease on an unfinished work), transfers it, and waits for the next
   AI to pick it up. No work id to look up, no re-explaining. (PBI-0547, PBI-0557)
 - A handoff that fails no longer strands the work. The same `openroly continue` picks it back up,
-  and six kinds of handoff failure are injected and measured rather than assumed. (PBI-0571, PBI-0578)
+  and six kinds of handoff failure are injected rather than assumed. The recovery rate itself is not
+  published until it is measured again with the current judge. (PBI-0571, PBI-0578)
 - A session cut off right after a tool call now records how it ended and wakes the same runtime
   once more, instead of leaving the work mid-step. (PBI-0583)
 - `openroly work rollback <id>` — put the working tree back to an earlier capsule version. Your

@@ -177,7 +177,13 @@ function extraPathDirs(env: Record<string, string>): string[] {
   }
   const dirs = ["/usr/local/bin", "/opt/homebrew/bin"];
   if (env.HOME) {
-    dirs.push(`${env.HOME}/.local/bin`, `${env.HOME}/.cargo/bin`, `${env.HOME}/.npm-global/bin`);
+    dirs.push(
+      `${env.HOME}/.local/bin`,
+      `${env.HOME}/.cargo/bin`,
+      `${env.HOME}/.npm-global/bin`,
+      `${env.HOME}/.grok/bin`,
+      `${env.HOME}/.openroly/bin`,
+    );
   }
   if (env.NPM_CONFIG_PREFIX) dirs.push(`${env.NPM_CONFIG_PREFIX}/bin`);
   return dirs;

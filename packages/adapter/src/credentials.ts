@@ -82,11 +82,21 @@ export async function loadCredentials(env: Env = process.env): Promise<Credentia
   }
 }
 
+/** grok と local-grok は同じ機械の別名（PBI-0685 / PBI-0690）。無い側を探して 1 身分にする。 */
+export function lookupRuntimeCredential(
+  runtimes: CredentialFile["runtimes"],
+  kind: string,
+): RuntimeCredential | undefined {
+  if (runtimes[kind]) return runtimes[kind];
+  if (kind.startsWith("local-")) return runtimes[kind.slice("local-".length)];
+  return runtimes[`local-${kind}`];
+}
+
 export async function getCredential(
   kind: string,
   env: Env = process.env,
 ): Promise<RuntimeCredential | undefined> {
-  return (await loadCredentials(env)).runtimes[kind];
+  return lookupRuntimeCredential((await loadCredentials(env)).runtimes, kind);
 }
 
 /**
@@ -121,7 +131,26 @@ export async function saveCredential(
   await withCredentialLock(env, async () => {
     const file = await loadCredentials(env);
     file.runtimes[kind] = credential;
+    const alias = kind.startsWith("local-") ? kind.slice("local-".length) : `local-${kind}`;
+    if (alias !== kind) delete file.runtimes[alias];
     await writeCredentials(file, env);
+  });
+}
+
+/** catalog の kind と `local-<kind>` が両方在るとき local 側を捨てる（PBI-0694 / F40）。 */
+export async function dropRedundantLocalCredentials(env: Env = process.env): Promise<string[]> {
+  return withCredentialLock(env, async () => {
+    const file = await loadCredentials(env);
+    const dropped: string[] = [];
+    for (const kind of Object.keys(file.runtimes)) {
+      if (!kind.startsWith("local-")) continue;
+      const canon = kind.slice("local-".length);
+      if (!file.runtimes[canon]) continue;
+      delete file.runtimes[kind];
+      dropped.push(kind);
+    }
+    if (dropped.length > 0) await writeCredentials(file, env);
+    return dropped;
   });
 }
 

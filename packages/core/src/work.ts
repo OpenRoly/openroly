@@ -163,6 +163,16 @@ export const CHECKPOINT_TICK_INTERVAL_SECS = 30;
  * この PBI では定数だけ持つ — 診断(WORKBOARD_DIAGNOSTIC_KINDS)の実装は別 slice */
 export const WORK_LIVENESS_TIMEOUT_SECS = 90;
 
+/** 今しゃべっている MCP session の lease run id（PBI-0703 / dogfood F50）。kind は dest。CLI は pid を知らないので pid を埋め込まない。 */
+export function mcpSessionRunId(kind: string | null | undefined): string {
+  const k = (kind ?? "").trim() || "runtime";
+  return `mcp-${k}`;
+}
+
+export function isMcpSessionRun(runId: string | null | undefined): boolean {
+  return typeof runId === "string" && runId.startsWith("mcp-");
+}
+
 // ---------- v0 Authority(PBI-0413 / CAP-3 V10・direction/v0.md §7) ----------
 // 「Agent が勝手に Codex へ移しました」にしない。動詞ごとに 3 段のどれかが要る:
 //   auto                    人に聞かない(既存の lease/write の門だけで足りる。この slice は触らない)
@@ -260,6 +270,41 @@ export function decideParent(
 export const HUMAN_HAND_RUNTIME_KINDS = ["broker"] as const;
 
 /**
+ * 人の手として数えるか。web/`pas_` の human と、`openroly login` が pair した broker だけ。
+ * create(PBI-0623)と transfer/continue(PBI-0679)が同じ関数を見る —— 片側だけ broker を人にすると
+ * 「仕事は作れるが渡せない」になる。
+ */
+export function isHumanHandActor(
+  actorKind: "human" | "runtime",
+  runtimeKind: string | null | undefined,
+): boolean {
+  if (actorKind === "human") return true;
+  return runtimeKind != null && (HUMAN_HAND_RUNTIME_KINDS as readonly string[]).includes(runtimeKind);
+}
+
+/**
+ * catalog の id と `runtimes add` の `local-<id>` を、pairing 済みの方へ畳む。
+ * 要求した kind が pair 済みならそれを返す。無ければ接頭辞の有無だけを見る（推測の別名表は持たない）。
+ */
+export function resolvePairedRuntimeKind(requested: string, paired: Iterable<string>): string {
+  const set = new Set(paired);
+  if (set.has(requested)) return requested;
+  if (requested.startsWith("local-")) {
+    const base = requested.slice("local-".length);
+    if (base !== "" && set.has(base)) return base;
+  } else if (set.has(`local-${requested}`)) {
+    return `local-${requested}`;
+  }
+  return requested;
+}
+
+/** catalog の headless id、またはその `local-` 付き（broker が adopt した local catalog） */
+export function isWakeableKind(kind: string, headlessIds: readonly string[]): boolean {
+  if (headlessIds.includes(kind)) return true;
+  return kind.startsWith("local-") && headlessIds.includes(kind.slice("local-".length));
+}
+
+/**
  * 親を持たない(root)work を作ってよいか。
  *
  * **runtime は自分の担当を無から作れない。** PBI-0397 が `canPromoteThread` で守っている不変条件
@@ -282,10 +327,7 @@ export function decideWorkCreator(input: {
   hasParent: boolean;
 }): { ok: true } | { ok: false; reason: "human_only" } {
   if (input.hasParent) return { ok: true };
-  if (input.actorKind === "human") return { ok: true };
-  if (input.runtimeKind != null && (HUMAN_HAND_RUNTIME_KINDS as readonly string[]).includes(input.runtimeKind)) {
-    return { ok: true };
-  }
+  if (isHumanHandActor(input.actorKind, input.runtimeKind)) return { ok: true };
   return { ok: false, reason: "human_only" };
 }
 
@@ -417,6 +459,12 @@ export interface ContinueWorkInput {
   stalled?: Stall | null;
   /** 失敗した handoff が解放した lease(PBI-0578・一覧の released_by_failed_handoff)。未指定 = 解放されていない */
   failedHandoff?: boolean;
+  /** 今 lease を持っている runtime の kind（`--to` で「そこに居ない仕事」を選ぶ。未指定 = 不明） */
+  runtimeKind?: string | null;
+  /** 係（standing owner）。`work current` と同じ照合に使う。未指定 = 係なし */
+  handledRuntimeId?: string | null;
+  /** `work current` の standing 順（lease_acquired_at）。未指定 = updatedAt */
+  leaseAcquiredAt?: Date | null;
 }
 
 /** 選んだ 1 本(lapsed = 切れた lease からの continue)か、候補が無いか、絞り切れないか */
@@ -425,7 +473,11 @@ export type ContinuePick =
   | { kind: "work"; work: ContinueWorkInput; lapsed: boolean }
   | { kind: "ambiguous"; works: ContinueWorkInput[]; lapsed: boolean };
 
-export function pickContinueWork(works: ContinueWorkInput[], now: Date): ContinuePick {
+export function pickContinueWork(
+  works: ContinueWorkInput[],
+  now: Date,
+  opts?: { toKind?: string; self?: { runtimeId?: string | null; kind?: string | null } },
+): ContinuePick {
   // lease_expires_at が null の holder は「切れない lease」(store の live 判定と同じ規則)
   const live = works.filter(
     (w) => w.holderRun != null && w.status !== "done" && (w.leaseExpiresAt == null || w.leaseExpiresAt > now),
@@ -433,24 +485,102 @@ export function pickContinueWork(works: ContinueWorkInput[], now: Date): Continu
   const lapsed = works.filter(
     (w) => w.holderRun != null && w.status !== "done" && w.leaseExpiresAt != null && w.leaseExpiresAt <= now,
   );
-  // 「最新」= updated_at の降順(ambiguous の一覧も同じ順で出す)
-  const newest = (xs: ContinueWorkInput[]) => [...xs].sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
-  if (live.length > 1) {
-    // PBI-0557: live が複数でも、usage limit で止まっている(= 続ける理由が明確な)物が 1 本だけなら
-    // それを選ぶ。止まった物が 2 本以上 or 0 本なら今どおり ambiguous(黙って選ばない = V10)
-    const stalled = live.filter((w) => w.stalled != null);
-    if (stalled.length === 1) return { kind: "work", work: stalled[0]!, lapsed: false };
-    return { kind: "ambiguous", works: newest(live), lapsed: false };
-  }
-  if (live.length === 1) return { kind: "work", work: live[0]!, lapsed: false };
-  if (lapsed.length > 1) return { kind: "ambiguous", works: newest(lapsed), lapsed: true };
-  if (lapsed.length === 1) return { kind: "work", work: lapsed[0]!, lapsed: true };
   // PBI-0578: 3 つ目の箱 = 失敗した handoff が holder を外した work(spec §6: failed の後は誰も lease を持たない)。
   // freeze で止めた work は入れない(failedHandoff を立てるのは server の解放の判定だけ)
   const released = works.filter((w) => w.holderRun == null && w.status !== "done" && w.failedHandoff === true);
-  if (released.length > 1) return { kind: "ambiguous", works: newest(released), lapsed: true };
-  if (released.length === 1) return { kind: "work", work: released[0]!, lapsed: true };
-  return { kind: "none" };
+  // 「最新」= updated_at の降順(ambiguous の一覧も同じ順で出す)
+  const newest = (xs: ContinueWorkInput[]) => [...xs].sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+  const newestStanding = (xs: ContinueWorkInput[]) =>
+    [...xs].sort((a, b) => (b.leaseAcquiredAt?.getTime() ?? b.updatedAt.getTime()) - (a.leaseAcquiredAt?.getTime() ?? a.updatedAt.getTime()));
+  const onTarget = (w: ContinueWorkInput): boolean => {
+    const to = opts?.toKind;
+    const kind = w.runtimeKind;
+    if (to == null || kind == null || kind === "") return false;
+    return kind === to || resolvePairedRuntimeKind(kind, [to]) === to || resolvePairedRuntimeKind(to, [kind]) === kind;
+  };
+  // PBI-0701 / dogfood 使い心地: work current と同じ係の newest。`--to` で居ない箱があるときは 0686 の switch が先。
+  const preferStanding = (pool: ContinueWorkInput[], lapsedFlag: boolean): ContinuePick | null => {
+    const self = opts?.self;
+    if (self == null) return null;
+    const mine = pool.filter((w) => {
+      const h = w.handledRuntimeId;
+      if (h == null || h === "") return false;
+      if (self.runtimeId != null && self.runtimeId !== "" && h === self.runtimeId) return true;
+      if (self.kind == null || self.kind === "") return false;
+      return h === self.kind || resolvePairedRuntimeKind(h, [self.kind]) === self.kind;
+    });
+    if (mine.length === 0) return null;
+    return { kind: "work", work: newestStanding(mine)[0]!, lapsed: lapsedFlag };
+  };
+  const pickFromBox = (box: ContinueWorkInput[], lapsedFlag: boolean): ContinuePick => {
+    if (box.length === 0) return { kind: "none" };
+    if (box.length === 1) return { kind: "work", work: box[0]!, lapsed: lapsedFlag };
+    if (!lapsedFlag) {
+      // PBI-0557: live が複数でも、usage limit で止まっている物が 1 本だけならそれを選ぶ
+      const stalled = box.filter((w) => w.stalled != null);
+      if (stalled.length === 1) return { kind: "work", work: stalled[0]!, lapsed: false };
+    }
+    // F53: `--to` が自分なら live 複数でも係の newest（probe が一言を壊さない）
+    const selfIsTo =
+      opts?.toKind != null &&
+      opts.self?.kind != null &&
+      (opts.self.kind === opts.toKind || resolvePairedRuntimeKind(opts.self.kind, [opts.toKind]) === opts.toKind);
+    if (selfIsTo || lapsedFlag) {
+      const standing = preferStanding(box, lapsedFlag);
+      if (standing) return standing;
+    }
+    if (opts?.toKind) {
+      const switchable = box.filter((w) => w.runtimeKind != null && w.runtimeKind !== "" && !onTarget(w));
+      if (switchable.length === 1) return { kind: "work", work: switchable[0]!, lapsed: lapsedFlag };
+      if (switchable.length > 1) {
+        if (!lapsedFlag) {
+          const stalledPool = switchable.filter((w) => w.stalled != null);
+          if (stalledPool.length === 1) return { kind: "work", work: stalledPool[0]!, lapsed: false };
+          // PBI-0684: live は居ない箱の最新を一言で移す
+          return { kind: "work", work: newest(switchable)[0]!, lapsed: false };
+        }
+        // PBI-0686 / dogfood F25: lapsed は黙って最新を取らず、checkpoint で選ばせる
+        return { kind: "ambiguous", works: newest(switchable), lapsed: true };
+      }
+      if (box.every(onTarget)) {
+        if (!lapsedFlag) return { kind: "work", work: newest(box)[0]!, lapsed: false };
+        return preferStanding(box, true) ?? { kind: "ambiguous", works: newest(box), lapsed: true };
+      }
+    }
+    if (lapsedFlag) {
+      const standing = preferStanding(box, true);
+      if (standing) return standing;
+    }
+    return { kind: "ambiguous", works: newest(box), lapsed: lapsedFlag };
+  };
+  const fromLive = pickFromBox(live, false);
+  if (fromLive.kind !== "none") return fromLive;
+  const fromLapsed = pickFromBox(lapsed, true);
+  if (fromLapsed.kind !== "none") return fromLapsed;
+  return pickFromBox(released, true);
+}
+
+/** list に出した短縮 id を continue が受けられるようにする(PBI-0686 / dogfood F27)。末尾の省略記号は捨てる */
+export function matchWorkId(
+  ids: readonly string[],
+  named: string,
+): { kind: "one"; id: string } | { kind: "none" } | { kind: "many"; ids: string[] } {
+  const cleaned = named.replace(/…+$/u, "");
+  if (cleaned === "") return { kind: "none" };
+  const exact = ids.filter((id) => id === cleaned);
+  if (exact.length === 1) return { kind: "one", id: exact[0]! };
+  const prefixed = ids.filter((id) => id.startsWith(cleaned));
+  if (prefixed.length === 1) return { kind: "one", id: prefixed[0]! };
+  if (prefixed.length === 0) return { kind: "none" };
+  return { kind: "many", ids: prefixed };
+}
+
+/** 画面の list が unique になるまで id を出す(PBI-0686)。既定 12 字は PBI-0645 の shortId と同じ */
+export function uniqueWorkIdPrefix(ids: readonly string[], id: string, minChars = 12): string {
+  if (ids.filter((x) => x === id).length !== 1) return id;
+  let n = Math.min(Math.max(1, minChars), id.length);
+  while (n < id.length && ids.filter((x) => x.startsWith(id.slice(0, n))).length > 1) n += 1;
+  return id.slice(0, n);
 }
 
 // ---------- continue guard(PBI-0583 / CAP-3・図84 の continue guard の節) ----------
@@ -585,8 +715,9 @@ export function decideFork(
   return { ok: true, action: r.action, profile: r.profile };
 }
 
-/** task の合流(PBI-0447・図80c ⑥)で task の events に残す結果。busy / empty は何も起きていないので残さない */
-export const TASK_MERGE_RESULTS = ["applied", "conflict"] as const;
+/** task の合流(PBI-0447・図80c ⑥)で task の events に残す結果。busy / empty は何も起きていないので残さない。
+ * `outside_scope` = 持ち場の外の path が在った(PBI-0649・記録すると task が `needs_user` になる) */
+export const TASK_MERGE_RESULTS = ["applied", "conflict", "outside_scope"] as const;
 /** 1 回の記録に載せる path の上限と 1 本の長さ(それ以上は記録から外す。合流そのものは全部見る) */
 export const TASK_MERGE_PATHS_MAX = 1000;
 export const TASK_MERGE_PATH_MAX_LENGTH = 4096;
@@ -594,6 +725,7 @@ export const TASK_MERGE_PATH_MAX_LENGTH = 4096;
 export type MergeDecision =
   | { result: "applied"; paths: string[] }
   | { result: "conflict"; paths: string[] }
+  | { result: "outside_scope"; paths: string[] }
   | { result: "busy" }
   | { result: "empty" };
 
@@ -612,6 +744,92 @@ export function decideMerge(check: { changed: string[]; busy: boolean; checkErro
   if (check.checkError == null) return { result: "applied", paths: check.changed };
   const hit = [...new Set([...check.checkError.matchAll(APPLY_CONFLICT_LINE)].map((m) => m[1] as string))].sort();
   return { result: "conflict", paths: hit.length > 0 ? hit : check.changed };
+}
+
+/**
+ * task の裁定 3 値(PBI-0648・図80c ⑦)。**status 値は足さない** —— 上流 workboard-contract から derive する
+ * 10 値はそのままで、裁定は task の context `review/verdict` の本文に置く(版が差し戻しの周になる)
+ */
+export const TASK_REVIEW_VERDICTS = ["accept", "changes_requested", "reject"] as const;
+export type TaskReviewVerdict = (typeof TASK_REVIEW_VERDICTS)[number];
+
+/** 裁定の本文(端末の CAS に載る)から 3 値を読む。読めない物は null = 未裁定(「読めないから通す」に倒さない) */
+export function taskReviewVerdict(body: unknown): TaskReviewVerdict | null {
+  if (body == null || typeof body !== "object" || Array.isArray(body)) return null;
+  const v = (body as Record<string, unknown>).verdict;
+  return (TASK_REVIEW_VERDICTS as readonly unknown[]).includes(v) ? (v as TaskReviewVerdict) : null;
+}
+
+export type TaskMergeGate =
+  | { ok: true }
+  | { ok: false; reason: "no_proof" | "not_reviewed" | "changes_requested" | "rejected" };
+
+/**
+ * 渡した仕事を親へ合流してよいか(PBI-0648)。**分岐の正本はここ 1 つ** —— MCP も CLI も呼ぶだけで
+ * 独自の比較を書かない。cwd に 1 byte も触る前に通す門なので、迷った側は必ず「断る」に倒す:
+ *  - `proofs` = その task の proof(古い順)。**最後の 1 本が `passed`** でなければ `no_proof`
+ *    (「1 本でも passed が在る」だと、通した後に壊して failed を積んだ task が合流できてしまう)
+ *  - `verdict` = `review/verdict` の本文(この端末で開けなければ呼び手が null を渡す = 未裁定)
+ * ponytail: 裁定が「今の proof を見た物か」は版で測らない(PBI-0648 スコープ外の version cursor)。
+ * 先に accept を貰ってから書き足す道は残る —— 塞ぐなら裁定に proof の版を載せる
+ */
+export function decideTaskMerge(proofs: readonly { status: string }[], verdict: unknown): TaskMergeGate {
+  if (proofs.at(-1)?.status !== "passed") return { ok: false, reason: "no_proof" };
+  const v = taskReviewVerdict(verdict);
+  if (v === null) return { ok: false, reason: "not_reviewed" };
+  if (v === "changes_requested") return { ok: false, reason: "changes_requested" };
+  if (v === "reject") return { ok: false, reason: "rejected" };
+  return { ok: true };
+}
+
+// ---------- 持ち場(PBI-0649・図80c ⑧) ----------
+
+/** path の前方一致だけ。glob と読み違えられる文字はここで断る(下の briefPaths が先に落とす) */
+const GLOBBY = /[*?[\]]/;
+
+/**
+ * 持ち場(`brief/allowed` / `brief/forbidden`)の本文から path の前置きを読む。
+ * **規則は 1 つだけ —— repo 相対 path の前方一致**(`migrations/` `server/src/auth`)。
+ * `*` や `?` を含む物は受けない: `*.sql` を glob のつもりで書いた人に「1 つも当たらない門」を
+ * 黙って渡すと、守っていないのに緑になる(式 pin と同じ嘘)。要ると分かったら 1 規則足す。
+ * 読めない物(配列でない・空文字・絶対 path・`..`・glob)は **null = 呼び手は fail-closed に倒す**
+ * (`brief_unreadable`)。「読めないから全部許す」に倒さない(AC-X2)
+ */
+export function briefPaths(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const out: string[] = [];
+  for (const v of value) {
+    if (typeof v !== "string" || v.length === 0 || v.startsWith("/") || v.includes("\\")) return null;
+    if (GLOBBY.test(v) || v.split("/").some((seg) => seg === "." || seg === "..")) return null;
+    out.push(v);
+  }
+  return out;
+}
+
+/**
+ * 合流してよい path だけか(PBI-0649・AC-5)。**判定の正本はここ 1 つ** —— MCP も CLI も `mergeTaskFolder` を
+ * 通してこれを呼ぶだけで独自の比較を書かない。当たり方は前方一致だけなので `server/src/auth` は
+ * `server/src/authz.ts` にも当たる —— 断り側に広く倒れるのは門として正しい向き(取りこぼしが危険な向き)。
+ * **大文字小文字も区別しない**(module review 2026-09-16): 区別しない fs(この Mac の APFS)では `Migrations/070.sql` が
+ * `migrations/` の中に落ちる。実測では project に一度 `Migrations/` が入ると checkpoint が folder へ運び、次の task が
+ * 小文字で書いた file まで `Migrations/` として記録され、門を素通りした。区別する fs で広く断るのは上と同じ向き。
+ * 呼び手は cwd に 1 byte も当てる前に、`index.lock` を取る前にこれを通す(AC-3 / AC-X3)
+ */
+export function decideMergePaths(
+  changed: readonly string[],
+  forbidden: readonly string[],
+): { ok: true } | { ok: false; hit: string[] } {
+  const fold = (s: string) => s.toLowerCase();
+  const hit = [...new Set(changed.filter((p) => forbidden.some((f) => fold(p).startsWith(fold(f)))))].sort();
+  return hit.length === 0 ? { ok: true } : { ok: false, hit };
+}
+
+/**
+ * 面に出す裁定の 1 マス(PBI-0648・AC-6)。`round` = `review/verdict` の版 = 裁定を書いた回数なので、
+ * 2 回目以降だけ数を添える(`changes_requested (2)` = 2 周目でまだ差し戻し)。CLI の表と `work_team` が同じ値を出す
+ */
+export function taskReviewCell(verdict: TaskReviewVerdict | null, round: number): string {
+  return verdict === null ? "-" : round > 1 ? `${verdict} (${round})` : verdict;
 }
 
 type ProfileRow = { kind: string; key: string };

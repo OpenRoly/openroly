@@ -42,6 +42,8 @@ export interface NativeMcpCli {
    * `["--env...", "${env}"]` の対で flag を要素ごとに繰り返す */
   add: string[];
   remove: string[];
+  /** HTTP/SSE MCP を足す argv。`${name}` `${url}`。無い runtime は url 形を書けない */
+  add_url?: string[];
   /** CLI が書いた config を doctor / listExtensions が読む場所(無ければ読めない = doctor は unknown) */
   read?: NativeConfigLocation | null;
 }
@@ -125,6 +127,9 @@ export function parseNativeSpec(raw: unknown, id: string): NativeSpec {
     } else if (mcp.strategy === "cli") {
       if (!isStrArr(mcp.add) || mcp.add.length === 0) fail("mcp.add(argv template)が無い");
       if (!isStrArr(mcp.remove) || mcp.remove.length === 0) fail("mcp.remove(argv template)が無い");
+      if (mcp.add_url !== undefined && (!isStrArr(mcp.add_url) || mcp.add_url.length === 0)) {
+        fail("mcp.add_url は string[]");
+      }
       if (mcp.bin !== undefined && typeof mcp.bin !== "string") fail("mcp.bin は string");
       let read: NativeConfigLocation | null = null;
       if (mcp.read != null) {
@@ -141,6 +146,7 @@ export function parseNativeSpec(raw: unknown, id: string): NativeSpec {
         remove: mcp.remove,
         read,
         ...(typeof mcp.bin === "string" ? { bin: mcp.bin } : {}),
+        ...(isStrArr(mcp.add_url) ? { add_url: mcp.add_url } : {}),
       };
     } else {
       fail("mcp.strategy は file|cli");

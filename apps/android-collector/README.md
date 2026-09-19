@@ -34,4 +34,4 @@ It seals an envelope with Java + BouncyCastle, opens it with `open` from `packag
 2. Paste your **Source token** (`pso_…`) and tap **Save & connect**. The device public key is fetched and cached.
 3. Under **Apps**, set the apps you want to capture to Title only or Full text (Off by default).
 
-The default server URL is `https://atn.shibubu.ai`.
+The default server URL is `https://openroly.shibubu.ai`.

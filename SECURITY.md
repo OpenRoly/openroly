@@ -40,7 +40,7 @@ These are known and documented; they are not vulnerabilities by themselves.
 
 ## The hosted server
 
-The server behind `atn.shibubu.ai` is not in this repository. If a report here affects it, say
+The server behind `openroly.shibubu.ai` is not in this repository. If a report here affects it, say
 so and it will be handled the same way.
 
 ## Supported versions

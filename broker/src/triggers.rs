@@ -58,7 +58,7 @@ pub const HOOK_SOCKET_NAME: &str = "broker.sock";
 /// 連結し、**実在する dir だけ**を重複排除して先頭 `max` 件。
 ///
 /// 固定 dir を先に置くのは、PATH に同じ dir が何度も出てくる環境で枠を食い潰さないため。既定では
-/// `/usr/local/bin` `/opt/homebrew/bin` `~/.local/bin` `~/.cargo/bin` npm global bin `/Applications`
+/// `/usr/local/bin` `/opt/homebrew/bin` `~/.local/bin` `~/.cargo/bin` npm global bin `~/.grok/bin` `/Applications`
 /// `~/Applications` がちょうど枠に収まる。
 pub fn watch_dirs(env: &ScanEnv, max: usize) -> Vec<PathBuf> {
     let mut seen: HashSet<PathBuf> = HashSet::new();

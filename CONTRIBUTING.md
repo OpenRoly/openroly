@@ -78,7 +78,7 @@ you claim and how you checked them.
 ## The account server
 
 The CLI, adapters, MCP server, and broker pair against an account server. Today that is the hosted
-service at [atn.shibubu.ai](https://atn.shibubu.ai), free during the alpha. The server's source is
+service at [openroly.shibubu.ai](https://openroly.shibubu.ai), free during the alpha. The server's source is
 not in this repository yet, so changes to it can't land here; self-hosting is on the
 [roadmap](ROADMAP.md).
 

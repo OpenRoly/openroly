@@ -103,8 +103,13 @@ const contextShape = z
   .record(z.string(), z.unknown())
   .optional()
   .describe(
-    "key → value facts for the next agent. Prefer the well-known keys, which the next agent reads first: goal, next_step, decisions, open_questions, failed_attempts, verified_findings (other names are allowed). auto/ and inbox/ are reserved for the machine. Key: letters, digits and _ . : / -, up to 128 chars",
+    "key → value facts for the next agent. Prefer the well-known keys, which the next agent reads first: goal, next_step, decisions, open_questions, failed_attempts, verified_findings (other names are allowed). auto/, inbox/, review/ and brief/ are reserved — the machine and whoever hands the work out write those. Key: letters, digits and _ . : / -, up to 128 chars",
   );
+
+/** PBI-0649: 渡す時だけ書ける 3 key を足した context(work_task_create 専用 —— 受け取った task は reserved_key で落ちる) */
+const taskContextShape = contextShape.describe(
+  "key → value facts for the agent taking this task, plus the three keys only the side handing it out may write: brief/done (what finished looks like, free text), brief/allowed and brief/forbidden (its scope — arrays of repo-relative path prefixes, matched by prefix only, case-insensitively, no globs). A merge that changes a file under a brief/forbidden prefix is stopped as outside_scope before a single byte is written, and the task then needs a human. Also: goal, next_step, decisions, open_questions, failed_attempts, verified_findings",
+);
 const sourcesShape = z
   .array(z.string())
   .optional()
@@ -189,7 +194,7 @@ export const workTaskCreateInputShape = {
   title: z.string().describe("what this task is"),
   to: z.string().optional().describe("runtime id or kind that should carry this task"),
   note: z.string().optional().describe("what that runtime needs to know"),
-  context: contextShape,
+  context: taskContextShape,
   sources: sourcesShape,
   run_id: z.string().optional().describe("your own run id, recorded as the writer"),
 };

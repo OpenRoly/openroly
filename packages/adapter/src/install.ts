@@ -3,13 +3,16 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { apiCall } from "./api.ts";
+import { buildBrief } from "./brief.ts";
 import { ensureBinary, type EnsureBinaryOutcome } from "./binary.ts";
 import {
   getAccountUrl,
   getCredential,
+  openrolyHome,
   removeCredential,
   type RuntimeCredential,
 } from "./credentials.ts";
+import { checkoutMcpNewerThanBinary } from "./mcp-config.ts";
 import { pairRuntime, type PairPrompt } from "./pairing.ts";
 import type { AdapterContext, Finding, ExtensionAdapter } from "./contract.ts";
 
@@ -32,7 +35,7 @@ export const MCP_SERVER_NAME = "openroly";
  * collector は最初からこの値を既定にしている。手元の server を指す時は `--url` /
  * `$OPENROLY_URL` / `openroly login --url` —— 下の優先順位がそのまま効く。
  */
-export const DEFAULT_BASE_URL = "https://atn.shibubu.ai";
+export const DEFAULT_BASE_URL = "https://openroly.shibubu.ai";
 
 /**
  * この端末が繋ぐ Account API の URL を決める **唯一の関数**(PBI-0246・図7.1)。
@@ -277,25 +280,49 @@ export async function doctorRuntime(options: EngineOptions): Promise<Finding[]> 
   });
 
   const who = await apiCall(credential.base_url, "/v1/whoami", { token: credential.token });
-  findings.push(
-    who.status === 200
-      ? {
-          ok: true,
-          label: "Account connection",
-          detail: `attached as @${who.body.handle} (unread ${who.body.unread})`,
-        }
-      : {
-          ok: false,
-          label: "Account connection",
-          detail:
-            who.status === 401
-              ? `the credential was revoked. Reconnect with 'openroly pair ${adapter.id}'`
-              : `whoami returned ${who.status}`,
-        },
-  );
+  if (who.status !== 200) {
+    findings.push({
+      ok: false,
+      label: "Account connection",
+      detail:
+        who.status === 401
+          ? `the credential was revoked. Reconnect with 'openroly pair ${adapter.id}'`
+          : `whoami returned ${who.status}`,
+    });
+  } else {
+    let messages: unknown[] = [];
+    try {
+      const inbox = await apiCall(credential.base_url, "/v1/inbox/messages", { token: credential.token });
+      if (inbox.status === 200 && Array.isArray(inbox.body)) messages = inbox.body;
+    } catch {
+      /* 古い server / 401 は inbox 件数だけ（F54 と同じ） */
+    }
+    const brief = buildBrief(who.body, messages);
+    findings.push({
+      ok: true,
+      label: "Account connection",
+      detail: `attached as @${who.body.handle} (unread ${brief.unread + brief.requests})`,
+    });
+  }
 
   findings.push(...(await adapter.doctor(ctx, serverName)));
   findings.push(await extensionDriftFinding(credential.base_url, credential.token, credential.runtime_id));
+  const compiled = join(openrolyHome(env), "bin", "openroly-mcp");
+  if (existsSync(MCP_SERVER_ENTRY)) {
+    const stale = checkoutMcpNewerThanBinary(MCP_SERVER_ENTRY, compiled);
+    findings.push({
+      ok: true,
+      label: "MCP source",
+      detail: stale
+        ? "checkout newer than compiled — next start uses bun (restart this session to load it)"
+        : existsSync(compiled)
+          ? `compiled ${compiled}`
+          : `bun ${MCP_SERVER_ENTRY}`,
+    });
+  }
+  if (options.env == null) {
+    await import("./hub.ts").then((h) => h.applyOpenRolyMcp(env)).catch(() => null);
+  }
   return findings;
 }
 

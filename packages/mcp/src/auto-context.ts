@@ -344,8 +344,8 @@ export function buildAutoContext(cwd: string, opts: { env?: Env; home?: string; 
   const text = readFileSync(pick.path, "utf8");
   const facts = codex ? parseCodexRollout(text, cwd) : readTranscriptFacts(text, cwd);
   if (facts.cwd_rows === 0) return { context, transcript: "no_cwd_rows" };
-  context[AUTO_KEYS.filesTouched] = facts.files_touched;
-  context[AUTO_KEYS.tests] = facts.tests;
+  if (facts.files_touched.length > 0) context[AUTO_KEYS.filesTouched] = facts.files_touched;
+  if (facts.tests.length > 0) context[AUTO_KEYS.tests] = facts.tests;
   return { context, transcript: pick.by };
 }
 

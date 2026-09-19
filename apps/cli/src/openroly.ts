@@ -6,13 +6,17 @@ import {
   DEFAULT_BASE_URL,
   doctorRuntime,
   ensureBinary,
+  ensureCliOnPath,
   fetchBrief,
   formatBrief,
   formatStatusline,
   type SessionBrief,
   getCredential,
+  ingestAndLink,
+  applyOpenRolyMcp,
   installRuntime,
   loadCredentials,
+  lookupRuntimeCredential,
   MCP_SERVER_ENTRY,
   MCP_SERVER_NAME,
   openrolyHome,
@@ -20,6 +24,7 @@ import {
   reconcile,
   RUNTIME_CLI_NOT_FOUND,
   shareExtensions,
+  copyExtensions,
   saveAccountUrl,
   removeCredential,
   saveCredential,
@@ -32,12 +37,12 @@ import {
   type ExtensionAdapter,
   type RuntimeCredential,
 } from "@openroly/adapter";
-import { ApiUnreachableError, countPendingContextValues, e2eeCallFor, resolveContextEntries, type ContextIndexRow } from "@openroly/adapter";
-import { adoptLegacyEnv, buildCapsule, countInbox, buildManifest, CAPSULE_FIELDS, CapsuleConversationError, CapsuleCredentialRefError, type CapsuleManifest, CREDENTIAL_CHECK_FAILED, CREDENTIAL_OWNED_BY_HUMAN, egressEnforcementText, egressScopeText, legacyDir, LEGACY_STATE_DIR, normalizeHandle, parseEgressByRuntime, parseEgressEnforcement, pickContinueWork, STATE_DIR, TASK_MERGE_PATHS_MAX, WORK_LIVENESS_TIMEOUT_SECS, type ContinueWorkInput, type MergeDecision } from "@openroly/core";
+import { ApiUnreachableError, countPendingContextValues, e2eeCallFor, prepareContextValue, resolveContextEntries, type ContextIndexRow } from "@openroly/adapter";
+import { adoptLegacyEnv, buildCapsule, countInbox, buildManifest, briefPaths, CAPSULE_FIELDS, decideTaskMerge, taskReviewCell, taskReviewVerdict, TASK_BRIEF_KEYS, TASK_REVIEW_KEY, TASK_REVIEW_VERDICTS, WORK_CONTEXT_BRIEF_KEYS, CapsuleConversationError, CapsuleCredentialRefError, type CapsuleManifest, CREDENTIAL_CHECK_FAILED, CREDENTIAL_OWNED_BY_HUMAN, egressEnforcementText, egressScopeText, isWakeableKind, legacyDir, LEGACY_STATE_DIR, matchWorkId, mcpSessionRunId, normalizeHandle, parseEgressByRuntime, parseEgressEnforcement, pickContinueWork, resolvePairedRuntimeKind, STATE_DIR, TASK_MERGE_PATHS_MAX, uniqueWorkIdPrefix, WORK_LIVENESS_TIMEOUT_SECS, type ContinueWorkInput, type MergeDecision } from "@openroly/core";
 import { applyGitCheckpoint, checkoutForkFolder, mergeTaskFolder, prepareRollback, RollbackFailedError, rollbackWorkingTree, type GitState } from "@openroly/core/node";
 // PBI-0557: usage-limit resume の判定(core の正本)。別行なのは並行 pane(0550)が上の行を
 // 未 commit で触っている為 — hunk を分けて commit に混ぜない為だけの形
-import { STALL_REASONS, stallOf } from "@openroly/core";
+import { STALL_REASONS, stallOf, formatContinueCheckpoint } from "@openroly/core";
 import { existsSync } from "node:fs";
 import { link, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { connect as netConnect } from "node:net";
@@ -47,7 +52,7 @@ import { fileURLToPath } from "node:url";
 import { AGENT_PROVIDERS, isAgentProvider, resolveApiKey, runAgent } from "./agent.ts";
 import { addLocalRuntime, importShellProfiles, loadProfiles, localCatalogPath, profileProblem, profilesPath, removeProfile } from "@openroly/adapter";
 import { followSession, listSessions, rawPeek, renderList, renderSession, SESSION_ID_RE } from "./peek.ts";
-import { ADAPTERS, findAdapter, HEADLESS_KINDS, RUNTIME_BINARIES, SUPPORTED_IDS, VARIANT_CLASSES } from "./registry.ts";
+import { ADAPTERS, CATALOG_DETECTOR_COUNT, catalogAgentRuntimes, catalogBinaryDetected, findAdapter, HEADLESS_KINDS, isAdoptibleKind, RUNTIME_BINARIES, SUPPORTED_IDS, VARIANT_CLASSES } from "./registry.ts";
 
 // openroly —— Personal Agent Account の入口(配布戦略 §7.2 Common Installation Engine の CLI 面)。
 // plugin-first UX でもここを通るので、pairing / install / 診断のロジックは 1 系統。
@@ -85,12 +90,19 @@ Usage: openroly <command>
   adopt                 Materialize an issued credential (called by the broker; non-interactive)
   uninstall <runtime>   Remove the MCP registration and the local credential
   pair <runtime>        Pair only
+  connect <name>        Connect anything by name — an AI on this machine (connect claude),
+                        a service you have a key for (connect github), an MCP server
+                        (connect linear-mcp), this machine (connect macbook). pair / install /
+                        adopt keep working; they are the same thing with the kind spelled out
+  connections [--json]  Everything your account is connected to, with what each one can do
+  whoami                This account (handle / agent id). Counts only, never bodies
+  inbox                 Inbox and requests (counts and titles, never bodies)
   status                Who is attached and what is unread (counts only, never bodies).
                         Also lists live sessions reported by the local broker
   cancel <request_id>   Stop a live session (broker kills the child process; SIGTERM → 5s → SIGKILL)
   statusline [--refresh] One line for a status bar (--refresh re-fetches and writes the cache)
   doctor [runtime]      Diagnose the connection
-  runtimes              Supported runtimes and their connection state
+  runtimes [--all]      Catalog AIs on this machine (detected or connected). --all lists the whole catalog. No adapter required.
   runtimes add <name> --binary <command> --mcp-file <path> [--format json] [--key mcpServers]
                         Add an AI that is not in the catalog (this machine only; listed as local-<name>)
   runtimes prune [--json]
@@ -103,10 +115,12 @@ Usage: openroly <command>
   run <class> [--bin <path>] -- <args>
                         Start a profile's binary with its env (what the broker runs on wake)
   extensions            Desired extensions + per-runtime status
-  sync [runtime]        Run Extension Sync (all attached runtimes when omitted)
-  share [runtime]       Offer what you already installed in your AIs (MCP servers / skills) to the
-                        account as proposals. Approve them on the web and every AI gets them.
-                        Secrets stay on this machine: the account only sees the env var names
+  sync [runtime] [--from <runtime>]
+                        Apply approved extensions (all attached runtimes when omitted).
+                        A named runtime without --from copies from Claude on this machine.
+                        --from copies from that runtime — no web Approve
+  share [runtime]       Optional: offer this machine's MCP/skills to the account catalog.
+                        Same-machine copy is sync <runtime> (no web Approve). Secrets stay here.
   watch-dirs            Print the files and dirs whose changes mean "an AI here changed"
                         (one path per line; the broker watches these and runs share for you)
   admin recover <handle> [--keep-sessions]
@@ -122,6 +136,7 @@ Usage: openroly <command>
                         Show what the model actually received in a dedicated session (instruction
                         and tool calls, masked exactly as the model saw them; values never appear)
 
+  work current [--json]  The work this runtime should do now (live lease, else standing owner)
   work start "<title>" [--to <runtime>] [--note <s>] [--json]
                         Start a work yourself, without waiting for a message to arrive. Only a
                         person can start one, so this uses the credential 'openroly login' gave
@@ -134,6 +149,11 @@ Usage: openroly <command>
                         One work with the full lease state
   work claim <id> --run <runId> [--json]
                         Take the write lease (fails with 409 lease_held if another run holds it)
+  work runs <id> [--json]
+                        The runs on this work — WORKING / BLOCKED / DONE, the write scope each one
+                        has, and how long it has been going
+  runs [--json]         Every run across your works, newest first (a run with no work is a
+                        standing one)
   work intent <id> --action <transfer_primary|stop_primary> [--json]
                         Issue a one-time token for an explicit-user-intent action (human callers
                         only — a runtime credential gets 403 human_only)
@@ -156,11 +176,13 @@ Usage: openroly <command>
                         Put the working tree back to a capsule version (default: the one before
                         the latest). Your current state is saved as a version first, so nothing
                         is lost; HEAD and branches are never moved (exit 2 if HEAD differs)
-  continue [--to <runtime>] [--no-wait] [--json]
+  continue [<id>] [--to <runtime>] [--no-wait] [--json]
                         One step when an AI stalls: pick the work its dead-or-live lease
                         points at (live first, then a lapsed lease on an unfinished work) and
-                        transfer it — no work id needed. --to omitted: the only wakeable
-                        paired runtime is chosen; more than one lists the candidates (exit 2)
+                        transfer it — no work id needed. A unique prefix from 'work list' is
+                        enough. --to also applies to lapsed / released work. If this runtime
+                        already owns the work (same as 'work current'), that one is picked.
+                        More than one lists each with a checkpoint (exit 2). --help prints this usage
   export [--out <dir>]  Write your agent as a PAAP v0.1 capsule directory (identity, works, checkpoints,
                         handoffs; public keys only — secrets are listed by name to re-enter). Needs every
                         checkpoint's content on this device; nothing is written if one is missing
@@ -203,20 +225,20 @@ function baseUrlOf(args: string[]): string | undefined {
 }
 
 /**
- * 接続コードを **端末の画面に出す**(PBI-0237 AC-2)。
+ * 接続コードを **端末の画面に出す**(PBI-0237 AC-2 / PBI-0716 で短縮)。
  *
  * 以前は `verification_uri_complete`(= `?user_code=` 付きの URL)を 1 本印刷し、browser も
  * その URL で開いていた —— **その 1 本を人に送るだけで、受け取った側が 1 押しで承認できた**
  * (device code flow の remote phishing。RFC 8628 §5.4)。今 URL が指すのは
- * 打つ欄だけの `/connect` で、code は **この行にしか無い**。
+ * 打つ欄だけの `/connect` で、code は **この行にしか無い**(2026-09-04 / 09-18 の 2 度の owner
+ * 決定 —— fly.io 風に code を URL へ埋め込む案は、見た目だけ真似て中身は却下した)。
  */
 function showPrompt(prompt: PairPrompt): void {
   console.log(`
-  1. Open in a browser: ${prompt.verification_uri}
-  2. Type this code:    ${prompt.user_code}
-  3. Press "Approve" on the account side (within ${Math.round(prompt.expires_in / 60)} minutes)
+Opening ${prompt.verification_uri} in your browser...
+Code: ${prompt.user_code} (expires in ${Math.round(prompt.expires_in / 60)} minutes)
 
-  Waiting for approval...`);
+Waiting for approval...`);
   maybeOpenBrowser(prompt.verification_uri);
 }
 
@@ -1276,8 +1298,12 @@ const baseUrl = baseUrlOf(args);
 // JSON を足すと 2 つ目の契約になる(不確実性表の決め方に従い先に決めた)
 const JSON_COMMANDS = new Set([
   "status", "doctor", "runtimes", "extensions", "sync", "share", "work", "context",
+  "runs", // PBI-0657: Work をまたぐ Run の roll-up
+  "connect", "connections", // PBI-0658: 繋ぐ / 繋がっている物の一覧
 ]);
 const jsonMode = command != null && JSON_COMMANDS.has(command) && args.includes("--json");
+/** PBI-0645: 人間向けの面で「全長の id」「内部の数え（epoch）」まで見たい時だけ。既定は静かに */
+const verboseMode = args.includes("--verbose");
 
 /**
  * `--json` の共通外枠。`ok` はコマンドの終了状態(= exit code と同じ値)であって
@@ -1288,10 +1314,75 @@ function jsonOut(ok: boolean, data: unknown): void {
   process.stdout.write(JSON.stringify(ok ? { ok: true, data } : { ok: false, data }) + "\n");
 }
 
-/** PBI-0467: work の owner を CLI の一言に畳む。自分の account なら Personal(今はそれしか無い)、それ以外は owner をそのまま */
-function place(owner: unknown, myAccountId: string | undefined): string {
-  return typeof owner === "string" && myAccountId != null && owner === `account:${myAccountId}` ? "Personal" : String(owner);
+/**
+ * PBI-0467: work の owner を CLI の一言に畳む。自分の account なら Personal(今はそれしか無い)、それ以外は owner をそのまま。
+ * PBI-0645: **owner が無い時は null**(古い server は owner を返さない) —— `String(undefined)` を返していたので
+ * 画面に `undefined` が出ていた。**欠落値は列ごと出さない**のが人間向けの面の既定。
+ */
+function place(owner: unknown, myAccountId: string | undefined): string | null {
+  if (typeof owner !== "string" || owner === "") return null;
+  return myAccountId != null && owner === `account:${myAccountId}` ? "Personal" : owner;
 }
+
+/**
+ * PBI-0645: **画面に出す id は短く**。36 字の id が 4 行続くと、主役の 1 行が埋もれる(hero GIF の実測)。
+ * 全長が要る人は `--json` / `--verbose`。
+ */
+function shortId(v: unknown, verbose: boolean): string {
+  const s = String(v ?? "");
+  return verbose || s.length <= 16 ? s : `${s.slice(0, 12)}…`;
+}
+
+/** list に出した短縮 id を get / events も受ける（PBI-0689・実測: continue だけが prefix を受けて get が 404） */
+async function resolveListedWorkId(url: string, token: string, named: string): Promise<string> {
+  const lres = await apiCall(url, "/v1/works", { token });
+  if (lres.status !== 200) fail(`NG HTTP ${lres.status}`);
+  const ids = (Array.isArray(lres.body) ? lres.body : []).map((w: { id?: unknown }) => String(w.id ?? ""));
+  const hit = matchWorkId(ids, named);
+  if (hit.kind === "none") fail("NG no such work");
+  if (hit.kind === "many") {
+    fail(
+      `NG ambiguous — more than one work starts with '${named}'; name it with a longer id:\n${hit.ids.map((id) => `  ${id}`).join("\n")}`,
+      2,
+    );
+  }
+  return hit.id;
+}
+
+/**
+ * PBI-0645: 端末幅で折り返さない(折り返した行は読めない)。既定 100 桁。
+ * **`--verbose` では切らない** —— 全部見せろと言われた時に切るのは、静かにするのとは別の話。
+ */
+function fitLine(line: string): string {
+  if (verboseMode) return line;
+  const w = Math.max(40, Number(process.stdout.columns) || 100);
+  return line.length <= w ? line : `${line.slice(0, w - 1)}…`;
+}
+
+/**
+ * PBI-0657: Run の 1 行(§56 の WORKING / BLOCKED / DONE と経過分)。status は大文字 —— 一覧の中で
+ * 「今どうなっているか」が最初に目に入る所が §56 の要求。経過は終わった run なら ended_at まで、
+ * 生きている run なら今まで。**秒は出さない**(分で足りる所に秒を出すと列がぶれて読めない)
+ */
+function runElapsed(startedAt: unknown, endedAt: unknown): string {
+  const t0 = Date.parse(String(startedAt ?? ""));
+  if (Number.isNaN(t0)) return "";
+  const t1 = endedAt == null ? Date.now() : Date.parse(String(endedAt));
+  const mins = Math.max(0, Math.round(((Number.isNaN(t1) ? Date.now() : t1) - t0) / 60000));
+  return mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h${String(mins % 60).padStart(2, "0")}`;
+}
+
+/** run.requested の理由(§36)。server が入れた key 以外も落とさずに 1 行へ畳む */
+function runReason(payload: Record<string, unknown>): string {
+  const skip = new Set(["stage", "run_id", "write_scope"]);
+  return Object.entries(payload)
+    .filter(([k, v]) => !skip.has(k) && v != null && v !== "")
+    .map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : String(v)}`)
+    .join(" ");
+}
+
+/** PBI-0645: `work events` の既定で伏せる kind(中身が無い版上げ)。`--all` で全部出す */
+const QUIET_EVENT_KINDS = new Set(["edited", "orchestration", "dispatch"]);
 
 /** `--flag value` を 1 つ読む(値が無ければ undefined) */
 /**
@@ -1322,6 +1413,36 @@ function collectSetFlags(): Record<string, string> {
     out[kv.slice(0, eq)] = kv.slice(eq + 1);
   }
   return out;
+}
+
+/** stall のあと capsule が 0 本なら最小の 1 本を積む(PBI-0679 / F24)。既にあるなら触らない。 */
+async function ensureStallCapsule(
+  url: string,
+  token: string,
+  workId: string,
+  w: Record<string, unknown>,
+  reason: string,
+): Promise<void> {
+  const caps = await apiCall(url, `/v1/works/${encodeURIComponent(workId)}/capsules`, { token });
+  if (caps.status === 200 && Array.isArray(caps.body) && caps.body.length > 0) return;
+  const title = typeof w.title === "string" && w.title !== "" ? w.title : workId;
+  const built = buildCapsule({
+    goal: `Continue the work "${title}"`,
+    current_state: `stalled: ${reason}`,
+  });
+  const written = await writeCasPayload(built.body);
+  const manifest = buildManifest(built.body, { hash: written.hash, size: written.size, mode: "0600" });
+  const runId = typeof w.lease_holder_run === "string" ? w.lease_holder_run : "";
+  const epoch = typeof w.lease_epoch === "number" ? w.lease_epoch : 0;
+  if (!runId) return;
+  const cres = await apiCall(url, `/v1/works/${encodeURIComponent(workId)}/capsules`, {
+    method: "POST",
+    token,
+    body: { runId, expectedWriteEpoch: epoch, ...manifest },
+  });
+  if (cres.status !== 201 && cres.status !== 200) {
+    fail(`NG stalled but capsule failed: ${cres.body?.error?.code ?? `HTTP ${cres.status}`}`);
+  }
 }
 
 switch (command) {
@@ -1377,6 +1498,13 @@ switch (command) {
       " The AIs on it are found automatically and appear under Your AI",
       account,
     );
+    const cliOnPath = await ensureCliOnPath({
+      bunPath: process.execPath,
+      cliPath: fileURLToPath(import.meta.url),
+    });
+    if (cliOnPath.status !== "unavailable") {
+      console.log(`openroly CLI: ${cliOnPath.path}`);
+    }
     await ensureBrokerBinary();
     if (args.includes("--foreground")) {
       process.exit(await runBrokerForeground(credential));
@@ -1510,16 +1638,17 @@ switch (command) {
       console.log(`adopt: connected ${variant.displayName} as ${name} (${runtimeId}); it shares ${variant.of}'s config`);
       break;
     }
-    // registry に entry があっても adapter 実装が無い runtime はここで落ちる(exit 2)。
-    // Cloud 側も adapter:null は登録対象から外すので、ここに来るのは配布のずれ。
-    // `native` が壊れていても exit 2(1 行目が detail になる) —— 推測で書き換えない
+    // adapter が無くても credential は保存する(PBI-0685)。MCP は runtime 側が openroly-mcp を足す。
+    // `native` が壊れていれば exit 2(1 行目が detail になる) —— 推測で書き換えない
     let adapter: ExtensionAdapter | undefined;
     try {
       adapter = findAdapter(kind, native);
     } catch (e) {
       fail(`adopt: ${(e as Error).message}`, 2);
     }
-    if (!adapter) fail(`adopt: unsupported runtime: ${kind}\nSupported: ${SUPPORTED_IDS.join(", ")}`, 2);
+    if (!adapter && !isAdoptibleKind(kind)) {
+      fail(`adopt: unsupported runtime: ${kind}\nSupported: ${SUPPORTED_IDS.join(", ")}`, 2);
+    }
     const cleanUrl = url.replace(/\/$/, "");
     // 同じ端末に human が `openroly install` で入れた同 kind の credential があれば奪わない(AC-11)。
     // credentials.json は kind 単位の 1 entry なので、上書きすると Cloud 側の既定 runtime
@@ -1534,7 +1663,8 @@ switch (command) {
     // させると、server が落ちている・DNS が引けないだけで human の credential を上書きできてしまう
     // (実測: base_url を到達不能にすると旧実装は exit 0 で上書きしていた)。拒否しても損はない ——
     // 機械的失敗(retry)として server 側が次の hello で同じ id を再発行する
-    const owned = await getCredential(adapter.id);
+    const credKind = adapter?.id ?? kind;
+    const owned = await getCredential(credKind);
     if (owned && owned.runtime_id !== runtimeId) {
       const who = await apiCall(owned.base_url, "/v1/whoami", { token: owned.token }).catch(
         () => null,
@@ -1542,19 +1672,26 @@ switch (command) {
       if (who?.status !== 401) {
         console.error(who?.status === 200 ? CREDENTIAL_OWNED_BY_HUMAN : CREDENTIAL_CHECK_FAILED);
         console.error(
-          `  ${adapter.displayName} is already connected as ${owned.name} (${owned.runtime_id}), or its state ` +
+          `  ${adapter?.displayName ?? kind} is already connected as ${owned.name} (${owned.runtime_id}), or its state ` +
             `cannot be verified. Auto-registration will not replace it`,
         );
         process.exit(2);
       }
     }
-    await saveCredential(adapter.id, {
+    await saveCredential(credKind, {
       runtime_id: runtimeId,
       token,
       base_url: cleanUrl,
       name,
       paired_at: new Date().toISOString(),
     });
+    if (!adapter) {
+      // PBI-0699: adapter が無くても hub を配る。人が `sync grok --from claude` を知らなくてよい
+      await ingestAndLink().catch(() => null);
+      console.log(`adopt: connected ${kind} as ${name} (${runtimeId})`);
+      console.log(`  MCP: command openroly-mcp  env OPENROLY_RUNTIME_KIND=${kind}`);
+      break;
+    }
     try {
       // 起こす runtime CLI(とその shebang が呼ぶ node)は **今の** PATH で解決する(PBI-0236)。
       // launchd 経路以外では process.env がそのまま返る
@@ -1581,6 +1718,10 @@ switch (command) {
           : `adopt: registering the MCP server failed: ${message}`,
         2,
       );
+    }
+    // catalog generic（grok 等）は register が bun+server.ts を書く。hub の command に差し替える。
+    if (adapter.id === "grok" || credKind === "grok") {
+      await applyOpenRolyMcp().catch(() => null);
     }
     console.log(`adopt: connected ${adapter.displayName} as ${name} (${runtimeId})`);
     break;
@@ -1617,6 +1758,135 @@ switch (command) {
       outcome.credential,
       `${outcome.credential.name} (${outcome.credential.runtime_id})`,
     );
+    break;
+  }
+
+  // PBI-0658 / CAP-4 A8: 名前 1 つで繋ぐ。**新しい繋ぎ方は作らない** —— 端末に adapter が在る名前は
+  // `pair` と同じ道を通り、無い名前は server に聞いて「どの口に行けばよいか」を貰う。
+  // 面が 1 つになるだけで、pair / install / adopt / api-key / custom は全部そのまま残る
+  case "connect": {
+    const name = target;
+    if (!name) fail("Usage: openroly connect <name>   (e.g. claude / github / linear-mcp / macbook)");
+    const adapter = findAdapter(name);
+    if (adapter) {
+      const outcome = await pairRuntime({
+        baseUrl: await accountBaseUrl(baseUrl),
+        kind: adapter.id,
+        name: `${hostname()} / ${adapter.displayName}`,
+        onPrompt: showPrompt,
+      });
+      if (outcome.status === "denied") fail("NG pairing was denied");
+      if (outcome.status === "expired") fail("NG pairing expired");
+      if (outcome.status === "failed") fail(`NG pairing failed: ${outcome.detail}`);
+      await reportConnected(outcome.credential, `${outcome.credential.name} (${outcome.credential.runtime_id})`);
+      break;
+    }
+    const creds = await loadCredentials();
+    const cred = creds.runtimes.claude ?? Object.values(creds.runtimes)[0];
+    if (!cred) fail("NG not connected yet. Run 'openroly login' first");
+    const url = (baseUrl ?? cred.base_url).replace(/\/$/, "");
+    const res = await apiCall(url, "/v1/connections", { token: cred.token, method: "POST", body: { name } });
+    const body = res.body as Record<string, unknown>;
+    if (jsonMode) {
+      jsonOut(res.status < 300, body);
+      if (res.status >= 300) process.exit(1);
+      break;
+    }
+    if (res.status === 404) fail(`NG nothing named "${name}" to connect to`);
+    // server は「どの口に行けばよいか」だけを返す(鍵も spec もここでは受けない)。
+    // 人には次の 1 手を出す —— error code をそのまま見せても誰も動けない
+    if (res.status >= 300) {
+      const next = typeof body.next === "string" ? body.next : "";
+      const how =
+        body.error === "needs_credential"
+          ? `Open Settings → Connections on the web and paste the key for ${name}`
+          : body.error === "needs_spec"
+            ? "Install it as an extension on the web (Settings → Extensions)"
+            : "Register this device from the web (Settings → Devices)";
+      fail(`NG ${name} needs one more thing: ${how}\n   (API: ${next})`);
+    }
+    console.log(`Connecting ${name} — open ${body.verification_uri} and enter ${body.user_code}`);
+    break;
+  }
+
+  // 統一の一覧(AC-4)。provider の鍵も AI も MCP も端末も通知の出口も **同じ 1 本**で出る
+  case "connections": {
+    const creds = await loadCredentials();
+    const cred = creds.runtimes.claude ?? Object.values(creds.runtimes)[0];
+    if (!cred) fail("NG not connected yet. Run 'openroly login' first");
+    const url = (baseUrl ?? cred.base_url).replace(/\/$/, "");
+    const res = await apiCall(url, "/v1/connections", { token: cred.token });
+    if (res.status !== 200) fail(`NG HTTP ${res.status}`);
+    const rows = res.body as Record<string, unknown>[];
+    if (jsonMode) {
+      jsonOut(true, { connections: rows });
+      break;
+    }
+    console.log(`${rows.length} connection${rows.length === 1 ? "" : "s"}`);
+    for (const r of rows) {
+      const caps = Array.isArray(r.capabilities) ? (r.capabilities as string[]) : [];
+      console.log(
+        fitLine(
+          `  ${String(r.name).padEnd(24)}  ${String(r.transport).padEnd(14)}  ${String(r.locality).padEnd(15)}  ${caps.join(" ")}`,
+        ),
+      );
+    }
+    break;
+  }
+
+  case "whoami": {
+    const credentials = (await loadCredentials()).runtimes;
+    const named = process.env.OPENROLY_RUNTIME_KIND;
+    const picked =
+      (named ? lookupRuntimeCredential(credentials, named) : undefined) ??
+      credentials.grok ??
+      credentials["local-grok"] ??
+      credentials.claude ??
+      credentials.codex ??
+      credentials.broker ??
+      Object.values(credentials)[0];
+    const cred = picked;
+    if (!cred) fail("Not connected. Start with 'openroly login'");
+    const url = (baseUrl ?? cred.base_url).replace(/\/$/, "");
+    const res = await apiCall(url, "/v1/whoami", { token: cred.token });
+    if (res.status !== 200) fail(`NG HTTP ${res.status}`);
+    const w = res.body as { handle?: string; display_name?: string; agent_id?: string; actor?: { runtime_id?: string; kind?: string } };
+    if (jsonMode) {
+      jsonOut(true, w);
+      break;
+    }
+    console.log(`@${w.handle ?? "unknown"}`);
+    if (w.display_name) console.log(`  ${w.display_name}`);
+    if (w.agent_id) console.log(`  agent ${w.agent_id}`);
+    if (w.actor?.runtime_id) console.log(`  runtime ${w.actor.runtime_id} (${w.actor.kind ?? ""})`);
+    break;
+  }
+
+  case "inbox": {
+    const credentials = (await loadCredentials()).runtimes;
+    const cred = credentials.broker ?? Object.values(credentials)[0];
+    if (!cred) fail("Not connected. Start with 'openroly login'");
+    const url = (baseUrl ?? cred.base_url).replace(/\/$/, "");
+    const buckets = ["inbox", "requests"] as const;
+    const rows: { bucket: string; id: string; title: string }[] = [];
+    for (const bucket of buckets) {
+      const res = await apiCall(url, `/v1/inbox?bucket=${bucket}`, { token: cred.token });
+      if (res.status !== 200) fail(`NG inbox ${bucket}: HTTP ${res.status}`);
+      const threads = Array.isArray(res.body) ? res.body : [];
+      for (const t of threads as { id?: unknown; peer_display?: unknown; last_message?: { id?: unknown } }[]) {
+        rows.push({
+          bucket,
+          id: String(t.last_message?.id ?? t.id ?? ""),
+          title: String(t.peer_display ?? "(no title)"),
+        });
+      }
+    }
+    if (jsonMode) {
+      jsonOut(true, { items: rows });
+      break;
+    }
+    console.log(`${rows.length} item${rows.length === 1 ? "" : "s"}`);
+    for (const r of rows) console.log(`  ${r.bucket.padEnd(8)} ${r.id}  ${r.title}`);
     break;
   }
 
@@ -1854,29 +2124,49 @@ switch (command) {
       break;
     }
     const credentials = (await loadCredentials()).runtimes;
+    const showAll = args.includes("--all") || target === "--all";
+    const pathDirs = (process.env.PATH ?? "").split(":");
+    const rows: {
+      id: string;
+      display_name: string;
+      detected: boolean;
+      connected: boolean;
+      runtime_id: string | null;
+      adapter: string | null;
+    }[] = [];
+    for (const agent of catalogAgentRuntimes()) {
+      const adapter = findAdapter(agent.id);
+      const detected = adapter
+        ? (await adapter.detect(ctx)).installed
+        : catalogBinaryDetected(agent.binaries, pathDirs);
+      const credential = lookupRuntimeCredential(credentials, agent.id);
+      rows.push({
+        id: agent.id,
+        display_name: agent.displayName,
+        detected,
+        connected: !!credential,
+        runtime_id: credential?.runtime_id ?? null,
+        adapter: agent.adapter,
+      });
+    }
+    const visible = showAll ? rows : rows.filter((r) => r.detected || r.connected);
+    const detectedN = rows.filter((r) => r.detected).length;
+    const connectedN = rows.filter((r) => r.connected).length;
     if (jsonMode) {
-      const runtimes = [];
-      for (const adapter of ADAPTERS) {
-        const detected = await adapter.detect(ctx);
-        const credential = credentials[adapter.id];
-        runtimes.push({
-          id: adapter.id,
-          display_name: adapter.displayName,
-          detected: detected.installed,
-          connected: !!credential,
-          runtime_id: credential?.runtime_id ?? null,
-        });
-      }
-      jsonOut(true, { runtimes });
+      jsonOut(true, {
+        catalog: CATALOG_DETECTOR_COUNT,
+        detected: detectedN,
+        connected: connectedN,
+        runtimes: visible,
+      });
       break;
     }
-    for (const adapter of ADAPTERS) {
-      const detected = await adapter.detect(ctx);
-      const credential = credentials[adapter.id];
+    console.log(`catalog ${CATALOG_DETECTOR_COUNT} · detected ${detectedN} · connected ${connectedN}`);
+    for (const r of visible) {
       console.log(
-        `${adapter.id.padEnd(8)} ${adapter.displayName.padEnd(14)} ` +
-          `${detected.installed ? "detected" : "not detected"} / ` +
-          `${credential ? `connected (${credential.runtime_id})` : "not connected"}`,
+        `${r.id.padEnd(16)} ${r.display_name.padEnd(22)} ` +
+          `${r.detected ? "detected" : "not detected"} / ` +
+          `${r.connected ? `connected (${r.runtime_id})` : "not connected"}`,
       );
     }
     break;
@@ -1927,11 +2217,61 @@ switch (command) {
   }
 
   case "sync": {
+    await ingestAndLink().catch(() => null);
     const dryRun = args.includes("--dry-run");
+    let fromKind = flagValue("--from");
+    const destKind = args.find((a, i) => !a.startsWith("--") && args[i - 1] !== "--from");
+    // PBI-0689 / dogfood F30: dest を名指して --from が無い時は Account の空 desired ではなく
+    // 同じ機械の Claude から写す。dest が claude 自身なら今どおり reconcile。
+    if (
+      fromKind == null &&
+      destKind != null &&
+      destKind !== "claude" &&
+      destKind !== "local-claude" &&
+      findAdapter("claude") != null
+    ) {
+      fromKind = "claude";
+    }
+    if (fromKind) {
+      if (!destKind) fail("Specify a runtime to copy onto (openroly sync <runtime> --from <runtime>)");
+      const dest = findAdapter(destKind) ?? null;
+      if (!dest && !isAdoptibleKind(destKind)) {
+        fail(`Unsupported runtime: ${destKind}\nSupported: ${SUPPORTED_IDS.join(", ")}`);
+      }
+      const src = requireAdapter(fromKind);
+      const result = await copyExtensions({ from: src, to: dest, ctx, dryRun });
+      if (jsonMode) {
+        jsonOut(result.failed.length === 0, {
+          dry_run: dryRun,
+          from: src.id,
+          to: dest?.id ?? destKind,
+          plan: result.plan,
+          applied: result.applied,
+          failed: result.failed,
+        });
+        if (result.failed.length > 0) process.exit(1);
+        break;
+      }
+      console.log(`\n[${src.displayName} → ${dest?.displayName ?? destKind}]`);
+      if (result.plan.length === 0) console.log("  nothing to copy");
+      for (const item of result.plan) {
+        const ng = result.failed.find((f) => f.name === item.name);
+        if (dryRun) console.log(`  ${item.action.padEnd(12)} ${item.kind} ${item.name}`);
+        else if (ng) console.log(`  NG           ${item.kind} ${item.name}: ${ng.detail}`);
+        else console.log(`  ${item.action.padEnd(12)} ${item.kind} ${item.name}`);
+      }
+      if (dryRun) console.log("  (dry-run: nothing was written)");
+      if (result.failed.length > 0) process.exit(1);
+      break;
+    }
     const credentials = (await loadCredentials()).runtimes;
-    const targets: ExtensionAdapter[] = target
-      ? [requireAdapter(target)]
-      : ADAPTERS.filter((a) => credentials[a.id]);
+    // credential が在る kind を全部拾う —— `local-*`(runtimes add → broker adopt)は
+    // ADAPTERS に無いので、一覧から filter すると sync が黙って飛ばす
+    const targets: ExtensionAdapter[] = destKind
+      ? [requireAdapter(destKind)]
+      : Object.keys(credentials)
+          .map((id) => findAdapter(id))
+          .filter((a): a is NonNullable<typeof a> => a != null);
     if (targets.length === 0) {
       fail("Not connected. Start with 'openroly login'");
     }
@@ -1940,7 +2280,7 @@ switch (command) {
     // 機械は noop を自分で filter できる方が契約が単純になる。failed は NG として構造で出る(AC-3)
     const jsonTargets: { runtime: string; connected?: boolean; plan?: unknown[]; failed?: unknown[] }[] = [];
     for (const adapter of targets) {
-      const credential = credentials[adapter.id];
+      const credential = credentials[adapter.id] ?? credentials[`local-${adapter.id}`];
       if (!credential) {
         if (jsonMode) {
           jsonTargets.push({ runtime: adapter.id, connected: false });
@@ -2220,16 +2560,23 @@ switch (command) {
     const sub = args[0];
     const WORK_SUBS = new Set([
       "list", "get", "claim", "freeze", "intent", "events", "proof", "promote", "handoff", "capsule",
-      "capsules", "checkpoint-apply", "rollback", "context", "transfer", "fork", "task",
+      "capsules", "checkpoint-apply", "rollback", "context", "transfer", "fork", "task", "team", "review",
     ]);
     // PBI-0557: usage-limit resume(work stalled)。上の Set の行と usage 文字列を PAAP(PBI-0553)が
     // 未 commit で触っているので、hunk を分ける為に別行で足す(両 pane の commit 後に 1 行に統合してよい)
     WORK_SUBS.add("stalled");
     // PBI-0623: 自分で始めた仕事を Work にする口(root work は人の手だけ = broker credential で叩く)
     WORK_SUBS.add("start");
+    // PBI-0649: 渡した持ち場を書き直す / 許す口(outside_scope で止まった task を人が進める道)
+    WORK_SUBS.add("brief");
+    // PBI-0657: 1 Work = N Run。その work に付いた Run の列
+    WORK_SUBS.add("runs");
+    WORK_SUBS.add("current");
+    // PBI-0715: 終わった仕事を終わりにする口(dogfood F64 / F65)
+    WORK_SUBS.add("done");
     if (!WORK_SUBS.has(sub as string)) {
       fail(
-        `Usage: openroly work <start|list|get|claim|freeze|intent|transfer|fork|task|events|proof|promote|handoff|capsule|capsules|checkpoint-apply|rollback|context>\n  work start \"<title>\" [--to <runtime>] [--note <s>]  (start a work yourself — needs the terminal's own credential from 'openroly login')\n  work list [--status <s>]\n  work get <id>\n  work intent <id> --action <transfer_primary|stop_primary>  (issues a one-time token — human callers only)\n  work claim <id> --run <runId>\n  work freeze <id> --intent <token>  (stop_primary — requires a token from 'work intent')\n  work transfer <id> --to <runtime> [--note <s>] [--set key=value ...]  (a runtime credential also needs --run <runId> --intent <token>)\n  work fork <id> --to <runtime> [--review] [--note <s>]  (branch the work without stopping it; --review = a blind reviewer)\n  work task merge <project> <task>  (apply the task's folder to this working tree — no commit; nothing is applied on a conflict)\n  work events <id> [--after <n>]\n  work proof <id> --status <s> [--passed <n>] [--failed <n>]\n  work promote <threadId>\n  work handoff <id> [--to <runtimeId>] [--note <s>]\n  work capsule <id> --set key=value [--set key2=value2 ...]  (keys: ${CAPSULE_FIELDS.join(", ")})\n  work capsule show <id> [--version <n>]  (reads the payload from this device's local store)\n  work capsules <id>\n  work context <id> [--key <k> ...] [--prefix <p>] [--kind context|source] [--query <q>]  (values come from this device's local store)\n  work context publish <task> --key <k> [--key <k2> ...]  (copy the task's keys to its Work Project)\n  work checkpoint-apply <id> [--version <n>] [--remote <name>] [--cwd <path>]\n  work rollback <id> [--to <version>] [--cwd <path>]  (back to the version before the latest; your state first becomes a version)`,
+        `Usage: openroly work <start|list|get|claim|freeze|intent|transfer|fork|task|events|proof|promote|handoff|capsule|capsules|checkpoint-apply|rollback|context>\n  work start \"<title>\" [--to <runtime>] [--note <s>]  (start a work yourself — needs the terminal's own credential from 'openroly login')\n  work list [--status <s>]\n  work get <id>\n  work intent <id> --action <transfer_primary|stop_primary>  (issues a one-time token — human callers only)\n  work claim <id> --run <runId>\n  work freeze <id> --intent <token>  (stop_primary — requires a token from 'work intent')\n  work transfer <id> --to <runtime> [--note <s>] [--set key=value ...]  (a runtime credential also needs --run <runId> --intent <token>)\n  work fork <id> --to <runtime> [--review] [--note <s>]  (branch the work without stopping it; --review = a blind reviewer)\n  work task merge <project> <task>  (apply the task's folder to this working tree — no commit; nothing is applied on a conflict; needs a passed proof and an accept verdict)\n  work team <project>  (the tasks under a Work Project, with their merge, review and scope)\n  work review <task> --accept|--changes-requested|--reject [--feedback <s>]  (rule on a task you handed out — accept opens its merge)\n  work brief <task> [--allowed <prefix>]... [--forbidden <prefix>]... [--done \"<text>\"] [--clear]  (the scope you hand out; paths match by prefix only — a merge touching a forbidden prefix stops as outside_scope)\n  work runs <id>  (the runs on this work — WORKING / BLOCKED / DONE and how long)\n  work done <id>  (finish it — drops a dead holder's lease and marks the work done)\n  work events <id> [--after <n>]\n  work proof <id> --status <s> [--passed <n>] [--failed <n>]\n  work promote <threadId>\n  work handoff <id> [--to <runtimeId>] [--note <s>]\n  work capsule <id> --set key=value [--set key2=value2 ...]  (keys: ${CAPSULE_FIELDS.join(", ")})\n  work capsule show <id> [--version <n>]  (reads the payload from this device's local store)\n  work capsules <id>\n  work context <id> [--key <k> ...] [--prefix <p>] [--kind context|source] [--query <q>]  (values come from this device's local store)\n  work context publish <task> --key <k> [--key <k2> ...]  (copy the task's keys to its Work Project)\n  work checkpoint-apply <id> [--version <n>] [--remote <name>] [--cwd <path>]\n  work rollback <id> [--to <version>] [--cwd <path>]  (back to the version before the latest; your state first becomes a version)`,
       );
     }
     const creds = await loadCredentials();
@@ -2254,17 +2601,91 @@ switch (command) {
         break;
       }
       console.log(`@${who?.body?.handle ?? "you"} · ${works.length} work${works.length === 1 ? "" : "s"}`);
+      const listedIds = works.map((row) => String(row.id));
       for (const w of works) {
+        // PBI-0645: epoch は --verbose・owner は自分の物なら言わない・欠落値は列ごと出さない
         const lease = w.lease_holder_run
-          ? `lease: ${w.lease_holder_run} (epoch ${w.lease_epoch})`
+          ? `lease: ${shortId(w.lease_holder_run, verboseMode)}${verboseMode ? ` (epoch ${w.lease_epoch})` : ""}`
           : "lease: free";
-        console.log(`  ${w.id}  ${String(w.status).padEnd(10)} ${w.title}  ${lease}  ${place(w.owner, who?.body?.id)}`);
+        const owned = place(w.owner, who?.body?.id);
+        const idCol = verboseMode ? String(w.id) : uniqueWorkIdPrefix(listedIds, String(w.id));
+        const cols = [idCol, String(w.status).padEnd(8), String(w.title), lease];
+        if (owned !== null && owned !== "Personal") cols.push(owned);
+        console.log(fitLine(`  ${cols.join("  ")}`));
       }
       break;
     }
+    if (sub === "current") {
+      const named = process.env.OPENROLY_RUNTIME_KIND;
+      const picked =
+        (named ? lookupRuntimeCredential(creds.runtimes, named) : undefined) ??
+        creds.runtimes.grok ??
+        creds.runtimes["local-grok"] ??
+        creds.runtimes.claude ??
+        creds.runtimes.codex ??
+        creds.runtimes.broker ??
+        cred;
+      const curUrl = (baseUrl ?? picked.base_url).replace(/\/$/, "");
+      const [listRes, whoRes] = await Promise.all([
+        apiCall(curUrl, "/v1/works", { token: picked.token }),
+        apiCall(curUrl, "/v1/whoami", { token: picked.token }),
+      ]);
+      if (listRes.status !== 200) fail(`NG HTTP ${listRes.status}`);
+      const works = (Array.isArray(listRes.body) ? listRes.body : []) as {
+        id: string;
+        title: string;
+        status: string;
+        lease_holder_run: string | null;
+        lease_expires_at: string | null;
+        lease_epoch: number;
+        handled_runtime_id: string | null;
+        lease_acquired_at?: string | null;
+      }[];
+      const now = Date.now();
+      const live = works
+        .filter(
+          (w) =>
+            w.status !== "done" &&
+            w.lease_holder_run != null &&
+            (w.lease_expires_at == null || new Date(w.lease_expires_at).getTime() > now),
+        )
+        .sort((a, b) => new Date(b.lease_acquired_at ?? 0).getTime() - new Date(a.lease_acquired_at ?? 0).getTime());
+      const runtimeId = (whoRes.body as { actor?: { runtime_id?: string } } | null)?.actor?.runtime_id ?? null;
+      const kind = named ?? (creds.runtimes.grok ? "grok" : creds.runtimes.claude ? "claude" : null);
+      const mine = (handled: string | null) =>
+        handled != null && ((runtimeId != null && handled === runtimeId) || (kind != null && handled === kind));
+      const standing = works
+        .filter((w) => w.status !== "done" && mine(w.handled_runtime_id))
+        .sort((a, b) => new Date(b.lease_acquired_at ?? 0).getTime() - new Date(a.lease_acquired_at ?? 0).getTime());
+      const w = live[0] ?? standing[0];
+      if (!w) {
+        if (jsonMode) {
+          jsonOut(true, { work: null });
+          break;
+        }
+        console.log("none");
+        break;
+      }
+      const leaseLive = live[0]?.id === w.id;
+      if (jsonMode) {
+        jsonOut(true, {
+          work_id: w.id,
+          title: w.title,
+          status: w.status,
+          lease_live: leaseLive,
+          standing: !leaseLive,
+          handled_runtime_id: w.handled_runtime_id,
+        });
+        break;
+      }
+      console.log(`${w.id}  ${w.title}`);
+      console.log(`  ${leaseLive ? "lease live" : "standing"} · ${w.status}`);
+      break;
+    }
     if (sub === "get") {
-      const id = args[1];
-      if (!id) fail("Usage: openroly work get <id>");
+      const rawId = args[1];
+      if (!rawId) fail("Usage: openroly work get <id>");
+      const id = await resolveListedWorkId(url, cred.token, rawId);
       const res = await apiCall(url, `/v1/works/${encodeURIComponent(id)}`, { token: cred.token });
       if (res.status !== 200) fail(worksErr(res.status, res.body));
       const w = res.body as Record<string, unknown>;
@@ -2274,7 +2695,12 @@ switch (command) {
         break;
       }
       console.log(`${w.id}  ${w.title}`);
-      console.log(`  status: ${w.status} · visibility: ${w.visibility} · priority: ${w.priority} · place: ${place(w.owner, who?.body?.id)}`);
+      {
+        const owned = place(w.owner, who?.body?.id); // PBI-0645: 欠落値は列ごと出さない
+        console.log(
+          `  status: ${w.status} · visibility: ${w.visibility} · priority: ${w.priority}${owned === null ? "" : ` · place: ${owned}`}`,
+        );
+      }
       console.log(
         w.lease_holder_run
           ? `  lease: ${w.lease_holder_run} (epoch ${w.lease_epoch}, acquired ${w.lease_acquired_at})`
@@ -2300,7 +2726,10 @@ switch (command) {
             .filter((e) => e.kind === "orchestration" && String(e.payload?.stage ?? "").startsWith("continue_guard_"))
             .at(-1)?.payload
         : undefined;
-      if (guard) {
+      const leaseLive =
+        w.lease_holder_run != null && (w.lease_expires_at == null || new Date(String(w.lease_expires_at)) > new Date());
+      // PBI-0686 / dogfood F28: 今の lease が生きている間は古い guard を出さない（出すと「もう一度 continue」になる）
+      if (guard && !leaseLive) {
         const after = typeof guard.last_tool === "string" ? ` after a "${guard.last_tool}" tool call` : "";
         console.log(
           guard.stage === "continue_guard_rewake"
@@ -2364,8 +2793,153 @@ switch (command) {
       if (!wake.ok) console.log(`  not woken: ${wake.reason} — the branch stays ready; work_accept ${work.id} picks it up`);
       break;
     }
+    // PBI-0648: 裁定を 1 行書く / task の裁定を読む(MCP の work_review・readTaskReview と同じ形)。
+    // 本文は他の context と同じ端末の CAS に載り、server には索引だけが出る
+    const credKindOf = () => Object.keys(creds.runtimes).find((k) => creds.runtimes[k] === cred) ?? "default";
+    const readTaskReview = async (taskId: string): Promise<{ body: unknown; round: number }> => {
+      const res = await apiCall(url, `/v1/works/${encodeURIComponent(taskId)}/context?key=${encodeURIComponent(TASK_REVIEW_KEY)}`, {
+        token: cred.token,
+      });
+      if (res.status !== 200) fail(worksErr(res.status, res.body));
+      // 親の Work Project の行(scope project)は数えない —— task 自身に付いた裁定だけが門を開ける
+      const row = (res.body as { entries: ContextIndexRow[] }).entries.find(
+        (e) => e.kind === "context" && e.key === TASK_REVIEW_KEY && e.scope !== "project",
+      );
+      if (!row) return { body: null, round: 0 };
+      const kind = credKindOf();
+      const resolved = await resolveContextEntries([row], {
+        account: { call: e2eeCallFor(url, cred.token, kind), deviceKind: kind },
+        cwd: process.cwd(),
+      });
+      const entry = resolved.entries[0] as { value?: unknown; missing_on_device?: boolean } | undefined;
+      return { body: entry?.missing_on_device === true ? null : (entry?.value ?? null), round: row.version };
+    };
+    // PBI-0649: task の持ち場を読む(MCP の resolveBrief と同じ形)。brief 無しは null = 今まで通り全部許す。
+    // 行は在るのに値が来なかった(この端末に無い・形が違う)物は null 側 = 合流は fail-closed で断る
+    const readTaskBrief = async (taskId: string): Promise<{ allowed: string[] | null; forbidden: string[] | null } | null> => {
+      const res = await apiCall(url, `/v1/works/${encodeURIComponent(taskId)}/context?prefix=${encodeURIComponent("brief/")}`, {
+        token: cred.token,
+      });
+      if (res.status !== 200) fail(worksErr(res.status, res.body));
+      const rows = (res.body as { entries: ContextIndexRow[] }).entries.filter(
+        (e) => e.kind === "context" && e.scope !== "project" && (WORK_CONTEXT_BRIEF_KEYS as readonly string[]).includes(e.key),
+      );
+      if (rows.length === 0) return null;
+      const kind = credKindOf();
+      const resolved = await resolveContextEntries(rows, {
+        account: { call: e2eeCallFor(url, cred.token, kind), deviceKind: kind },
+        cwd: process.cwd(),
+      });
+      const pick = (key: string): string[] | null => {
+        if (!rows.some((r) => r.key === key)) return [];
+        const e = resolved.entries.find((x) => x.key === key) as { value?: unknown; missing_on_device?: boolean } | undefined;
+        return e == null || e.missing_on_device === true ? null : briefPaths(e.value);
+      };
+      return { allowed: pick(TASK_BRIEF_KEYS.allowed), forbidden: pick(TASK_BRIEF_KEYS.forbidden) };
+    };
+    const briefScopeCell = (b: { allowed: string[] | null; forbidden: string[] | null } | null): string =>
+      b == null ? "-" : `${b.allowed?.length ?? "?"} allowed / ${b.forbidden?.length ?? "?"} forbidden`;
+    // PBI-0649: 持ち場を書き直す / 許す口(渡す側 = human と task を出す run だけが書ける予約 key)。
+    // `outside_scope` で止まった task を人が進められる唯一の道なので、読む口(work context)と対にして持つ
+    if (sub === "brief") {
+      const id = args[1];
+      if (!id || id.startsWith("--")) {
+        fail('Usage: openroly work brief <task> [--allowed <prefix>]... [--forbidden <prefix>]... [--done "<text>"] [--clear]');
+      }
+      const listOf = (flag: string) => args.flatMap((a, i) => (a === flag && args[i + 1] !== undefined ? [args[i + 1]!] : []));
+      const clear = args.includes("--clear");
+      const done = flagValue("--done");
+      const context: Record<string, unknown> = {};
+      for (const [flag, key] of [["--allowed", TASK_BRIEF_KEYS.allowed], ["--forbidden", TASK_BRIEF_KEYS.forbidden]] as const) {
+        const paths = listOf(flag);
+        if (paths.length === 0 && !clear) continue;
+        if (briefPaths(paths) === null) {
+          fail(`NG invalid_brief: ${flag} takes repo-relative path prefixes matched by prefix only — no globs, no leading "/", no ".."`);
+        }
+        context[key] = paths;
+      }
+      if (done !== undefined) context[TASK_BRIEF_KEYS.done] = done;
+      if (Object.keys(context).length === 0) {
+        fail("NG nothing to write — pass --allowed / --forbidden / --done, or --clear to hand over an empty scope");
+      }
+      const entries = await Promise.all(Object.entries(context).map(([k, v]) => prepareContextValue(k, v)));
+      const res = await apiCall(url, `/v1/works/${encodeURIComponent(id)}/context`, { method: "PUT", token: cred.token, body: { entries } });
+      if (res.status !== 200) {
+        fail(res.status === 404 ? worksErr(404, res.body) : `NG ${(res.body as any)?.error?.code ?? `HTTP ${res.status}`}`);
+      }
+      if (jsonMode) {
+        jsonOut(true, { task_id: id, brief: context });
+        break;
+      }
+      console.log(`OK brief on ${id} · ${briefScopeCell(await readTaskBrief(id))}`);
+      break;
+    }
+    if (sub === "review") {
+      const id = args[1];
+      const verdict = TASK_REVIEW_VERDICTS.find((v) => args.includes(`--${v.replace(/_/g, "-")}`));
+      if (!id || !verdict) fail("Usage: openroly work review <task> --accept|--changes-requested|--reject [--feedback <s>]");
+      const feedback = flagValue("--feedback");
+      const entry = await prepareContextValue(TASK_REVIEW_KEY, {
+        verdict,
+        ...(feedback !== undefined ? { feedback } : {}),
+        at: new Date().toISOString(),
+      });
+      // 同時に 2 人が裁定したら 1 本だけ通す(負けた側は 409 stale_version)。読んだ版を名乗って書く
+      const res = await apiCall(url, `/v1/works/${encodeURIComponent(id)}/context`, {
+        method: "PUT",
+        token: cred.token,
+        body: { entries: [{ ...entry, expected_version: (await readTaskReview(id)).round }] },
+      });
+      if (res.status !== 200) {
+        fail(res.status === 404 ? worksErr(404, res.body) : `NG ${(res.body as any)?.error?.code ?? `HTTP ${res.status}`}`);
+      }
+      const round = (res.body as { entries: { version: number }[] }).entries[0]?.version ?? 1;
+      if (jsonMode) {
+        jsonOut(true, { task_id: id, verdict, round });
+        break;
+      }
+      console.log(
+        verdict === "accept"
+          ? `OK ${id} accepted — 'openroly work task merge <project> ${id}' brings it back`
+          : `OK ${id} ${verdict} (round ${round})`,
+      );
+      break;
+    }
+    // PBI-0648(AC-6): Work Project の task 一覧。merge(合流)と review(裁定)を 1 行で
+    if (sub === "team") {
+      const id = args[1];
+      if (!id) fail("Usage: openroly work team <project>");
+      const res = await apiCall(url, `/v1/works/${encodeURIComponent(id)}/team`, { token: cred.token });
+      if (res.status !== 200) fail(worksErr(res.status, res.body));
+      const team = res.body as {
+        project: { title?: string };
+        tasks: { id: string; title?: string; status?: string; merge?: string | null }[];
+      };
+      const rows: { task: (typeof team.tasks)[number]; review: string; scope: string }[] = await Promise.all(
+        team.tasks.map(async (t) => {
+          const r = await readTaskReview(t.id);
+          return { task: t, review: taskReviewCell(taskReviewVerdict(r.body), r.round), scope: briefScopeCell(await readTaskBrief(t.id)) };
+        }),
+      );
+      if (jsonMode) {
+        jsonOut(true, {
+          project: team.project,
+          tasks: rows.map((r) => ({ ...r.task, merge: r.task.merge ?? "not_started", review: r.review, scope: r.scope })),
+        });
+        break;
+      }
+      console.log(`${team.project.title} · ${rows.length} task${rows.length === 1 ? "" : "s"}`);
+      for (const { task: t, review, scope } of rows) {
+        console.log(
+          fitLine(
+            `  ${shortId(t.id, verboseMode)}  ${String(t.status).padEnd(10)} ${String(t.merge ?? "not_started").padEnd(13)} ${review.padEnd(20)} ${scope.padEnd(24)} ${t.title}`,
+          ),
+        );
+      }
+      break;
+    }
     // PBI-0447: task の folder を今の cwd(Work Project の作業ツリー)へ合流(図80c ⑥)。MCP の work_task_merge と同じ門の順 ——
-    // team で project の task か → folder(worktree_missing)→ mergeTaskFolder → applied / conflict を task の events へ
+    // team で project の task か → 証拠と裁定の門(PBI-0648)→ folder(worktree_missing)→ mergeTaskFolder → applied / conflict を task の events へ
     if (sub === "task") {
       const [verb, project, task] = [args[1], args[2], args[3]];
       if (verb !== "merge" || !project || !task) fail("Usage: openroly work task merge <project> <task>");
@@ -2375,13 +2949,25 @@ switch (command) {
       if (team.project.id !== project || !team.tasks.some((t) => t.id === task)) {
         fail(`NG not_on_team: ${task} is not a task of Work Project ${project} — nothing was merged`);
       }
+      // PBI-0648: 証拠(passed の proof)と裁定(accept)の門。**作業ツリーに触る前**に断る
+      const pres = await apiCall(url, `/v1/works/${encodeURIComponent(task)}/proofs`, { token: cred.token });
+      if (pres.status !== 200) fail(worksErr(pres.status, pres.body));
+      const gate = decideTaskMerge(pres.body as { status: string }[], (await readTaskReview(task)).body);
+      if (!gate.ok) {
+        fail(`NG ${gate.reason}: ${task} cannot be merged yet (openroly work team ${project}) — nothing was merged`);
+      }
+      // PBI-0649: 持ち場の門。在るのに読めないなら断る(「読めないから全部許す」に倒さない)
+      const brief = await readTaskBrief(task);
+      if (brief != null && brief.forbidden === null) {
+        fail(`NG brief_unreadable: ${task} has ${TASK_BRIEF_KEYS.forbidden}, but its text cannot be read on this device — nothing was merged`);
+      }
       let d: MergeDecision;
       try {
-        d = mergeTaskFolder(join(openrolyHome(), "worktrees", task), process.cwd());
+        d = mergeTaskFolder(join(openrolyHome(), "worktrees", task), process.cwd(), brief?.forbidden ?? []);
       } catch (e) {
         fail(`NG ${e instanceof Error ? e.message : String(e)}`);
       }
-      if (d.result === "applied" || d.result === "conflict") {
+      if (d.result === "applied" || d.result === "conflict" || d.result === "outside_scope") {
         const rec = await apiCall(url, `/v1/works/${encodeURIComponent(task)}/merges`, {
           method: "POST",
           token: cred.token,
@@ -2396,6 +2982,12 @@ switch (command) {
         break;
       }
       if (d.result === "busy") fail("NG busy: another git operation holds this repo's index.lock — nothing was applied");
+      if (d.result === "outside_scope") {
+        fail(
+          `NG outside_scope: ${d.paths.join(", ")} — outside the scope ${task} was handed. Nothing was applied and the task now needs you: ` +
+            `widen it with 'openroly work brief ${task} --forbidden <prefix>...' (or --clear), then merge again`,
+        );
+      }
       if (d.result === "conflict") fail(`NG conflict: ${d.paths.join(", ")} — nothing was applied`);
       console.log(
         d.result === "empty"
@@ -2511,6 +3103,73 @@ switch (command) {
       console.log(`OK claimed ${w.id} as ${w.lease_holder_run} (epoch ${w.lease_epoch})`);
       break;
     }
+    // PBI-0715: 終わった仕事を終わりにする(dogfood F64 / F65)。server には freeze(holder が居ても
+    // lease を落とす)と write の patch(status)が既に在る —— **CLI に口が無いだけ**なので、新しい保存も
+    // 新しい判定も作らない。**human actor(login した端末の broker)で叩く** —— stop_primary は explicit
+    // user intent が要り、runtime token では intent 門で落ちる(PBI-0679 と同じ理由)。
+    // 3 手(freeze → claim → write)の途中で落ちたら **どこまで進んだか**を言う —— epoch は進んだままなので、
+    // 「終わらなかった」とだけ言われると次に何を打てばいいか分からない
+    if (sub === "done") {
+      const id = args[1];
+      if (!id || id.startsWith("--")) fail("Usage: openroly work done <id>");
+      const doneCred = creds.runtimes.broker ?? cred;
+      const doneUrl = (baseUrl ?? doneCred.base_url).replace(/\/$/, "");
+      const at = (path: string) => `/v1/works/${encodeURIComponent(id)}${path}`;
+      const cur = await apiCall(doneUrl, at(""), { token: doneCred.token });
+      if (cur.status !== 200) fail(worksErr(cur.status, cur.body));
+      // 2 回目は status を書き直さない(AC-X2 冪等) —— freeze は epoch を必ず +1 するので、打つ度に進めない。
+      // ただし holder が残っている done(古い版が書いた物)はここで手放す —— 残すと lease_held の種になる
+      if ((cur.body as Record<string, unknown>).status === "done") {
+        const held = (cur.body as Record<string, unknown>).lease_holder_run != null;
+        const rel = held
+          ? await apiCall(doneUrl, at("/freeze"), { method: "POST", token: doneCred.token, body: {} })
+          : null;
+        if (jsonMode) {
+          jsonOut(true, { work: rel?.status === 200 ? rel.body : cur.body, already_done: true });
+          break;
+        }
+        console.log(
+          rel?.status === 200
+            ? `OK ${id} was already done — released the lease it was still holding`
+            : `OK ${id} is already done`,
+        );
+        break;
+      }
+      const fr = await apiCall(doneUrl, at("/freeze"), { method: "POST", token: doneCred.token, body: {} });
+      if (fr.status === 403) {
+        fail(
+          "NG human_only: only a person can finish a work — this terminal has no credential of its own.\n" +
+            "  Run 'openroly login' on this Mac.",
+        );
+      }
+      if (fr.status !== 200) fail(worksErr(fr.status, fr.body));
+      const runId = `cli-done-${Date.now().toString(36)}`;
+      const cl = await apiCall(doneUrl, at("/claim"), { method: "POST", token: doneCred.token, body: { runId } });
+      if (cl.status !== 200) fail(`NG the lease was released but the claim failed: ${worksErr(cl.status, cl.body)}`);
+      const epoch = (cl.body as { lease_epoch: number }).lease_epoch;
+      const wr = await apiCall(doneUrl, at("/write"), {
+        method: "POST",
+        token: doneCred.token,
+        body: { runId, expectedWriteEpoch: epoch, patch: { status: "done" } },
+      });
+      if (wr.status !== 200) {
+        fail(`NG claimed as ${runId} (epoch ${epoch}) but the write failed: ${worksErr(wr.status, wr.body)}`);
+      }
+      // 書いた後に lease を手放す —— `cli-done-*` を holder に残すと「lease is released」が嘘になり、
+      // 次に誰かが claim しようとして lease_held で落ちる(F64 と同じ形の残骸を自分で作らない)
+      const rel = await apiCall(doneUrl, at("/freeze"), { method: "POST", token: doneCred.token, body: {} });
+      const w = (rel.status === 200 ? rel.body : wr.body) as Record<string, unknown>;
+      if (jsonMode) {
+        jsonOut(true, { work: w, lease_released: rel.status === 200 });
+        break;
+      }
+      console.log(
+        rel.status === 200
+          ? `OK done "${w.title}" (${w.id}) — the lease is released and it leaves 'work list'`
+          : `OK done "${w.title}" (${w.id}) — but the lease is still held by ${runId} (freeze returned ${rel.status})`,
+      );
+      break;
+    }
     // PBI-0397 / D2: thread を work へ昇格する(triage action だけ)。2 回目は 409 で同じ work を
     // 教える — 「もう昇格済み」は失敗ではなく冪等なのので OK 行で出す(exit 0)
     // PBI-0623: 自分で始めた仕事を Work にする(dogfood F2)。**root work は人の手だけ**なので、
@@ -2551,6 +3210,48 @@ switch (command) {
           fail(`NG created ${w.id}, but handing it off failed: ${h.body?.error?.code ?? `HTTP ${h.status}`}`);
         }
         w = h.body as Record<string, unknown>;
+      }
+      // dogfood F52: 空の work は continue が no_lease。dest cred があれば claim してから continue が起こす（0693 の口）。
+      if (to !== undefined) {
+        const destCred = lookupRuntimeCredential(creds.runtimes, to);
+        if (destCred) {
+          const claimed = await apiCall(startUrl, `/v1/works/${encodeURIComponent(String(w.id))}/claim`, {
+            method: "POST",
+            token: destCred.token,
+            body: { runId: mcpSessionRunId(to) },
+          });
+          if (claimed.status === 200) w = claimed.body as Record<string, unknown>;
+          if (!jsonMode) {
+            console.log(`OK started ${w.id}  ${w.title}`);
+            if (w.handled_runtime_id) console.log(`  handed to ${w.handled_runtime_id}${note ? ` · ${note}` : ""}`);
+          }
+          const child = Bun.spawn(
+            [
+              process.execPath,
+              fileURLToPath(import.meta.url),
+              "continue",
+              String(w.id),
+              "--to",
+              to,
+              "--no-wait",
+              ...(jsonMode ? ["--json"] : []),
+            ],
+            { stdout: jsonMode ? "pipe" : "inherit", stderr: "inherit", env: process.env },
+          );
+          const code = await child.exited;
+          if (jsonMode) {
+            const out = await new Response(child.stdout).text();
+            let cont: unknown = null;
+            try {
+              cont = JSON.parse(out);
+            } catch {
+              cont = out;
+            }
+            jsonOut(true, { work: w, continue: cont, continue_ok: code === 0 });
+            break;
+          }
+          break;
+        }
       }
       if (jsonMode) {
         jsonOut(true, { work: w });
@@ -2614,9 +3315,35 @@ switch (command) {
     }
     // PBI-0395: event log の読み出し。人間向けの見出しは list と同じ identity 起点
     // (@handle · N events on <id>)。--after は work_sequence cursor(差分取得)
-    if (sub === "events") {
+    // PBI-0657: 1 Work = N Run。同じ engine を 3 本並べても、常駐 run が居ても、ここに列として出る
+    if (sub === "runs") {
       const id = args[1];
-      if (!id) fail("Usage: openroly work events <id> [--after <n>]");
+      if (!id) fail("Usage: openroly work runs <id>");
+      const res = await apiCall(url, `/v1/works/${encodeURIComponent(id)}/runs`, { token: cred.token });
+      if (res.status !== 200) fail(worksErr(res.status, res.body));
+      const runs = res.body as Record<string, unknown>[];
+      if (jsonMode) {
+        jsonOut(true, { runs });
+        break;
+      }
+      console.log(`${shortId(id, verboseMode)} · ${runs.length} run${runs.length === 1 ? "" : "s"}`);
+      for (const r of runs) {
+        const cols = [
+          shortId(r.id, verboseMode),
+          String(r.status).toUpperCase().padEnd(8),
+          String(r.write_scope).padEnd(8),
+          runElapsed(r.started_at, r.ended_at).padStart(5),
+        ];
+        // 欠落値は列ごと出さない(PBI-0645 の既定)
+        for (const v of [r.model, r.runtime_id, r.assignment]) if (v != null && v !== "") cols.push(String(v));
+        console.log(fitLine(`  ${cols.join("  ")}`));
+      }
+      break;
+    }
+    if (sub === "events") {
+      const rawId = args[1];
+      if (!rawId) fail("Usage: openroly work events <id> [--after <n>]");
+      const id = await resolveListedWorkId(url, cred.token, rawId);
       const after = flagValue("--after");
       if (after !== undefined && !/^\d+$/.test(after.trim())) {
         fail("--after takes a non-negative integer (a work_sequence cursor)");
@@ -2630,19 +3357,55 @@ switch (command) {
         break;
       }
       const who = await apiCall(url, "/v1/whoami", { token: cred.token }).catch(() => null);
-      console.log(`@${who?.body?.handle ?? "you"} · ${events.length} event${events.length === 1 ? "" : "s"} on ${id}`);
-      for (const e of events) {
+      // PBI-0645: **既定は意味のある event だけ**。`edited` / `orchestration` / `dispatch` は
+      // 中身の無い版上げで、11 件のうち 10 件がそれだった(hero GIF の実測)。伏せた数は必ず 1 行で言う
+      const showAll = args.includes("--all") || verboseMode;
+      // PBI-0657: `run.requested`(§36 の「なぜこの Run が要ったか」)は orchestration だが**伏せない** ——
+      // 中身の無い版上げではなく、人が読む 1 行(伏せると timeline に理由が出ない)
+      const shown = showAll
+        ? events
+        : events.filter(
+            (e) =>
+              !QUIET_EVENT_KINDS.has(String(e.kind)) ||
+              (e.payload as Record<string, unknown> | null)?.stage === "run.requested",
+          );
+      const hidden = events.length - shown.length;
+      console.log(
+        `@${who?.body?.handle ?? "you"} · ${events.length} event${events.length === 1 ? "" : "s"} on ${shortId(id, verboseMode)}` +
+          (hidden > 0 ? ` (${hidden} routine hidden — --all)` : ""),
+      );
+      for (const e of shown) {
         const p = (e.payload ?? {}) as Record<string, unknown>;
+        // 欠落した数は書かない(`- passed / - failed` は「0 件」ではなく「知らない」)
+        const counts = typeof p.passed === "number" || typeof p.failed === "number"
+          ? `${p.passed ?? 0} passed / ${p.failed ?? 0} failed`
+          : "";
         const hint = e.kind === "proof_added"
-          ? `${String(p.status)} · ${p.passed ?? "-"} passed / ${p.failed ?? "-"} failed`
+          ? [p.status == null ? "" : String(p.status), counts].filter(Boolean).join(" · ")
           : e.kind === "comment_added"
             ? String(p.body ?? "")
             : e.kind === "diagnostic"
               ? String(p.code ?? "")
-              : "";
+              : p.stage === "run.requested"
+                ? `run.requested ${String(p.write_scope ?? "")} ${runReason(p)}`.trim()
+                : "";
         console.log(
-          `  #${String(e.work_sequence).padEnd(4)} ${String(e.kind).padEnd(16)} ${String(e.run_id ?? "-")}  ${hint}`.trimEnd(),
+          fitLine(
+            `  #${String(e.work_sequence).padEnd(4)} ${String(e.kind).padEnd(16)} ${e.run_id == null ? "" : shortId(e.run_id, verboseMode)}  ${hint}`.trimEnd(),
+          ),
         );
+      }
+      // PBI-0693 / dogfood F19: create は event 表に 0 行。work 行の created_at を台帳の起点にする。
+      if (shown.length === 0 && events.length === 0 && after === undefined) {
+        const one = await apiCall(url, `/v1/works/${encodeURIComponent(id)}`, { token: cred.token });
+        if (one.status === 200) {
+          const w = one.body as { title?: unknown; created_at?: unknown; owner?: unknown };
+          console.log(
+            fitLine(
+              `  created  ${String(w.created_at ?? "")}  ${String(w.title ?? "")}  ${String(w.owner ?? "")}`.trimEnd(),
+            ),
+          );
+        }
       }
       break;
     }
@@ -2708,7 +3471,12 @@ switch (command) {
       const id = args[1] && !args[1].startsWith("--") ? args[1] : undefined;
       const reason = flagValue("--reason");
       const resetsAt = flagValue("--resets-at");
-      if (!reason) fail("Usage: openroly work stalled [<id>] --reason usage_limit [--resets-at <iso8601>]");
+      if (!reason) fail("Usage: openroly work stalled [<id>] --reason usage_limit [--resets-at <iso8601>] [--runtime <kind>]");
+      // PBI-0720: 代理で書く時に id を省くと、自分の live lease から 1 本を推測してしまう
+      // (hook の道)。他人の止まりを自分の work に付ける事故になるので明示させる
+      if (flagValue("--runtime") !== undefined && id === undefined) {
+        fail("NG --runtime needs the work id: openroly work stalled <id> --reason usage_limit --runtime <kind>");
+      }
       if (!(STALL_REASONS as readonly string[]).includes(reason)) {
         fail(`NG invalid reason: ${reason} (--reason must be one of: ${STALL_REASONS.join(", ")})`);
       }
@@ -2750,6 +3518,7 @@ switch (command) {
         payload: (x.payload ?? null) as Record<string, unknown> | null,
         createdAt: new Date(String(x.occurred_at)),
       })))) {
+        await ensureStallCapsule(url, cred.token, target, w, reason);
         if (jsonMode) {
           jsonOut(true, { work_id: target, event: null, already_stalled: true });
           break;
@@ -2757,15 +3526,22 @@ switch (command) {
         console.log(`OK ${target} already recorded as stalled (${reason}) — nothing appended`);
         break;
       }
-      const credKind = Object.keys(creds.runtimes).includes("claude")
+      // PBI-0720: 既定は「自分が止まった」だが、**止まった本人は打てない**のが普通(hook を持たない
+      // runtime = MCP 直・手元で開いた session)。--runtime <kind> で他者が代理で書く。
+      // 値は照合しない —— pair 済みの kind と突き合わせると「死んだ runtime は pair 済みなので通る」
+      // だけで何も守らず、往復が 1 つ増える。綴りを誤れば continue 側の絞りが効かない = 今までと同じ
+      const credKind = flagValue("--runtime") ?? (Object.keys(creds.runtimes).includes("claude")
         ? "claude"
-        : (Object.keys(creds.runtimes)[0] ?? "unknown");
+        : (Object.keys(creds.runtimes)[0] ?? "unknown"));
+      // capsule を先に積む。後だと capsule の event が末尾になり stallOf が「再開済み」と誤読する
+      await ensureStallCapsule(url, cred.token, target, w, reason);
+      const w2 = (await apiCall(url, `/v1/works/${encodeURIComponent(target)}`, { token: cred.token })).body as Record<string, unknown>;
       const res = await apiCall(url, `/v1/works/${encodeURIComponent(target)}/events`, {
         method: "POST",
         token: cred.token,
         body: {
-          runId: w.lease_holder_run,
-          expectedWriteEpoch: w.lease_epoch,
+          runId: w2.lease_holder_run ?? w.lease_holder_run,
+          expectedWriteEpoch: w2.lease_epoch ?? w.lease_epoch,
           kind: "diagnostic",
           payload: {
             code: "orphaned_session", // workboard の diagnostic 7 値のうち「session が置き去り」が最も近い
@@ -3129,8 +3905,29 @@ switch (command) {
   // work transfer と同じ既存の経路(FREEZE → capsule → ROUTE → CLAIM 待ち)を回す。capsule は源の
   // 最新版をこの端末の CAS から写す(写せ無い時だけ最小の 1 本 = 説明し直しを CLI 側で作らない)
   case "continue": {
+    if (args.includes("--help") || args.includes("-h")) {
+      console.log(
+        "Usage: openroly continue [<id>] [--to <runtime>] [--no-wait] [--json]\n" +
+          "  Pick up unfinished work (live lease first, then lapsed, then a failed handoff).\n" +
+          "  <id> may be a unique prefix from 'openroly work list'. --to also applies to lapsed work.\n" +
+          "  If this runtime is the standing owner (same as 'work current'), that work is picked.",
+      );
+      break;
+    }
     const to = flagValue("--to");
     const noWait = args.includes("--no-wait");
+    // --to の値を work id と取り違えない（`continue --to opencode` の opencode は id ではない）
+    let namedId: string | undefined;
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i]!;
+      if (a === "--no-wait" || a === "--help" || a === "-h" || a === "--json") continue;
+      if (a.startsWith("--")) {
+        if (a === "--to") i += 1;
+        continue;
+      }
+      namedId = a;
+      break;
+    }
     // PBI-0557: 成功行に付ける止まりの 1 節。止まっていなければ空文字(何も変わらない)。
     // case の中で宣言する(case 間に置くと TDZ — switch は 1 block scope の為、label jump で
     // 初期化前に参照される)
@@ -3142,20 +3939,59 @@ switch (command) {
       return ` (${who} stopped at a usage limit ${mins}m ago)`;
     };
     const creds = await loadCredentials();
-    const cred = creds.runtimes.claude ?? Object.values(creds.runtimes)[0];
+    // PBI-0679: 人が login した端末の broker を先に使う（claude の runtime token だと intent 門で落ちる）
+    const cred = creds.runtimes.broker ?? creds.runtimes.claude ?? Object.values(creds.runtimes)[0];
     if (!cred) fail("NG not paired yet. Run 'openroly login' first");
     const url = (baseUrl ?? cred.base_url).replace(/\/$/, "");
     const lres = await apiCall(url, "/v1/works", { token: cred.token });
     if (lres.status !== 200) fail(`NG HTTP ${lres.status}`);
-    const works = (lres.body as Record<string, unknown>[]).map((w) => ({
-      id: String(w.id),
-      title: String(w.title ?? ""),
-      status: String(w.status ?? ""),
-      holderRun: w.lease_holder_run == null ? null : String(w.lease_holder_run),
-      leaseExpiresAt: w.lease_expires_at == null ? null : new Date(String(w.lease_expires_at)),
-      updatedAt: new Date(String(w.updated_at ?? 0)),
-      failedHandoff: w.released_by_failed_handoff === true, // PBI-0578: 失敗した handoff の後も一言で拾い直す
-    })) as ContinueWorkInput[];
+    let rres = await apiCall(url, "/v1/runtimes", { token: cred.token });
+    if (rres.status !== 200) {
+      for (const c of Object.values(creds.runtimes)) {
+        if (c.token === cred.token) continue;
+        rres = await apiCall(url, "/v1/runtimes", { token: c.token });
+        if (rres.status === 200) break;
+      }
+    }
+    const runtimeRows = rres.status === 200
+      ? (rres.body as { id?: string; runtime_id?: string; kind: string }[]).map((r) => ({
+        id: r.id ?? r.runtime_id ?? "",
+        kind: r.kind,
+      }))
+      : [];
+    // PBI-0721 / dogfood F66: `GET /v1/runtimes` は requireHuman(human actor 専用)。CLI の credential は
+    // broker を含めて全部 runtime actor なので、実測では 3 本とも 403 human_only だった。相手が 1 本も
+    // 見えないと `--to` 無しの continue が継げなくなるので、**この端末が pair した credential** で埋める
+    // —— `openroly status` が 26 runtime を出せているのと同じ材料(server には聞いていない)。
+    // 200 が返る時(human token を持つ端末)はそちらが正本で、ここは触らない
+    const localRows = Object.entries(creds.runtimes)
+      .filter(([, c]) => typeof c.runtime_id === "string" && c.runtime_id !== "")
+      .map(([kind, c]) => ({ id: c.runtime_id as string, kind }));
+    const knownRows = runtimeRows.length > 0 ? runtimeRows : localRows;
+    const pairedKinds = [...new Set(knownRows.map((r) => r.kind))];
+    const kindById = new Map(knownRows.map((r) => [r.id, r.kind]));
+    let target = to;
+    if (target !== undefined) target = resolvePairedRuntimeKind(target, pairedKinds);
+    const works = (lres.body as Record<string, unknown>[]).map((row) => {
+      const ownerId = typeof row.owner_runtime_id === "string" ? row.owner_runtime_id : null;
+      const handled = typeof row.handled_runtime_id === "string" ? row.handled_runtime_id : null;
+      const runtimeKind = (ownerId != null ? kindById.get(ownerId) : undefined)
+        ?? (handled != null && !handled.startsWith("rt_") ? handled : undefined)
+        ?? (handled != null ? kindById.get(handled) : undefined)
+        ?? null;
+      return {
+        id: String(row.id),
+        title: String(row.title ?? ""),
+        status: String(row.status ?? ""),
+        holderRun: row.lease_holder_run == null ? null : String(row.lease_holder_run),
+        leaseExpiresAt: row.lease_expires_at == null ? null : new Date(String(row.lease_expires_at)),
+        updatedAt: new Date(String(row.updated_at ?? 0)),
+        failedHandoff: row.released_by_failed_handoff === true,
+        runtimeKind,
+        handledRuntimeId: handled,
+        leaseAcquiredAt: row.lease_acquired_at == null ? null : new Date(String(row.lease_acquired_at)),
+      };
+    }) as ContinueWorkInput[];
     // events が読めない work は「止まっていない」扱いで続ける
     const readStall = async (id: string) => {
       const ev = await apiCall(url, `/v1/works/${encodeURIComponent(id)}/events`, { token: cred.token });
@@ -3168,20 +4004,68 @@ switch (command) {
         })),
       );
     };
-    let pick = pickContinueWork(works, new Date());
-    // PBI-0557: live が複数で絞り切れない時だけ、候補の events を読んで usage limit で止まった
-    // 物が 1 本ならそれへ絞る(AC-3)。読むのは ambiguous の一覧だけ(N+1 を防ぐ)
-    if (pick.kind === "ambiguous" && !pick.lapsed) {
-      for (const x of pick.works) x.stalled = await readStall(x.id);
-      pick = pickContinueWork(works, new Date());
+    // PBI-0557 / PBI-0686: live が複数なら --to で最新を取る前に stall を読む。
+    // 読まないと 0684 の「居ない箱の最新」が usage-limit の 1 本より先に勝ち、止まった仕事を飛ばす。
+    if (!namedId) {
+      const now = new Date();
+      const liveMany = works.filter(
+        (row) => row.holderRun != null && row.status !== "done" && (row.leaseExpiresAt == null || row.leaseExpiresAt > now),
+      );
+      if (liveMany.length > 1) {
+        for (const x of liveMany) x.stalled = await readStall(x.id);
+      }
     }
-    if (pick.kind === "none") {
+    const selfKind = target ?? process.env.OPENROLY_RUNTIME_KIND ?? (creds.runtimes.grok ? "grok" : creds.runtimes["local-grok"] ? "local-grok" : creds.runtimes.claude ? "claude" : null);
+    const selfCred = selfKind != null ? lookupRuntimeCredential(creds.runtimes, selfKind) : undefined;
+    const selfRuntimeId =
+      selfCred?.runtime_id
+      ?? (selfKind != null ? runtimeRows.find((r) => r.kind === selfKind)?.id : undefined)
+      ?? null;
+    let pick = namedId
+      ? null
+      : pickContinueWork(works, new Date(), {
+          ...(target !== undefined ? { toKind: target } : {}),
+          self: { runtimeId: selfRuntimeId, kind: selfKind },
+        });
+    if (namedId) {
+      const hit = matchWorkId(works.map((row) => row.id), namedId);
+      if (hit.kind === "none") fail("NG no such work");
+      if (hit.kind === "many") {
+        fail(
+          `NG ambiguous — more than one work starts with '${namedId}'; name it with a longer id:\n${hit.ids.map((id) => `  ${id}`).join("\n")}`,
+          2,
+        );
+      }
+      const named = works.find((row) => row.id === hit.id);
+      if (!named) fail("NG no such work");
+      pick = { kind: "work", work: named, lapsed: false };
+    }
+    if (pick == null || pick.kind === "none") {
       fail("NG nothing to continue — no unfinished work holds a lease ('openroly work list')");
     }
     if (pick.kind === "ambiguous") {
       const lease = pick.lapsed ? "lease lapsed" : "lease live";
+      const lines: string[] = [];
+      for (const x of pick.works) {
+        let payload: unknown = null;
+        const caps = await apiCall(url, `/v1/works/${encodeURIComponent(x.id)}/capsules`, { token: cred.token });
+        if (caps.status === 200 && Array.isArray(caps.body)) {
+          const latest = (caps.body as { body: { payload_hash?: string } | null }[]).at(-1);
+          if (latest?.body?.payload_hash) {
+            payload = await readCasPayload(latest.body.payload_hash).catch(() => null);
+          }
+        }
+        const one = await apiCall(url, `/v1/works/${encodeURIComponent(x.id)}`, { token: cred.token });
+        const note =
+          one.status === 200 && typeof (one.body as { handoff_note?: unknown }).handoff_note === "string"
+            ? (one.body as { handoff_note: string }).handoff_note
+            : null;
+        lines.push(
+          `  ${x.id}  ${x.status}  ${x.title}  (${lease})\n    ${formatContinueCheckpoint({ payload, handoffNote: note, title: x.title })}`,
+        );
+      }
       fail(
-        `NG ambiguous — more than one work could be continued; name it with 'openroly work transfer <id> --to <runtime>':\n${pick.works.map((x) => `  ${x.id}  ${x.status}  ${x.title}  (${lease})`).join("\n")}`,
+        `NG ambiguous — more than one work could be continued; name it with 'openroly continue <id> --to <runtime>':\n${lines.join("\n")}`,
         2,
       );
     }
@@ -3189,18 +4073,28 @@ switch (command) {
     // 止まった work が 1 本だけ(= 絞り込みを通らない普段の形)でも成功行に止まりの節を出す
     if (W.stalled === undefined) W.stalled = await readStall(W.id);
     // --to 無し: headless で起こせる pairing 済み runtime に 1 本に絞れる時だけ黙って選ぶ(V10 の「候補まで」)
-    let target = to;
     if (target === undefined) {
-      const rres = await apiCall(url, "/v1/runtimes", { token: cred.token });
-      if (rres.status !== 200) fail(`NG cannot list runtimes (HTTP ${rres.status}) — pass --to <runtime>`);
-      const kinds = [...new Set((rres.body as { kind: string }[]).map((r) => r.kind))].filter((k) =>
-        HEADLESS_KINDS.includes(k),
-      );
-      if (kinds.length === 0) fail("NG no wakeable runtime is paired — pair one, or pass --to <runtime>");
+      if (pairedKinds.length === 0) fail(`NG cannot list runtimes (HTTP ${rres.status}) — pass --to <runtime>`);
+      const wakeable = pairedKinds.filter((k) => isWakeableKind(k, HEADLESS_KINDS));
+      if (wakeable.length === 0) fail("NG no wakeable runtime is paired — pair one, or pass --to <runtime>");
+      // PBI-0720: **止まった当人を継ぎ手の候補に出さない**。2026-09-18 実測では grok が rate limit で
+      // 落ちた直後に `--to grok` が他の 3 つと並び、owner が「どれが動けるのか」を画面から読めなかった。
+      // 絞った結果が 0 本(= 止まった当人しか pair されていない)の時は絞りを捨てる —— 候補を消すより、
+      // 「動くのはこれしか無い」を出す方が正しい
+      const stalledKind = W.stalled?.runtime ?? null;
+      const narrowed = stalledKind == null ? wakeable : wakeable.filter((k) => k !== stalledKind);
+      const kinds = narrowed.length > 0 ? narrowed : wakeable;
       if (kinds.length > 1) {
-        fail(`NG ambiguous — more than one runtime could take over; pass one:\n${kinds.map((k) => `  --to ${k}`).join("\n")}`, 2);
+        const left = kinds.length < wakeable.length ? `\n  (${stalledKind} left out — stopped at a usage limit)` : "";
+        fail(`NG ambiguous — more than one runtime could take over; pass one:\n${kinds.map((k) => `  --to ${k}`).join("\n")}${left}`, 2);
       }
-      target = kinds[0];
+      // PBI-0720: `kinds` は必ず 1 本以上(上で wakeable の空を落とし、narrowed が空なら wakeable に戻す)。
+      // それでも index access は `string | undefined` なので、ここで 1 度だけ締める ——
+      // 締めないと下流の `lookupRuntimeCredential(…, target)` が TS2345 で落ちる(09-17 以降 main に
+      // 入ったまま誰も測っていなかった赤。dogfood F62 で「引き継いだ側が自分の diff を疑う」形で 1 度刺さった)
+      const only = kinds[0];
+      if (only === undefined) fail("NG no wakeable runtime is paired — pair one, or pass --to <runtime>");
+      target = only;
     }
     const path = `/v1/works/${encodeURIComponent(W.id)}`;
     const wres = await apiCall(url, path, { token: cred.token });
@@ -3234,6 +4128,11 @@ switch (command) {
       const written = await writeCasPayload(built.body);
       manifest = buildManifest(built.body, { hash: written.hash, size: written.size, mode: "0600" });
     }
+    const checkpoint = formatContinueCheckpoint({
+      payload: sourcePayload,
+      handoffNote: typeof w.handoff_note === "string" ? w.handoff_note : null,
+      title: W.title,
+    });
     const cres = await apiCall(url, `${path}/capsules`, {
       method: "POST",
       token: cred.token,
@@ -3251,12 +4150,32 @@ switch (command) {
     if (rres2.status !== 200) stopped("capsule_ready", `route: ${rres2.body?.error?.code ?? `HTTP ${rres2.status}`}`);
     const transfer = (rres2.body as { transfer: Record<string, unknown> }).transfer;
     if (String(transfer.state) !== "routed") stopped(String(transfer.state), String(transfer.reason ?? "not routed"));
+    // 同じ端末に target の credential があれば --no-wait でも claimed まで終わる（dogfood F44）
+    const targetCred = lookupRuntimeCredential(creds.runtimes, target);
+    if (targetCred) {
+      const commit = await apiCall(url, `${path}/transfers/${encodeURIComponent(frozen.transfer_id)}/commit`, {
+        method: "POST",
+        token: targetCred.token,
+        body: { runId: mcpSessionRunId(target) },
+      });
+      if (commit.status === 200) {
+        const secs = ((Date.now() - start) / 1000).toFixed(1);
+        if (jsonMode) {
+          jsonOut(true, { transfer: commit.body?.transfer ?? commit.body, seconds: Number(secs) });
+          break;
+        }
+        console.log(`${target} picked up "${W.title}" in ${secs}s${stalledNote(W, target)}`);
+        console.log(checkpoint);
+        break;
+      }
+    }
     if (noWait) {
       if (jsonMode) {
         jsonOut(true, { transfer });
         break;
       }
       console.log(`OK continue ${frozen.transfer_id}: routed → ${target}${stalledNote(W, target)} (lease reserved until it accepts — 'openroly work get ${W.id}')`);
+      console.log(checkpoint);
       break;
     }
     // claimed まで待つ。この polling の GET が期限切れの transfer を畳むので、accept が 90 秒を過ぎると
@@ -3274,6 +4193,7 @@ switch (command) {
           break;
         }
         console.log(`${target} picked up "${W.title}" in ${secs}s${stalledNote(W, target)}`);
+        console.log(checkpoint);
         break;
       }
       if (t?.state === "failed") {
@@ -3282,6 +4202,35 @@ switch (command) {
       if (Date.now() - start > WORK_LIVENESS_TIMEOUT_SECS * 1000 + 10_000) {
         fail(`NG timed out waiting for ${target} to accept — 'openroly work get ${W.id}'`);
       }
+    }
+    break;
+  }
+
+  // PBI-0657 / 図88: Work をまたぐ Run の roll-up(§56)。work に属さない常駐 run もここに出る ——
+  // 「今この account で何が動いているか」を 1 画面で言える唯一の面
+  case "runs": {
+    const creds = await loadCredentials();
+    const cred = creds.runtimes.claude ?? Object.values(creds.runtimes)[0];
+    if (!cred) fail("NG not paired yet. Run 'openroly login' first");
+    const url = (baseUrl ?? cred.base_url).replace(/\/$/, "");
+    const res = await apiCall(url, "/v1/runs", { token: cred.token });
+    if (res.status !== 200) fail(`NG HTTP ${res.status}`);
+    const runs = res.body as Record<string, unknown>[];
+    if (jsonMode) {
+      jsonOut(true, { runs });
+      break;
+    }
+    const live = runs.filter((r) => r.ended_at == null).length;
+    console.log(`${runs.length} run${runs.length === 1 ? "" : "s"} · ${live} live`);
+    for (const r of runs) {
+      const cols = [
+        shortId(r.id, verboseMode),
+        String(r.status).toUpperCase().padEnd(8),
+        String(r.write_scope).padEnd(8),
+        runElapsed(r.started_at, r.ended_at).padStart(5),
+        String(r.work_title ?? "(no work)"),
+      ];
+      console.log(fitLine(`  ${cols.join("  ")}`));
     }
     break;
   }

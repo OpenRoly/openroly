@@ -44,7 +44,7 @@ describe("session brief", () => {
 
   test("要件 §19 の表示形になる", () => {
     expect(formatBrief(buildBrief(whoami, messages))).toBe(
-      ["Unread: 3", "- Shibu ×2", "- Ken ×1", "- (requests: 1)"].join("\n"),
+      ["Unread: 4", "- Shibu ×2", "- Ken ×1", "- (requests: 1)"].join("\n"),
     );
   });
 
@@ -58,7 +58,7 @@ describe("session brief", () => {
     const brief = buildBrief({ ...whoami, unread: 25 }, messages);
     expect(brief.senders).toEqual([]);
     expect(formatBrief(brief)).toBe(
-      ["Unread: 25", "- and 25 more", "- (requests: 1)"].join("\n"),
+      ["Unread: 26", "- and 25 more", "- (requests: 1)"].join("\n"),
     );
   });
 

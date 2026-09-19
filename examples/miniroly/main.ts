@@ -244,7 +244,7 @@ function brief(capsule: Capsule): string {
   const h = s.last_handoff; if (h) lines.push(`last handoff ${h.id}: ${h.state}, to ${h.to_runtime} at epoch ${h.reserved_epoch}`);
   const checkpoint = entry?.checkpoints.at(-1);
   if (!checkpoint) return lines.join("\n");
-  const base = checkpoint.based_on ? `, based on ${checkpoint.based_on.work_id ?? ""} v${checkpoint.based_on.version}` : "";
+  const base = checkpoint.based_on ? [", based on", checkpoint.based_on.work_id, `v${checkpoint.based_on.version}`].filter(Boolean).join(" ") : "";
   lines.push(`checkpoint v${checkpoint.version}, write epoch ${checkpoint.write_epoch}${base}`);
   for (const field of s.latest_checkpoint!.brief_sections) {
     const value = checkpoint.body[field];

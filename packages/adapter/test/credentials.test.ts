@@ -45,6 +45,16 @@ describe("credential store", () => {
     expect(await getCredential("hermes", env)).toBeUndefined();
   });
 
+  test("PBI-0690: grok と local-grok は同じ機械の別名", async () => {
+    const env = await tempEnv();
+    await saveCredential("local-grok", cred("local-grok"), env);
+    expect((await getCredential("grok", env))?.runtime_id).toBe("rt_local-grok");
+    expect((await getCredential("local-grok", env))?.runtime_id).toBe("rt_local-grok");
+    await saveCredential("grok", cred("grok"), env);
+    expect((await getCredential("grok", env))?.runtime_id).toBe("rt_grok");
+    expect((await loadCredentials(env)).runtimes["local-grok"]).toBeUndefined();
+  });
+
   test("同じ kind の再 pair は置き換え、別 kind は残る", async () => {
     const env = await tempEnv();
     await saveCredential("claude", cred("a"), env);

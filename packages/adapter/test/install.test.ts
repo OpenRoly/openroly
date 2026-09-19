@@ -25,6 +25,15 @@ const stub = Bun.serve({
   port: 0,
   fetch: (req) => {
     if (revoked) return Response.json({ error: "unauthorized" }, { status: 401 });
+    const path = new URL(req.url).pathname;
+    if (path === "/v1/inbox/messages") {
+      const token = req.headers.get("authorization");
+      if (token === "Bearer par_401msg") return Response.json({ error: "unauthorized" }, { status: 401 });
+      return Response.json([
+        { id: "msg_in", sender_display: "Your AI", bucket: "inbox", read: true, direction: "out" },
+        { id: "msg_req", sender_display: "Ryosuke Shibuya", bucket: "requests", read: false, direction: "in" },
+      ]);
+    }
     return Response.json({ agent_id: "agt_x", handle: "aya", unread: 0 });
   },
 });
@@ -100,6 +109,33 @@ describe("doctor", () => {
     expect(connection.ok).toBe(false);
     expect(connection.detail).toContain("revoked");
     revoked = false;
+  });
+
+  test("PBI-0709 AC-1: whoami unread 0 でも requests 未読 1 なら Account connection unread 1", async () => {
+    const findings = await doctorRuntime({ adapter: fakeAdapter, ctx, env: await envWithCredential() });
+    const connection = findings.find((f) => f.label === "Account connection")!;
+    expect(connection.ok).toBe(true);
+    expect(connection.detail).toContain("unread 1");
+    expect(findings.some((f) => f.label === "MCP source" && f.ok)).toBe(true);
+  });
+
+  test("PBI-0709 AC-X2: messages が 401 でも Account connection は inbox 件数", async () => {
+    const env = await envWithCredential();
+    await saveCredential(
+      "claude",
+      {
+        runtime_id: "rt_1",
+        token: "par_401msg",
+        base_url: base,
+        name: "MacBook / Claude Code",
+        paired_at: new Date().toISOString(),
+      },
+      env,
+    );
+    const findings = await doctorRuntime({ adapter: fakeAdapter, ctx, env });
+    const connection = findings.find((f) => f.label === "Account connection")!;
+    expect(connection.ok).toBe(true);
+    expect(connection.detail).toContain("unread 0");
   });
 });
 

@@ -94,6 +94,8 @@ fn default_bin_dirs(home: Option<&Path>, npm_prefix: Option<&Path>) -> Vec<PathB
         dirs.push(h.join(".local/bin"));
         dirs.push(h.join(".cargo/bin"));
         dirs.push(h.join(".npm-global/bin"));
+        dirs.push(h.join(".grok/bin"));
+        dirs.push(h.join(".openroly/bin"));
     }
     if let Some(prefix) = npm_prefix.filter(|p| !p.as_os_str().is_empty()) {
         dirs.push(prefix.join("bin"));
@@ -746,6 +748,8 @@ mod tests {
         assert!(d.path_dirs.is_empty());
         assert!(d.extra_dirs.contains(&PathBuf::from("/opt/homebrew/bin")));
         assert!(d.extra_dirs.contains(&PathBuf::from("/h/.cargo/bin")));
+        assert!(d.extra_dirs.contains(&PathBuf::from("/h/.grok/bin")));
+        assert!(d.extra_dirs.contains(&PathBuf::from("/h/.openroly/bin")));
         assert!(d.extra_dirs.contains(&PathBuf::from("/npm/bin")));
         assert_eq!(d.app_dirs, vec![PathBuf::from("/Applications"), PathBuf::from("/h/Applications")]);
         // 置換は丸ごと(既定に足すのではない)

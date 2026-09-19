@@ -1,0 +1,30 @@
+# gitleaks の設定(PBI-0672)。`gitleaks git .` / `gitleaks dir .` が **対象 repo の root** から自動で読む
+# (8.30.1 実測: `--config` > GITLEAKS_CONFIG > GITLEAKS_CONFIG_TOML > (target)/.gitleaks.toml > 既定)。
+#
+# なぜ在るか: `.gitleaksignore` の指紋は `commit:file:rule:line` で、**公開 repo(openroly/openroly)は
+# commit hash が違うので原理的に当たらない**。公開 clone で `gitleaks git .` を打った人に 0 件を返すには、
+# 指紋ではなく **値の形** で fixture を除く必要がある。この file は `scripts/sync-public.ts` が運ぶ。
+#
+# **除く根拠は「fixture である事が値だけで分かる印」に限る。** path(`tests?/`)では絞らない ——
+#   - path 丸ごとの allowlist は「test の中に貼られた本物の鍵」を永久に隠す
+#   - `paths` を `condition = "AND"` で足しても、**dir mode は AND でも paths を file 丸ごとの skip に使う**
+#     (8.30.1 実測: git mode は AND どおりに動くが、`gitleaks dir` では test dir の本物 2 本が消えた)
+#   `scripts/sync-public.test.ts` が **両 mode で本物らしい鍵 3 本(src 1・test 2)の検出**を要求するので、
+#   ここに `paths` を足すと赤くなる。
+#
+# 印を足す時: 値が「本物にはまず現れない綴り」を含む事(PBI 番号・ATTACK・有名な passphrase)。
+# 本物らしい形の値(`sk-live-` + hex・`par_` + 乱数・`ghp_` + 36 字)は **fixture でも印にしない** ——
+# それが必要な test は、値の方を印付きに書き直す。
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "test fixture として値の形だけで分かる物(PBI-0672)。path では絞らない(上の理由)"
+regexTarget = "secret"
+regexes = [
+  '''^(par_|sk-)pbi\d+''',                  # test の runtime token / API key(PBI 番号入り: par_pbi0391rev・sk-pbi0057-secret)
+  '''(?i)attack''',                         # 有界レビューの攻撃入力(ghp_ATTACK… / sk-live-ATTACK…)
+  '''^sk-abc123xyz$''',                     # capsule.test「secret らしい形の source は拒む」の入力
+  '''^correct-horse-battery-staple-\d+$''', # envelope.test の passphrase(xkcd 936)
+]

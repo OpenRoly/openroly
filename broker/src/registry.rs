@@ -325,6 +325,15 @@ fn validate(d: &Detector) -> Result<(), String> {
     Ok(())
 }
 
+/// `local-<id>`（`runtimes add`）→ 署名 catalog の `<id>`。それ以外はそのまま。
+/// Cloud が送る kind と scan の id を同じ entry に畳む（PBI-0680）。空の `local-` は畳まない。
+pub fn catalog_kind(runtime: &str) -> &str {
+    runtime
+        .strip_prefix("local-")
+        .filter(|base| !base.is_empty())
+        .unwrap_or(runtime)
+}
+
 /// JSON → Registry。id の文字種・重複、および program deny / probe 引数(PBI-0244)を弾く
 /// (id は launch の program 名 / allowlist の値、`detect.binaries` は probe の spawn 先になる)。
 /// detectors は id 順に並べ、scan 結果の順序を決定的にする(hello の差分判定が順序に依存しないよう)。

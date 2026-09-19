@@ -30,7 +30,7 @@ import { withSkills } from "./skill.ts";
 // entry の `native`(config の場所・書き方・skills dir・指示 file)だけで、MCP 配線 5 op と
 // skill 配布・指示ブロック(図14b)を捌く。
 //
-//   strategy "cli"  = runtime 自身の `mcp add` を argv template で叩く(openclaw / grok)。
+//   strategy "cli"  = runtime 自身の `mcp add` を argv template で叩く(openclaw / grok 1.0.34)。
 //   strategy "file" = config file を直接書く(opencode / cursor / hermes / continue / vibe / zed …)。
 //                     format handler: json / jsonc / json5 → jsonc-parser の AST で **範囲編集**
 //                     (他 key・コメントは 1 byte も触らない)、yaml → yaml の Document(コメント保持)、
@@ -47,6 +47,8 @@ interface McpMaterial {
   command: string;
   args: string[];
   env: [string, string][];
+  url?: string;
+  transport?: string;
 }
 
 // ---------- template ----------
@@ -57,7 +59,13 @@ function expandString(s: string, m: McpMaterial): unknown {
   if (s === "${args}") return [...m.args];
   if (s === "${env}") return Object.fromEntries(m.env);
   if (s === "${json}") return JSON.stringify({ command: m.command, args: m.args, env: Object.fromEntries(m.env) });
-  return s.replaceAll("${name}", m.name).replaceAll("${command}", m.command);
+  if (s === "${url}") return m.url ?? "";
+  if (s === "${transport}") return m.transport ?? "http";
+  return s
+    .replaceAll("${name}", m.name)
+    .replaceAll("${command}", m.command)
+    .replaceAll("${url}", m.url ?? "")
+    .replaceAll("${transport}", m.transport ?? "http");
 }
 
 /**
@@ -542,21 +550,18 @@ export async function readConfigEntries(
 }
 
 /**
- * native config の 1 entry を `{command, args, env}` に戻す(PBI-0212 / 図67)。
- * MCP config の書き方は 2 通りしか実在しない(2026-09-05 実測: catalog の全 5 entry + official 3):
+ * native config の 1 entry を `{command, args, env}` または `{url, transport}` に戻す(PBI-0212 / 図67)。
+ * 実在する形は 3 通り(2026-09-17 実測: Claude `type=http` + `url`、Grok toml `url`、stdio の command/args):
  *   ① `{command: "npx", args: [...], env: {...}}`  ② `{command: ["npx", ...], environment: {...}}`
- * どちらでもない entry(remote server の `{url}` 等)は **null** = 提案に上げない —— 推測で
+ *   ③ `{url: "https://…"}`（`type` / `transport` は任意。無い時は http）
+ * command も url も無い entry は **null** = 提案に上げない —— 推測で
  * `{command: undefined}` を送ると、承認した瞬間に全 agent の sync が失敗し続ける。
  */
 export function normalizeMcpEntry(
   value: unknown,
-): { command: string; args: string[]; env: Record<string, string> } | null {
+): { command?: string; args: string[]; env: Record<string, string>; url?: string; transport?: string } | null {
   if (value == null || typeof value !== "object" || Array.isArray(value)) return null;
   const v = value as Record<string, unknown>;
-  const argv = Array.isArray(v.command) ? v.command.map(String) : null;
-  const command = argv ? argv[0] : typeof v.command === "string" ? v.command : undefined;
-  if (!command) return null;
-  const args = argv ? argv.slice(1) : Array.isArray(v.args) ? v.args.map(String) : [];
   const rawEnv = v.env ?? v.environment;
   const env: Record<string, string> = {};
   if (rawEnv != null && typeof rawEnv === "object" && !Array.isArray(rawEnv)) {
@@ -564,6 +569,15 @@ export function normalizeMcpEntry(
       if (typeof val === "string") env[k] = val;
     }
   }
+  const url = typeof v.url === "string" && v.url !== "" ? v.url : undefined;
+  if (url) {
+    const transport = typeof v.type === "string" ? v.type : typeof v.transport === "string" ? v.transport : "http";
+    return { url, transport, args: [], env };
+  }
+  const argv = Array.isArray(v.command) ? v.command.map(String) : null;
+  const command = argv ? argv[0] : typeof v.command === "string" ? v.command : undefined;
+  if (!command) return null;
+  const args = argv ? argv.slice(1) : Array.isArray(v.args) ? v.args.map(String) : [];
   return { command, args, env };
 }
 
@@ -584,7 +598,9 @@ export async function exportMcpFromConfig(
     out.push({
       kind: "mcp",
       name,
-      spec: { command: entry.command, args: entry.args },
+      spec: entry.url
+        ? { url: entry.url, transport: entry.transport ?? "http" }
+        : { command: entry.command, args: entry.args },
       secretEnv: entry.env,
     });
   }
@@ -595,6 +611,27 @@ export async function exportMcpFromConfig(
  * **唯一の書き込み口**(図66)。lock → 読む → parse(失敗なら throw = 何も書かない)→ 1 entry を
  * 置換 / 削除 → temp → rename。`mutate` が false を返したら書かない(削除対象が無い時)。
  */
+/** hub が catalog の file loc に 1 MCP entry を書く口(PBI-0692)。CLI add は叩かない。 */
+export async function upsertMcpFileEntry(
+  loc: NativeConfigLocation,
+  path: string,
+  name: string,
+  value: Record<string, unknown>,
+): Promise<void> {
+  await editConfig(loc, path, (doc) => {
+    doc.set(name, value);
+    return true;
+  });
+}
+
+export async function deleteMcpFileEntry(
+  loc: NativeConfigLocation,
+  path: string,
+  name: string,
+): Promise<void> {
+  await editConfig(loc, path, (doc) => doc.remove(name));
+}
+
 async function editConfig(
   loc: NativeConfigLocation,
   path: string,
@@ -641,12 +678,16 @@ export function createNativeAdapter(id: string, displayName: string, nativeRaw: 
     if (mcp.strategy === "cli") {
       const cli = mcp.bin ?? bin ?? id;
       await run(ctx, [cli, ...(expandTemplate(mcp.remove, m) as string[])]).catch(() => null);
-      const result = await run(ctx, [cli, ...(expandTemplate(mcp.add, m) as string[])]);
+      const tpl = m.url ? mcp.add_url : mcp.add;
+      if (m.url && !tpl) throw new Error(`${cli} cannot add HTTP MCP (native.mcp.add_url is missing)`);
+      const result = await run(ctx, [cli, ...(expandTemplate(tpl ?? mcp.add, m) as string[])]);
       if (!result.ok) throw new Error(`${cli} mcp add failed: ${result.stderr || result.stdout}`);
       return;
     }
     const path = resolveNativePath(mcp.path, spec, ctx.env);
-    const entry = expandTemplate(mcp.entry, m) as Record<string, unknown>;
+    const entry = m.url
+      ? { url: m.url, enabled: true }
+      : (expandTemplate(mcp.entry, m) as Record<string, unknown>);
     await editConfig(mcp, path, (doc) => {
       doc.set(m.name, entry);
       return true;
@@ -752,7 +793,19 @@ export function createNativeAdapter(id: string, displayName: string, nativeRaw: 
         await drop(ctx, action.name, true);
         return;
       }
-      const s = action.spec as { command?: unknown; args?: unknown };
+      const s = action.spec as { command?: unknown; args?: unknown; url?: unknown; transport?: unknown };
+      if (typeof s.url === "string" && s.url !== "") {
+        const transport = typeof s.transport === "string" && s.transport !== "" ? s.transport : "http";
+        await put(ctx, {
+          name: action.name,
+          command: "",
+          args: [],
+          env: Object.entries(action.env),
+          url: s.url,
+          transport,
+        });
+        return;
+      }
       if (typeof s.command !== "string") throw new Error(`extension "${action.name}": spec.command is not a string`);
       await put(ctx, material(action.name, s.command, Array.isArray(s.args) ? s.args.map(String) : [], Object.entries(action.env)));
     },

@@ -192,8 +192,28 @@ export const WORK_CONTEXT_WELL_KNOWN_KEYS = [
   "verified_findings",
 ] as const;
 
-/** 機械が書く置き場。`auto/` = 30 秒 tick(PBI-0436)、`inbox/` = work_message(PBI-0434)。agent の手書きでは書かない */
-export const WORK_CONTEXT_RESERVED_PREFIXES = ["auto/", "inbox/"] as const;
+/**
+ * 機械が書く置き場。`auto/` = 30 秒 tick(PBI-0436)、`inbox/` = work_message(PBI-0434)、
+ * `review/` = task の裁定(PBI-0648・work_review / `openroly work review`)、
+ * `brief/` = 渡す時の持ち場と完了条件(PBI-0649・渡す側だけが書く)。agent の手書きでは書かない
+ */
+export const WORK_CONTEXT_RESERVED_PREFIXES = ["auto/", "inbox/", "review/", "brief/"] as const;
+
+/** 渡す側(human と task を出す run)だけが書ける prefix。task 自身が自分の持ち場と裁定を書き換えられない */
+const LEAD_ONLY_PREFIXES = ["review/", "brief/"] as const;
+
+/** PBI-0648: 裁定 1 行の置き場(task の context)。版が「差し戻しの周」になる */
+export const TASK_REVIEW_KEY = "review/verdict";
+
+/**
+ * PBI-0649: 渡す時に渡す 3 つ。**構造体を発明せず予約 key 3 つ**に縮めた —— `done` = 完了条件(自由文)、
+ * `allowed` / `forbidden` = 持ち場(repo 相対 path の前方一致の列)。強制されるのは `forbidden` だけで、
+ * それも合流の門(`decideMergePaths`)であって sandbox ではない(`allowed` の強制は C1 の持ち分)
+ */
+export const TASK_BRIEF_KEYS = { done: "brief/done", allowed: "brief/allowed", forbidden: "brief/forbidden" } as const;
+
+/** 索引と search で**先に出る** key(順はこの並び)。`brief/` が先頭群 = 予算で切られない(AC-6) */
+export const WORK_CONTEXT_BRIEF_KEYS = [TASK_BRIEF_KEYS.done, TASK_BRIEF_KEYS.allowed, TASK_BRIEF_KEYS.forbidden] as const;
 
 export function findReservedContextKeys(keys: readonly string[]): string[] {
   return keys.filter((k) => WORK_CONTEXT_RESERVED_PREFIXES.some((p) => k.startsWith(p)));
@@ -215,7 +235,14 @@ export function decideContextWrite(
   target: WorkNode,
   held: readonly WorkNode[] | null,
   keys: readonly string[],
-): { ok: true } | { ok: false; reason: "publish_required" | "not_found" } {
+): { ok: true } | { ok: false; reason: "publish_required" | "not_found" | "reserved_key" } {
+  // PBI-0648 / PBI-0649: 裁定(`review/`)と持ち場(`brief/`)を書けるのは human と **target の project を握っている run** だけ。
+  // 自分の task に自分で accept を書く道・自分の持ち場を広げる道をここで塞ぐ —— client の assertNoReservedKeys だけだと
+  // 生の HTTP で迂回できる(「自分の id を渡しているから絞れている」は根拠にならない)。project 自身・単独の work には置かない
+  if (held != null && keys.some((k) => LEAD_ONLY_PREFIXES.some((p) => k.startsWith(p)))) {
+    const parent = target.parentWorkId;
+    if (parent == null || !held.some((h) => h.id === parent)) return { ok: false, reason: "reserved_key" };
+  }
   if (held == null || held.some((h) => h.id === target.id)) return { ok: true };
   const projects = new Set(held.flatMap((h) => (h.parentWorkId == null ? [] : [h.parentWorkId])));
   if (projects.size === 0) return { ok: true };
@@ -259,11 +286,18 @@ export function inboxDeliveredKeys(
 }
 
 /**
+ * 持ち場の 1 マスの材料(PBI-0649・AC-6)。`null` = 行は在るが本文をこの端末で開けない ——
+ * その時 `?` と出し、合流は `brief_unreadable` で断る(面と門で同じ物を見ている)
+ */
+export type BriefCounts = { allowed: number | null; forbidden: number | null };
+
+/**
  * 「この仕事に何の key が在るか」を**値を読まずに** 1 行にする(索引行の kind と key だけ)。
  * 例: `context: goal, next_step · auto: git, tests · +2 keys · 1 source · inbox 3 (2 unread)`
  * task の索引(自分 + project)で同じ key が 2 行来ても 1 つに数える。
+ * `brief` は唯一の例外で、**持ち場は数が意味を持つ**ので呼び手が値を開いて渡す(無ければ出さない)。
  */
-export function summarizeContextIndex(rows: readonly IndexRow[]): string {
+export function summarizeContextIndex(rows: readonly IndexRow[], brief?: BriefCounts | null): string {
   const contextKeys = [...new Set(rows.filter((r) => r.kind === "context").map((r) => r.key))];
   const sources = new Set(rows.filter((r) => r.kind === "source").map((r) => r.key)).size;
   const present = new Set(contextKeys);
@@ -274,6 +308,7 @@ export function summarizeContextIndex(rows: readonly IndexRow[]): string {
     (k) => !(WORK_CONTEXT_WELL_KNOWN_KEYS as readonly string[]).includes(k) && findReservedContextKeys([k]).length === 0,
   ).length;
   const parts: string[] = [];
+  if (brief) parts.push(`scope: ${brief.allowed ?? "?"} allowed / ${brief.forbidden ?? "?"} forbidden`);
   if (known.length > 0) parts.push(`context: ${known.join(", ")}`);
   if (auto.length > 0) parts.push(`auto: ${auto.join(", ")}`);
   if (other > 0) parts.push(`+${other} key${other === 1 ? "" : "s"}`);

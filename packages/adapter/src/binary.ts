@@ -144,3 +144,53 @@ export async function ensureBinary(
   await writeFile(stamp, `${version}\n`);
   return { status: "downloaded", path, target };
 }
+
+export type EnsureCliOnPathOutcome =
+  | { status: "present"; path: string }
+  | { status: "shim"; path: string }
+  | { status: "unavailable"; detail: string };
+
+/**
+ * `openroly login` のあと、この端末で `openroly` が PATH から叩けるようにする(PBI-0679 / F1)。
+ * Release が取れれば `~/.openroly/bin/openroly` の配布物。取れなければ今動かしている bun + CLI の shim。
+ * `~/.local/bin` が在るか作れるならそこへも同じ物を出す（interactive PATH がよく見る場所）。
+ */
+export async function ensureCliOnPath(opts: {
+  bunPath: string;
+  cliPath: string;
+  env?: Env;
+}): Promise<EnsureCliOnPathOutcome> {
+  const env = opts.env ?? process.env;
+  try {
+    const dir = binDir(env);
+    await mkdir(dir, { recursive: true, mode: 0o755 });
+    const dest = join(dir, "openroly");
+    const ensured = await ensureBinary("openroly", { env });
+    if (ensured.status === "present" || ensured.status === "downloaded") {
+      await mirrorCli(ensured.path, env);
+      return { status: "present", path: ensured.path };
+    }
+    if (opts.bunPath === "" || opts.cliPath === "") {
+      return { status: "unavailable", detail: "no bun/cli path for shim" };
+    }
+    const shim = `#!/bin/sh\nexec ${JSON.stringify(opts.bunPath)} ${JSON.stringify(opts.cliPath)} "$@"\n`;
+    await writeFile(dest, shim, { mode: 0o755 });
+    await chmod(dest, 0o755);
+    await mirrorCli(dest, env);
+    return { status: "shim", path: dest };
+  } catch (e) {
+    return { status: "unavailable", detail: (e as Error).message };
+  }
+}
+
+async function mirrorCli(from: string, env: Env): Promise<void> {
+  const home = env.HOME;
+  if (!home) return;
+  const local = join(home, ".local", "bin");
+  await mkdir(local, { recursive: true, mode: 0o755 });
+  const dest = join(local, "openroly");
+  if (dest === from) return;
+  const body = await readFile(from);
+  await writeFile(dest, body, { mode: 0o755 });
+  await chmod(dest, 0o755);
+}

@@ -56,13 +56,27 @@ function isExecutableFile(path: string): boolean {
  * plugin 側の同じ順序は `packages/mcp/openroly-mcp`(sh launcher)が持つ —— 静的 JSON は分岐できないので、
  * **判定は 2 箇所にあるが順序は 1 つ**(検査で両方を固定する)。
  */
+/** checkout の entry が compiled binary より新しければ bun で入口を使う（F56） */
+export function checkoutMcpNewerThanBinary(serverEntry: string, compiled: string): boolean {
+  try {
+    const entry = statSync(serverEntry);
+    if (!entry.isFile()) return false;
+    if (!isExecutableFile(compiled)) return false;
+    return entry.mtimeMs > statSync(compiled).mtimeMs;
+  } catch {
+    return false;
+  }
+}
+
 export function resolveMcpServerCommand(
   serverEntry: string,
   env: Record<string, string | undefined> = process.env,
 ): McpServerCommand {
-  for (const candidate of [env.OPENROLY_MCP_BINARY, join(openrolyHome(env), "bin", "openroly-mcp")]) {
-    if (candidate && isExecutableFile(candidate)) return { command: candidate, args: [] };
-  }
+  const explicit = env.OPENROLY_MCP_BINARY;
+  if (explicit && isExecutableFile(explicit)) return { command: explicit, args: [] };
+  const compiled = join(openrolyHome(env), "bin", "openroly-mcp");
+  if (checkoutMcpNewerThanBinary(serverEntry, compiled)) return { command: "bun", args: [serverEntry] };
+  if (isExecutableFile(compiled)) return { command: compiled, args: [] };
   return { command: "bun", args: [serverEntry] };
 }
 

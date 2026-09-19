@@ -7,7 +7,7 @@ use crate::c1;
 use crate::discovery::Found;
 use crate::egress::{self, Egress, EgressConfig};
 use crate::openroly_cli::cli_argv;
-use crate::registry::{self, McpInject, Registry};
+use crate::registry::{self, McpInject, Registry, catalog_kind};
 use crate::sandbox::{SandboxBackend, SandboxSpec, default_deny_read, writable_extra};
 
 /// dedicated session の instruction の上限(argv 1 要素)。これを超えると OS の argv 上限で
@@ -248,8 +248,11 @@ fn mcp_inject(registry: &Registry, runtime: &str) -> Option<McpInject> {
 /// id 単位の merge のままだと、catalog が claude の entry を持った瞬間に built-in の argv ごと落ち、
 /// 署名済み catalog が配られた端末だけ `not_headless` になる(dev 機では built-in が拾うので気付けない穴)。
 fn headless_argv(registry: &Registry, runtime: &str) -> Option<Vec<String>> {
-    let of = |r: &Registry| r.detector(runtime).and_then(|d| d.launch.headless.as_ref()).map(|h| h.argv.clone());
-    of(registry).or_else(|| of(&registry::builtin()))
+    let of = |r: &Registry, rt: &str| r.detector(rt).and_then(|d| d.launch.headless.as_ref()).map(|h| h.argv.clone());
+    let kind = catalog_kind(runtime);
+    of(registry, runtime)
+        .or_else(|| of(registry, kind))
+        .or_else(|| of(&registry::builtin(), kind))
 }
 
 /// 組込み tool を落とす起こし方と、MCP の**集め方**を broker が実測で持っている runtime。
@@ -358,11 +361,16 @@ pub fn dedicated_launch(
     let Some(template) = headless_argv(registry, runtime) else {
         return Err("not_headless".to_string());
     };
-    if !is_official(runtime) {
-        if registry.detector(runtime).and_then(|d| d.sandbox_verified.as_ref()).is_none() {
-            return Err("not_verified".to_string());
-        }
+    let kind = catalog_kind(runtime);
+    if !is_official(kind) {
+        // work lane（continue / 人が渡した仕事）は OS sandbox + egress が主の壁。
+        // sandbox_verified が無い generic をここで落とすと、catalog に載せた grok が
+        // `unknown_runtime` の次に `not_verified` でまた止まる（PBI-0680 実測）。
+        // 他人の本文が入る lane は今までどおり未検証を起こさない。
         if lane != "work" {
+            if registry.detector(kind).and_then(|d| d.sandbox_verified.as_ref()).is_none() {
+                return Err("not_verified".to_string());
+            }
             return Err("lane_not_contained".to_string());
         }
     }
@@ -469,11 +477,12 @@ pub fn broker_home() -> PathBuf {
 /// 起こせる — PBI-0022 AC-4b)、無ければ bare name(従来どおり PATH 解決)。app bundle(`source:"app"`)は
 /// 実行ファイルではないので bare name に落とす。
 pub fn resolve_program(found: &[Found], runtime: &str) -> String {
+    let kind = catalog_kind(runtime);
     found
         .iter()
-        .find(|f| f.id == runtime && f.source != "app")
+        .find(|f| (f.id == runtime || f.id == kind) && f.source != "app")
         .map(|f| f.path.clone())
-        .unwrap_or_else(|| runtime.to_string())
+        .unwrap_or_else(|| kind.to_string())
 }
 
 /// runtime profile の class(PBI-0211)なら親 runtime。registry の `adapter: "variant"` と `variant.of` の両方が要る
@@ -503,7 +512,7 @@ pub fn variant_argv(
 /// registry に照らした起動可否。判定順序(図18): registry に無い → `unknown_runtime`、
 /// 有るが `adapter: null`(Ollama 等 — 検出・表示のみ)→ `not_launchable`。
 fn check_launchable(registry: &Registry, runtime: &str) -> Result<(), String> {
-    match registry.detector(runtime) {
+    match registry.detector(catalog_kind(runtime)) {
         Some(d) if d.adapter.is_none() => Err("not_launchable".to_string()),
         Some(_) => Ok(()),
         None => Err("unknown_runtime".to_string()),
@@ -610,7 +619,8 @@ fn launch_in(
     // C1(PBI-0441 ③)の専用 uid。`Some` の時だけ `sudo -n -u <uid>` で包む(sandbox の **外側**)
     as_user: Option<&str>,
 ) -> Result<Child, String> {
-    if !allowlist.contains(&runtime.to_string()) {
+    let kind = catalog_kind(runtime);
+    if !allowlist.iter().any(|id| id == runtime || id == kind) {
         return Err("unknown_runtime".to_string());
     }
     let mut cmd = Command::new(program);
@@ -1142,7 +1152,7 @@ pub fn launch_session_scoped_in(
     check_launchable(registry, runtime)?;
     // variant(PBI-0211)は親として argv と閉じ込め file を組み、最後に `openroly run <class>` で包む
     let parent = variant_of(registry, runtime);
-    let base = parent.unwrap_or(runtime);
+    let base = parent.unwrap_or(catalog_kind(runtime));
     // PBI-0244: dedicated 経路は launch_in を直に呼ぶので、ここで deny を見る(spawn 直前の 2 本目)
     let program = resolve_program(found, base);
     check_program(&program).inspect_err(|_| discard_session_dir(&session_dir))?;
@@ -1225,12 +1235,16 @@ pub fn launch_session_scoped_in(
     // **掛ける条件を満たしたのに失敗したら起こさない**(fail-closed)—— hello は既に
     // `host_scoped` と名乗っているので、床のまま起こすと表示と実物が食い違う(AC-3 が殺す嘘)。
     // 掛からない runtime / C1 の無い機は `Ok(None)` = 今までどおり床で起こす。
+    // peek の置き場は hub なら turn を跨ぐ会話 dir(`peek_dir`)、それ以外は session_dir
+    // (`peek.ts` が同じ規則で開く)。C1 の session は **broker が置いた file** に書く(PBI-0644)
+    let peek_file = peek_dir.unwrap_or(&session_dir).join(c1::PEEK_FILE);
     let c1_session = c1::setup_session(
         runtime,
         isolation.sandbox.egress_enforcement(),
         isolation.c1,
         &session_dir,
         &spec.folder,
+        &peek_file,
     )
     .map_err(|e| {
         eprintln!("broker: c1 setup failed ({e}); refusing the session instead of running it unconfined");
@@ -1311,6 +1325,15 @@ mod tests {
     async fn name_outside_allowlist_is_rejected_without_spawning() {
         let result = launch_with_allowlist("not-allowed", "not-allowed", &[], &allow(&["allowed-name"]), None);
         assert_eq!(result.err(), Some("unknown_runtime".to_string()));
+    }
+
+    #[tokio::test]
+    async fn local_kind_is_allowed_when_catalog_parent_is_on_the_allowlist() {
+        let name = "openroly-broker-definitely-not-a-real-binary";
+        let result = launch_with_allowlist("local-grok", name, &[], &allow(&["grok"]), None);
+        assert_ne!(result.err(), Some("unknown_runtime".to_string()));
+        let denied = launch_with_allowlist("local-foo", name, &[], &allow(&["grok"]), None);
+        assert_eq!(denied.err(), Some("unknown_runtime".to_string()));
     }
 
     // PBI-0244 AC-3: **allowlist を通っていても** shell / interpreter は spawn しない。
@@ -2073,17 +2096,28 @@ mod tests {
         assert_eq!(args.len(), 6);
     }
 
-    // AC-4: sandbox_verified が無い entry は generic 経路に入らない(fail-closed)
+    // AC-4: sandbox_verified が無い generic は、他人の本文が入る lane では起こさない。
+    // work lane（continue）は通す（PBI-0680。OS sandbox + egress が主の壁）。
     #[test]
     fn unverified_is_not_generic() {
         let reg = generic_registry(true, false);
         assert_eq!(
-            dedicated_launch(&reg, "foo", "work", "I", "/tmp/s", "/tmp/work", &test_env()).err(),
+            dedicated_launch(&reg, "foo", "triage", "I", "/tmp/s", "/tmp/work", &test_env()).err(),
             Some("not_verified".to_string())
         );
-        // verified が有れば通る(対)
+        assert!(dedicated_launch(&reg, "foo", "work", "I", "/tmp/s", "/tmp/work", &test_env()).is_ok());
         let ok = generic_registry(true, true);
         assert!(dedicated_launch(&ok, "foo", "work", "I", "/tmp/s", "/tmp/work", &test_env()).is_ok());
+    }
+
+    #[test]
+    fn local_kind_uses_catalog_parent_for_headless() {
+        let reg = generic_registry(true, false);
+        assert!(dedicated_launch(&reg, "local-foo", "work", "I", "/tmp/s", "/tmp/work", &test_env()).is_ok());
+        assert_eq!(
+            dedicated_launch(&reg, "local-bar", "work", "I", "/tmp/s", "/tmp/work", &test_env()).err(),
+            Some("not_headless".to_string())
+        );
     }
 
     // AC-X2: instruction に NUL が含まれる時は spawn の前に弾く(official 2 種でも同じ門)

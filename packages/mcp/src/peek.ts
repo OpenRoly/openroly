@@ -11,7 +11,7 @@
 // - id は broker 側 `is_safe_request_id` と同じ境界(英数と _ - のみ)を MCP 側でも持つ —— env は
 //   信頼境界の外(runtime の設定 file 経由でも書ける)なので `../x` を dir に混ぜない。
 
-import { appendFileSync, chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import { createConnection } from "node:net";
@@ -100,8 +100,10 @@ export function openPeek(env: Env = process.env, home: string = brokerHome(env))
     appendFileSync(path, line({ session: id, runtime: env.OPENROLY_RUNTIME_KIND ?? null, started: new Date().toISOString() }), {
       mode: 0o600,
     });
-    // mode は umask と既存 file に負けるので、開けた後に必ず 0600 へ寄せる
-    chmodSync(path, 0o600);
+    // mode は umask と既存 file に負けるので、開けた後に 0600 へ寄せる。**既に 0600 なら打たない** ——
+    // C1(PBI-0644)の session は broker が 0600 で置いた file に ACL で append するだけで
+    // **所有者ではない**ので、無条件に chmod すると EPERM で peek ごと落ちる(= 1 行も残らない)
+    if ((statSync(path).mode & 0o777) !== 0o600) chmodSync(path, 0o600);
   } catch (e) {
     warn(e);
     return null;

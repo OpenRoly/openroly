@@ -127,7 +127,7 @@ describe("plugin bundle の MCP 往復", () => {
 
     expect(await proc.exited).toBe(1);
     expect(stderr).toContain("No OpenRoly credential was found");
-    expect(stderr).toContain("openroly pair claude");
+    expect(stderr).toContain("openroly-mcp");
     expect(stderr).not.toContain("openroly install");
     // stdout は MCP の stdio transport 用。1 byte でも混ぜたら JSON-RPC が壊れる
     expect(stdout).toBe("");

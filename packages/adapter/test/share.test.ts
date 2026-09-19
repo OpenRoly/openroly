@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { statSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AdapterContext } from "../src/contract.ts";
@@ -147,19 +147,40 @@ describe("exportExtensions(端末に在る物を提案の形にする)", () => {
     });
   });
 
-  test("SKILL.md が無い / frontmatter が無い dir は skill として上げない", async () => {
+  test("SKILL.md が無い dir は上げず、frontmatter が無い SKILL.md は name を description にして上げる", async () => {
     const dir = join(root, "opencode", "skills");
     await mkdir(join(dir, "notaskill"), { recursive: true });
     await writeFile(join(dir, "notaskill", "readme.md"), "hi");
     await putSkill(dir, "nofront", "just text, no frontmatter\n");
-    expect((await adapter().exportExtensions(ctx())).filter((i) => i.kind === "skill")).toEqual([]);
+    const skills = (await adapter().exportExtensions(ctx())).filter((i) => i.kind === "skill");
+    expect(skills.map((s) => s.name)).toEqual(["nofront"]);
+    expect(skills[0]?.spec).toEqual({ description: "nofront", instructions: "just text, no frontmatter\n" });
   });
 
-  test("大きすぎる参照 file を持つ skill は**丸ごと**落とす(半端に配らない)", async () => {
+  test("大きすぎる参照 file は飛ばし、SKILL.md は残す", async () => {
     const dir = join(root, "opencode", "skills");
     await putSkill(dir, "huge", '---\nname: "huge"\ndescription: "big"\n---\nx\n');
     await writeFile(join(dir, "huge", "blob.txt"), "a".repeat(70 * 1024));
-    expect((await adapter().exportExtensions(ctx())).filter((i) => i.kind === "skill")).toEqual([]);
+    await writeFile(join(dir, "huge", "ok.md"), "keep\n");
+    const huge = (await adapter().exportExtensions(ctx())).find((i) => i.name === "huge");
+    expect(huge?.kind).toBe("skill");
+    expect(huge?.spec).toEqual({
+      description: "big",
+      instructions: "x\n",
+      files: { "ok.md": "keep\n" },
+    });
+  });
+
+  test("skills/ 直下の symlink 先 dir も skill として上げる", async () => {
+    const dir = join(root, "opencode", "skills");
+    const archive = join(root, "archive", "linked");
+    await mkdir(archive, { recursive: true });
+    await writeFile(join(archive, "SKILL.md"), '---\nname: "linked"\ndescription: "from archive"\n---\ngo\n');
+    await mkdir(dir, { recursive: true });
+    await symlink(archive, join(dir, "linked"));
+    const linked = (await adapter().exportExtensions(ctx())).find((i) => i.name === "linked");
+    expect(linked?.kind).toBe("skill");
+    expect(linked?.spec).toEqual({ description: "from archive", instructions: "go\n" });
   });
 });
 

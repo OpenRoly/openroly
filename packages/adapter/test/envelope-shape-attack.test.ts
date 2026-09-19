@@ -36,7 +36,7 @@ test("AC-X2: 壊れた recipients の envelope でも openIfEnvelope は投げ�
   for (const recipients of shapes) {
     const message = { id: "m", content: { envelope: { ...base, recipients } } };
     const out = await openIfEnvelope("t-0265", message);
-    expect([JSON.stringify(recipients), out.content]).toEqual([JSON.stringify(recipients), { undecryptable: true }]);
+    expect(out.content).toMatchObject({ undecryptable: true });
   }
 });
 

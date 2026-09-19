@@ -2,6 +2,7 @@ import { canonicalExtensionKey, validateExtensionSpec, type ExtensionKind } from
 import { apiCall } from "./api.ts";
 import type { AdapterContext, ExportedExtension, ExtensionAdapter } from "./contract.ts";
 import { loadShareState, mergeSecrets, saveShareState, type RuntimeCredential } from "./credentials.ts";
+import { exportHubSkills } from "./hub.ts";
 
 // 吸い上げ → 提案(PBI-0212 / 図67)。`openroly share` の本体。
 //
@@ -176,6 +177,8 @@ export async function shareExtensions(options: ShareOptions): Promise<ShareResul
     if (!options.credentials[adapter.id]) continue;
     collected.push({ runtimeKind: adapter.id, items: await adapter.exportExtensions(options.ctx) });
   }
+  const hubKind = Object.keys(options.credentials)[0];
+  if (hubKind) collected.push({ runtimeKind: hubKind, items: await exportHubSkills(env) });
   const { plan: collectedPlan, secrets, skipped } = planShare(collected);
 
   const anyCredential = Object.values(options.credentials)[0];

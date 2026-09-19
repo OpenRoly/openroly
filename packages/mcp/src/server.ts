@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
 // OpenRoly Account tools の MCP server(stdio)。
-// 使い方: OPENROLY_TOKEN=par_xxx [OPENROLY_URL=https://atn.shibubu.ai] bun packages/mcp/src/server.ts
+// 使い方: OPENROLY_TOKEN=par_xxx [OPENROLY_URL=https://openroly.shibubu.ai] bun packages/mcp/src/server.ts
 // Claude Code 等の runtime はこれを MCP server として登録すると @handle として attach できる。
 
-import { credentialsPath, DEFAULT_BASE_URL, getCredential } from "@openroly/adapter";
+import { credentialsPath, DEFAULT_BASE_URL, ingestAndLink } from "@openroly/adapter";
+import { resolveMcpIdentity } from "./identity.ts";
 import { adoptLegacyEnv, CHECKPOINT_TICK_INTERVAL_SECS } from "@openroly/core";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -30,7 +31,7 @@ import {
 } from "./schemas.ts";
 import { noteMasking, openPeek, openSessionUpdate } from "./peek.ts";
 import { openRelay } from "./relay.ts";
-import { createAccountTools } from "./tools.ts";
+import { createLiveAccountTools } from "./live-tools.ts";
 import { startCheckpointTicker, pushCheckpointAfterProof } from "./checkpoint.ts";
 
 adoptLegacyEnv(); // 旧 PAA_* env を採り込む(PBI-0344 AC-3。使った時だけ 1 行警告)
@@ -45,20 +46,22 @@ if (process.env.OPENROLY_MCP_RELAY) {
   noteMasking(process.env, `masking: unavailable — ${failed}`);
 }
 
-// credential は pairing で保存済みのものを使う(要件 §15.2: API key の copy/paste を標準 UX に
-// しない)。OPENROLY_RUNTIME_KIND が credential store の entry を選ぶ。OPENROLY_TOKEN は手動/CI 用の逃げ道。
-const kind = process.env.OPENROLY_RUNTIME_KIND;
-const stored = kind ? await getCredential(kind) : undefined;
+// credential は pairing / auto-register で保存済みのものを使う(要件 §15.2)。
+// kind は OPENROLY_RUNTIME_KIND、無ければ親 process。OPENROLY_TOKEN は手動/CI 用の逃げ道。
+const identity = await resolveMcpIdentity(process.env);
+const kind = identity?.kind ?? process.env.OPENROLY_RUNTIME_KIND;
+const stored = identity?.credential;
 const token = process.env.OPENROLY_TOKEN ?? stored?.token;
 if (!token) {
   console.error(
     `No OpenRoly credential was found (OPENROLY_RUNTIME_KIND=${kind ?? "unset"}, ${credentialsPath()})\n` +
-      // README の語(PBI-0641)。この行が言っているのは pairing そのものなので `pair` で閉じる
-      "Run 'openroly pair claude' / 'openroly pair codex' to pair this runtime first",
+      "Run 'openroly login' on this machine, then add MCP command openroly-mcp in the AI",
   );
   process.exit(1);
 }
-const tools = createAccountTools({
+void ingestAndLink(process.env).catch(() => null);
+
+const live = createLiveAccountTools({
   // 既定は 1 箇所(`DEFAULT_BASE_URL`)から取る —— ここに literal を写すと、既定を変えた時に
   // この 1 行だけが古い行き先を指し続ける(PBI-0641)
   baseUrl: process.env.OPENROLY_URL ?? stored?.base_url ?? DEFAULT_BASE_URL,
@@ -69,6 +72,7 @@ const tools = createAccountTools({
   // 手元で起こした session には無いので header も送られない(agent 面の書き込みは server が 403 scope_required)
   scopeToken: process.env.OPENROLY_SESSION_SCOPE,
 });
+let tools = live.current();
 
 // secret masking(REQ-69)。~/.openroly/secrets.json が在れば tool 応答の文字列値を `⟨s:n⟩` に置き換え、
 // send / reply の text だけ復元する。0600 以外の file は起動を拒否する(fail-closed)。
@@ -125,7 +129,7 @@ const OTHERS_TEXT_TOOLS = new Set([
 ]);
 /** server.tool と同じ引数。閉じる tool は handler を「叩かずに断る」物に差し替えて登録する(API も呼ばない) */
 const tool = ((name: string, ...rest: unknown[]) => {
-  const handler = rest.pop();
+  const handler = rest.pop() as (...args: unknown[]) => unknown;
   const refuse = () => {
     const text = JSON.stringify({
       error: "masking_unavailable",
@@ -135,8 +139,12 @@ const tool = ((name: string, ...rest: unknown[]) => {
     peek?.record({ tool: name, input: {}, output: text });
     return { isError: true, content: [{ type: "text" as const, text }] };
   };
+  const wrapped = async (...args: unknown[]) => {
+    tools = await live.refresh();
+    return handler(...args);
+  };
   const register = server.tool.bind(server) as (...args: unknown[]) => unknown;
-  return register(name, ...rest, maskingOff && OTHERS_TEXT_TOOLS.has(name) ? refuse : handler);
+  return register(name, ...rest, maskingOff && OTHERS_TEXT_TOOLS.has(name) ? refuse : wrapped);
 }) as unknown as typeof server.tool;
 
 // **全 tool 応答の唯一の出口**(REQ-69)。ここで mask してから model に渡し、渡した text そのものを
@@ -302,6 +310,34 @@ tool(
   async () => json("rules_list", {}, await tools.rules_list()),
 );
 
+tool(
+  "skills_list",
+  "Skills on this machine (OpenRoly hub). Same names every AI sees after it adds openroly-mcp — no per-runtime copy",
+  {},
+  async () => json("skills_list", {}, await tools.skills_list()),
+);
+
+tool(
+  "skill_get",
+  "Read one skill from the OpenRoly hub (SKILL.md body and small extra files)",
+  { name: z.string() },
+  async ({ name }) => json("skill_get", { name }, await tools.skill_get(name)),
+);
+
+tool(
+  "instructions_get",
+  "Read a shared instructions file from the OpenRoly hub (default: claude-rules from CLAUDE.md)",
+  { name: z.string().optional() },
+  async ({ name }) => json("instructions_get", { name }, await tools.instructions_get(name)),
+);
+
+tool(
+  "mcp_servers_list",
+  "MCP servers on this machine (OpenRoly hub). HTTP and stdio, without per-runtime add CLI",
+  {},
+  async () => json("mcp_servers_list", {}, await tools.mcp_servers_list()),
+);
+
 // ---------- Work Core の口(PBI-0400 / CAP-3 V9・図79) ----------
 // 裏が実在する動詞だけ(not_implemented を返す死んだ path は「在る」と読まれる分だけ害になる)。
 // work_capsule / work_capsules(PBI-0406・V2)は「1 回打つ口」— 30 秒の定期 checkpoint(V3・下の tick)とは別の名前
@@ -444,7 +480,7 @@ tool(
 // Work Project の task と住所(PBI-0434・手描き 2 枚目)。分担した agent が同じ project の context を持って始め、互いに届く
 tool(
   "work_task_create",
-  "Split a Work Project: create one task under it (parent_work_id) and, if you pass to/note/context/sources, hand it to a runtime in the same call. A task cannot itself have tasks. When you hand it to a runtime (to) from inside a git repo with a commit, the task gets its own folder — a copy of this folder's current files under the openroly home's worktrees/<task id> — returned as folder, so parallel tasks never write the same file; bring the result back with work_task_merge. If the task is created but its folder or the handoff fails, the error names the task id so you can retry work_handoff on it",
+  "Split a Work Project: create one task under it (parent_work_id) and, if you pass to/note/context/sources, hand it to a runtime in the same call. A task cannot itself have tasks. When you hand it to a runtime (to) from inside a git repo with a commit, the task gets its own folder — a copy of this folder's current files under the openroly home's worktrees/<task id> — returned as folder, so parallel tasks never write the same file; bring the result back with work_task_merge. Hand it a scope too: brief/allowed and brief/forbidden in context (arrays of repo-relative path prefixes, prefix match only, case-insensitive, no globs) and brief/done (what finished looks like) — the task itself cannot write those back (reserved_key), and a merge that touches a brief/forbidden prefix is stopped before anything is written. Handing a task to a runtime from a folder with no commit is refused (no_base_commit) — nothing is created. If the task is created but its folder or the handoff fails, the error names the task id so you can retry work_handoff on it",
   workTaskCreateInputShape,
   async ({ parent_work_id, ...input }) =>
     json("work_task_create", { parent_work_id, ...input }, await tools.work_task_create(parent_work_id, input)),
@@ -452,7 +488,7 @@ tool(
 
 tool(
   "work_task_merge",
-  "Bring a task's work back into this folder (the Work Project's working tree): every change made in the task's folder since it was handed off — edited, added and deleted files — is applied to the files here. Nothing is committed and the git index is not touched, so the result shows up in git diff / git status. If any change collides with what is here, nothing at all is applied and result is conflict with the colliding paths. busy = another git operation holds this repo's index.lock (nothing applied, try again); empty = the task changed nothing. Refused before touching anything when the task is not on this Work Project (not_on_team) or its folder is not on this device (worktree_missing). applied and conflict are recorded on the task and show up as merge in work_team",
+  "Bring a task's work back into this folder (the Work Project's working tree): every change made in the task's folder since it was handed off — edited, added and deleted files — is applied to the files here. Nothing is committed and the git index is not touched, so the result shows up in git diff / git status. If any change collides with what is here, nothing at all is applied and result is conflict with the colliding paths. busy = another git operation holds this repo's index.lock (nothing applied, try again); empty = the task changed nothing. Refused before touching anything when the task is not on this Work Project (not_on_team) or its folder is not on this device (worktree_missing). outside_scope = the task changed files under a brief/forbidden prefix it was handed: nothing is applied, the paths that hit are returned, and the task moves to needs_user so a person can widen its scope or allow it. applied, conflict and outside_scope are recorded on the task and show up as merge in work_team. Refused before touching anything when the task's last proof is not passed (no_proof) or the lead has not accepted it (not_reviewed / changes_requested / rejected) — see work_proof and work_review — or when it has a brief/forbidden this device cannot read (brief_unreadable)",
   {
     work_id: z.string().describe("the Work Project whose working tree is this folder"),
     task_id: z.string().describe("the task to merge (its address from work_team)"),
@@ -462,9 +498,22 @@ tool(
 
 tool(
   "work_team",
-  "Who else is working on the same Work Project: the project and every task under it, each with its address (the task's work id), who it is assigned to, whether a run is live on it, is_you, and merge (not_started / applied / conflict — the last work_task_merge of that task). Use an address with work_message to reach that agent",
+  "Who else is working on the same Work Project: the project and every task under it, each with its address (the task's work id), who it is assigned to, whether a run is live on it, is_you, merge (not_started / applied / conflict / outside_scope — the last work_task_merge of that task), review (- / accept / changes_requested (2) — the lead's verdict, the number being how many times a verdict was written) and scope (- when no brief was handed, else '2 allowed / 1 forbidden', a ? meaning that list cannot be read on this device). Use an address with work_message to reach that agent",
   { work_id: z.string().describe("any task or the project itself") },
   async ({ work_id }) => json("work_team", { work_id }, await tools.work_team(work_id)),
+);
+
+// PBI-0648: 渡した仕事は、証拠(passed の proof)と裁定が無ければ親へ合流しない。裁定を書くのがこの口
+tool(
+  "work_review",
+  "Rule on a task you handed out, so it can be merged back. accept opens work_task_merge for that task; changes_requested sends it back (the agent reads your feedback with work_context_search on review/verdict and keeps working); reject closes it. Only a human and the run holding the task's Work Project can write it — name yourself with run_id; a task cannot rule on itself (reserved_key). Your feedback stays on this device like other context values; the task must also have a passed proof before it can merge",
+  {
+    task_id: z.string().describe("the task to rule on (its address from work_team)"),
+    verdict: z.enum(["accept", "changes_requested", "reject"]).describe("accept opens the merge; changes_requested sends it back; reject closes it"),
+    feedback: z.string().optional().describe("what you want changed, in your own words — the task reads it as review/verdict"),
+    run_id: z.string().describe("your own run id (the one you hold the Work Project with) — the verdict is refused when that run holds the task itself"),
+  },
+  async ({ task_id, ...input }) => json("work_review", { task_id, ...input }, await tools.work_review(task_id, input)),
 );
 
 tool(

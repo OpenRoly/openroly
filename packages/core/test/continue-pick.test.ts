@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { pickContinueWork, stallOf, type ContinueWorkInput, type Stall } from "../src/work.ts";
+import { matchWorkId, mcpSessionRunId, isMcpSessionRun, pickContinueWork, stallOf, uniqueWorkIdPrefix, type ContinueWorkInput, type Stall } from "../src/work.ts";
 
 // PBI-0547: one-step continue の選択の正本(pickContinueWork)。表の期待は AC から書く(実装を写さない)。
 // 箱は 2 つ —— live lease の最新 → 無ければ lapsed で done でない最新 → どちらも複数なら ambiguous。
@@ -146,6 +146,225 @@ describe("pickContinueWork × stalled(PBI-0557)", () => {
     const pick = pickContinueWork([w("x", { stalled: s }), w("y", { stalled: null })], NOW);
     expect(pick.kind).toBe("work");
     if (pick.kind === "work") expect(pick.work.id).toBe("x");
+  });
+});
+
+describe("pickContinueWork × --to(PBI-0684)", () => {
+  test("toKind が有り live が複数なら、そこに居ない最新を選ぶ", () => {
+    const pick = pickContinueWork(
+      [
+        w("on-grok", { runtimeKind: "local-grok", updatedAt: NOW }),
+        w("claude", { runtimeKind: "claude", updatedAt: new Date(NOW.getTime() - 10_000) }),
+        w("opencode", { runtimeKind: "opencode", updatedAt: new Date(NOW.getTime() - 1000) }),
+      ],
+      NOW,
+      { toKind: "local-grok" },
+    );
+    expect(pick.kind).toBe("work");
+    if (pick.kind === "work") expect(pick.work.id).toBe("opencode");
+  });
+
+  test("stalled が 1 本なら --to より stall が先", () => {
+    const stall: Stall = { reason: "usage_limit", at: NOW, runtime: "claude", resetsAt: null };
+    const pick = pickContinueWork(
+      [
+        w("stuck", { runtimeKind: "claude", stalled: stall, updatedAt: new Date(NOW.getTime() - 10_000) }),
+        w("fresh", { runtimeKind: "opencode", updatedAt: NOW }),
+        w("on-grok", { runtimeKind: "local-grok", updatedAt: NOW }),
+      ],
+      NOW,
+      { toKind: "local-grok" },
+    );
+    expect(pick.kind).toBe("work");
+    if (pick.kind === "work") expect(pick.work.id).toBe("stuck");
+  });
+
+  test("toKind が無い live 2 本は今どおり ambiguous", () => {
+    const pick = pickContinueWork([w("a", { runtimeKind: "claude" }), w("b", { runtimeKind: "opencode" })], NOW);
+    expect(pick).toMatchObject({ kind: "ambiguous", lapsed: false });
+  });
+
+  test("runtimeKind が全部不明なら --to でも ambiguous", () => {
+    const pick = pickContinueWork([w("a"), w("b")], NOW, { toKind: "local-grok" });
+    expect(pick).toMatchObject({ kind: "ambiguous", lapsed: false });
+  });
+
+  test("負の対照: toKind を見ないと 3 本 live は ambiguous のまま", () => {
+    const rows = [
+      w("on-grok", { runtimeKind: "local-grok" }),
+      w("claude", { runtimeKind: "claude" }),
+      w("opencode", { runtimeKind: "opencode" }),
+    ];
+    expect(pickContinueWork(rows, NOW).kind).toBe("ambiguous");
+    expect(pickContinueWork(rows, NOW, { toKind: "local-grok" }).kind).toBe("work");
+  });
+});
+
+describe("pickContinueWork × lapsed --to(PBI-0686)", () => {
+  test("AC-1: lapsed 2 本で toKind 先に居ない方が 1 本ならそれを選ぶ", () => {
+    const pick = pickContinueWork(
+      [
+        w("on-grok", { leaseExpiresAt: PAST, runtimeKind: "local-grok", updatedAt: NOW }),
+        w("claude", { leaseExpiresAt: PAST, runtimeKind: "claude", updatedAt: new Date(NOW.getTime() - 1000) }),
+      ],
+      NOW,
+      { toKind: "local-grok" },
+    );
+    expect(pick.kind).toBe("work");
+    if (pick.kind === "work") {
+      expect(pick.work.id).toBe("claude");
+      expect(pick.lapsed).toBe(true);
+    }
+  });
+
+  test("AC-2: lapsed 2 本がどちらも toKind 先に居ないなら ambiguous（黙って最新を取らない）", () => {
+    const pick = pickContinueWork(
+      [
+        w("a", { leaseExpiresAt: PAST, runtimeKind: "claude", updatedAt: new Date(100) }),
+        w("b", { leaseExpiresAt: PAST, runtimeKind: "claude", updatedAt: new Date(200) }),
+      ],
+      NOW,
+      { toKind: "local-grok" },
+    );
+    expect(pick).toMatchObject({ kind: "ambiguous", lapsed: true });
+    if (pick.kind === "ambiguous") expect(pick.works.map((x) => x.id)).toEqual(["b", "a"]);
+  });
+
+  test("負の対照: toKind を外すと lapsed 2 本は今どおり ambiguous", () => {
+    const rows = [
+      w("on-grok", { leaseExpiresAt: PAST, runtimeKind: "local-grok" }),
+      w("claude", { leaseExpiresAt: PAST, runtimeKind: "claude" }),
+    ];
+    expect(pickContinueWork(rows, NOW).kind).toBe("ambiguous");
+    expect(pickContinueWork(rows, NOW, { toKind: "local-grok" }).kind).toBe("work");
+  });
+
+  test("解放済み 2 本も --to で 1 本に絞る", () => {
+    const pick = pickContinueWork(
+      [
+        w("on-grok", { holderRun: null, leaseExpiresAt: null, failedHandoff: true, runtimeKind: "local-grok" }),
+        w("claude", { holderRun: null, leaseExpiresAt: null, failedHandoff: true, runtimeKind: "claude" }),
+      ],
+      NOW,
+      { toKind: "local-grok" },
+    );
+    expect(pick.kind).toBe("work");
+    if (pick.kind === "work") expect(pick.work.id).toBe("claude");
+  });
+});
+
+describe("pickContinueWork × standing current(PBI-0701)", () => {
+  const self = { runtimeId: "rt_g", kind: "grok" as const };
+  const grokLapsed = (id: string, acquired: number): ContinueWorkInput =>
+    w(id, {
+      leaseExpiresAt: PAST,
+      runtimeKind: "grok",
+      handledRuntimeId: "rt_g",
+      leaseAcquiredAt: new Date(acquired),
+      updatedAt: new Date(acquired),
+    });
+
+  test("AC-1: lapsed が全部 grok なら係の newest を取る", () => {
+    const pick = pickContinueWork(
+      [grokLapsed("old", 100), grokLapsed("mid", 200), grokLapsed("dogfood", 400), grokLapsed("probe", 300)],
+      NOW,
+      { toKind: "grok", self },
+    );
+    expect(pick.kind).toBe("work");
+    if (pick.kind === "work") {
+      expect(pick.work.id).toBe("dogfood");
+      expect(pick.lapsed).toBe(true);
+    }
+  });
+
+  test("AC-2 F51: 係が自分なら switchable より standing", () => {
+    const pick = pickContinueWork(
+      [
+        grokLapsed("dogfood", 400),
+        w("claude", { leaseExpiresAt: PAST, runtimeKind: "claude", handledRuntimeId: "rt_c", updatedAt: new Date(100) }),
+      ],
+      NOW,
+      { toKind: "grok", self },
+    );
+    expect(pick.kind).toBe("work");
+    if (pick.kind === "work") expect(pick.work.id).toBe("dogfood");
+  });
+
+  test("AC-3: 居ない箱が複数なら 0686 どおり ambiguous", () => {
+    const pick = pickContinueWork(
+      [
+        w("a", { leaseExpiresAt: PAST, runtimeKind: "claude", updatedAt: new Date(100) }),
+        w("b", { leaseExpiresAt: PAST, runtimeKind: "claude", updatedAt: new Date(200) }),
+      ],
+      NOW,
+      { toKind: "grok", self },
+    );
+    expect(pick).toMatchObject({ kind: "ambiguous", lapsed: true });
+  });
+
+  test("AC-X1: 別 runtime の係は取らない", () => {
+    const pick = pickContinueWork(
+      [
+        w("other", { leaseExpiresAt: PAST, runtimeKind: "grok", handledRuntimeId: "rt_other", leaseAcquiredAt: new Date(500) }),
+        w("other2", { leaseExpiresAt: PAST, runtimeKind: "grok", handledRuntimeId: "rt_other", leaseAcquiredAt: new Date(400) }),
+      ],
+      NOW,
+      { toKind: "grok", self },
+    );
+    expect(pick.kind).toBe("ambiguous");
+  });
+
+  test("F53: live が grok 3 本でも --to grok は係の newest", () => {
+    const pick = pickContinueWork(
+      [
+        w("old", { runtimeKind: "grok", handledRuntimeId: "rt_g", leaseAcquiredAt: new Date(100) }),
+        w("mid", { runtimeKind: "grok", handledRuntimeId: "rt_g", leaseAcquiredAt: new Date(200) }),
+        w("new", { runtimeKind: "grok", handledRuntimeId: "rt_g", leaseAcquiredAt: new Date(400) }),
+      ],
+      NOW,
+      { toKind: "grok", self },
+    );
+    expect(pick.kind).toBe("work");
+    if (pick.kind === "work") expect(pick.work.id).toBe("new");
+  });
+
+  test("AC-X2: self 無しは 0686 の ambiguous のまま", () => {
+    const pick = pickContinueWork(
+      [grokLapsed("a", 100), grokLapsed("b", 200)],
+      NOW,
+      { toKind: "grok" },
+    );
+    expect(pick.kind).toBe("ambiguous");
+  });
+});
+
+describe("mcpSessionRunId(PBI-0703)", () => {
+  test("AC-X2: kind が空なら mcp-runtime。mcp- だけが session run", () => {
+    expect(mcpSessionRunId("grok")).toBe("mcp-grok");
+    expect(mcpSessionRunId(null)).toBe("mcp-runtime");
+    expect(mcpSessionRunId("  ")).toBe("mcp-runtime");
+    expect(isMcpSessionRun("mcp-grok")).toBe(true);
+    expect(isMcpSessionRun("continue-wtr_x")).toBe(false);
+  });
+});
+
+describe("matchWorkId / uniqueWorkIdPrefix(PBI-0686)", () => {
+  const a = "wrk_01a0aa4410cb721a8acdc9a45ec1f9ae";
+  const b = "wrk_01a0aa468f1d755aaf66093a4e28f064";
+
+  test("unique prefix と省略記号付きを 1 本に畳む", () => {
+    expect(matchWorkId([a, b], "wrk_01a0aa44")).toEqual({ kind: "one", id: a });
+    expect(matchWorkId([a, b], "wrk_01a0aa44…")).toEqual({ kind: "one", id: a });
+  });
+
+  test("共有 prefix は many、無い物は none", () => {
+    expect(matchWorkId([a, b], "wrk_01a0aa")).toEqual({ kind: "many", ids: [a, b] });
+    expect(matchWorkId([a, b], "wrk_nope")).toEqual({ kind: "none" });
+  });
+
+  test("list は衝突するまで id を伸ばす", () => {
+    expect(uniqueWorkIdPrefix([a, b], a)).toBe("wrk_01a0aa44");
+    expect(uniqueWorkIdPrefix([a, a.slice(0, 14) + "ffffffffffffffff"], a).length).toBeGreaterThan(12);
   });
 });
 

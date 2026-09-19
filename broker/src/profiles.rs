@@ -157,7 +157,14 @@ pub fn wake_hosts(
             hosts.extend(catalog(parent));
             egress::hosts_for(&hosts, registry_ok, parent, server_host, base_url(dir, runtime).as_deref())
         }
-        None => egress::hosts_for(&catalog(runtime), registry_ok, runtime, server_host, broker_base_url),
+        None => {
+            // local-<id>（runtimes add）は署名 catalog に居ない。親 id の egress を使う（PBI-0680）。
+            let mut hosts = catalog(runtime);
+            if hosts.is_empty() {
+                hosts = catalog(registry::catalog_kind(runtime));
+            }
+            egress::hosts_for(&hosts, registry_ok, runtime, server_host, broker_base_url)
+        }
     }
 }
 
@@ -334,6 +341,21 @@ mod tests {
         // entry ごと無い runtime も同じ(kiro-cli のように内蔵表にだけ在る id を data 抜きで起こさない)
         assert_eq!(
             wake_hosts(&empty, "kiro-cli", "openroly.example.com", None, None).err().as_deref(),
+            Some("no_egress_hosts")
+        );
+    }
+
+    #[test]
+    fn local_runtime_inherits_catalog_egress_hosts() {
+        let reg = registry::parse(
+            r#"{"version":1,"detectors":[{"id":"grok","adapter":"generic/native","egress":{"hosts":["api.x.ai"]}}]}"#,
+            "cache",
+        )
+        .unwrap();
+        let hosts = wake_hosts(&reg, "local-grok", "openroly.example.com", None, None).unwrap();
+        assert!(hosts.contains(&"api.x.ai".to_string()), "{hosts:?}");
+        assert_eq!(
+            wake_hosts(&reg, "local-foo", "openroly.example.com", None, None).err().as_deref(),
             Some("no_egress_hosts")
         );
     }

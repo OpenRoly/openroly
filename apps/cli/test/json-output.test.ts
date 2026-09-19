@@ -603,6 +603,30 @@ describe("PBI-0334 --json: error と外枠の縁(AC-X2)", () => {
     await rm(home, { recursive: true, force: true });
   }, 30_000);
 
+  test("PBI-0678: share grok --json は Unsupported にならない(empty plan で ok)", async () => {
+    const home = await isolatedHome();
+    await seedCredential(home);
+    const res = await openroly(["share", "grok", "--dry-run", "--json"], home);
+    expect(res.stderr).toBe("");
+    const doc = parseDoc(res.stdout);
+    expect(doc.ok).toBe(true);
+    expect(res.exitCode).toBe(0);
+    expect(doc.error).toBeUndefined();
+    await rm(home, { recursive: true, force: true });
+  }, 30_000);
+
+  test("PBI-0678 AC-X1: share の無い runtime は JSON の error 外枠で Unsupported", async () => {
+    const home = await isolatedHome();
+    await seedCredential(home);
+    const res = await openroly(["share", "no-such-runtime", "--json"], home);
+    expect(res.exitCode).toBe(1);
+    expect(res.stderr).toBe("");
+    const doc = parseDoc(res.stdout);
+    expect(doc.ok).toBe(false);
+    expect(doc.error.message).toContain("Unsupported runtime: no-such-runtime");
+    await rm(home, { recursive: true, force: true });
+  }, 30_000);
+
   test("AC-X2: share が例外で落ちる時も JSON の error 外枠で返る(desired 一覧が読めない)", async () => {
     extensionsGetStatus = 500; // desiredNames が throw → CLI の fail()
     const home = await isolatedHome();

@@ -257,6 +257,51 @@ describe("peek.jsonl(MCP 側・PBI-0224)", () => {
   }, 30_000);
 });
 
+// PBI-0644: broker が先に置いた peek file に足す形(C1 = 専用 uid の session)。
+// **持ち主は broker** なので session 側は chmod できない —— 既に 0600 なら打たない、が性質。
+describe("openPeek(既に在る peek file・PBI-0644)", () => {
+  test("broker が置いた 0600 の file には chmod を打たずに足す(前の行を消さない)", async () => {
+    const { home } = await fixture();
+    try {
+      const { openPeek } = await import("../src/peek.ts");
+      const dir = join(home, "sessions", "req_pre");
+      mkdirSync(dir, { recursive: true });
+      const path = join(dir, "peek.jsonl");
+      writeFileSync(path, '{"session":"req_pre","turn":1}\n', { mode: 0o600 });
+      chmodSync(path, 0o600);
+      // **chmod を打たない事そのものは e2e が測る**(C1 の session は所有者でないので、打てば
+      // EPERM で peek ごと落ちる = `scripts/e2e-auto-session.sh` の PBI-0224 step が赤)。
+      // ここが測るのは、その形で前の行が消えず 0600 のまま足される事
+      const peek = openPeek({ OPENROLY_SESSION_ID: "req_pre" }, home);
+      expect(peek).not.toBeNull();
+      peek!.record({ tool: "inbox_read", input: {}, output: "ok" });
+      const lines = readFileSync(path, "utf8").split("\n").filter((l) => l.length > 0);
+      // 前の turn の行 + header + record
+      expect(lines.length).toBe(3);
+      expect(JSON.parse(lines[0]!)).toMatchObject({ turn: 1 });
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("0644 で在る file は 0600 に寄せる(負の対照: 条件を外すと緩いまま)", async () => {
+    const { home } = await fixture();
+    try {
+      const { openPeek } = await import("../src/peek.ts");
+      const dir = join(home, "sessions", "req_loose");
+      mkdirSync(dir, { recursive: true });
+      const path = join(dir, "peek.jsonl");
+      writeFileSync(path, "", { mode: 0o644 });
+      chmodSync(path, 0o644);
+      expect(openPeek({ OPENROLY_SESSION_ID: "req_loose" }, home)).not.toBeNull();
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+});
+
 // PBI-0229 の tool 報告(hook socket)。openSessionUpdate は in-process で直接叩く
 // (送信の上流は broker の cargo test が根拠。ここが測るのは「止めない」側 = fail-open)
 describe("openSessionUpdate(MCP 側・PBI-0229 AC-X2)", () => {

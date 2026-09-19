@@ -4,13 +4,15 @@
 
 <h1 align="center">OpenRoly</h1>
 
+<p align="center"><strong>Your agent is not your model.</strong></p>
+
 <p align="center"><em>Your work outlives the context.</em></p>
 
-<p align="center"><strong>Start with Claude. Finish with another AI. Never explain the task twice.</strong></p>
+<p align="center">Start with Claude. Finish with another AI. Never explain the task twice.</p>
 
 <p align="center">
-  <img src="docs/demo/w1-continue.gif" width="720" alt="Claude Code stops at a usage limit, openroly continue hands the job to OpenCode, and OpenCode finishes the same job">
-  <br><sub>The usage limit in this recording is triggered by running Claude Code's limit hook with the same input Claude Code gives it, not by a real limit. The seconds on screen are real; the recording skips the waiting.</sub>
+  <img src="docs/demo/w1-handoff.gif" width="720" alt="Inside Claude Code: OpenRoly shows the job, Claude hands it to OpenCode, and OpenCode finishes the same job">
+  <br><sub>The first time you open a folder, Claude Code asks you to confirm it — this recording starts after that. The seconds on screen are real; the recording skips the waiting.</sub>
 </p>
 
 <p align="center">
@@ -20,7 +22,7 @@
 </p>
 
 <p align="center">
-  <a href="https://atn.shibubu.ai">Website</a> ·
+  <a href="https://openroly.shibubu.ai">Website</a> ·
   <a href="#what-you-can-do-today">What works</a> ·
   <a href="#get-started">Get started</a> ·
   <a href="ROADMAP.md">Roadmap</a> ·
@@ -100,7 +102,7 @@ places can arrive later without moving your work — and an AI working in one pl
 
 ## Get started
 
-Create an account at **[atn.shibubu.ai](https://atn.shibubu.ai)**, then on a Mac or Linux machine:
+Create an account at **[openroly.shibubu.ai](https://openroly.shibubu.ai)**, then on a Mac or Linux machine:
 
 **Supported CLI binaries today:** `darwin-arm64`, `darwin-x64`, `linux-x64`.
 Linux on ARM (Graviton, Pi, etc.) is not in the latest release yet — track [releases](https://github.com/OpenRoly/openroly/releases).
@@ -112,7 +114,7 @@ curl -fsSLO "$BASE/openroly-$TARGET" && curl -fsSLO "$BASE/SHA256SUMS" &&
   grep "  openroly-$TARGET\$" SHA256SUMS > openroly.sha256 &&
   { sha256sum -c openroly.sha256 2>/dev/null || shasum -a 256 -c openroly.sha256; } &&
   mv "openroly-$TARGET" openroly && chmod +x openroly
-./openroly login --url https://atn.shibubu.ai
+./openroly login --url https://openroly.shibubu.ai
 ./openroly pair claude
 ./openroly status
 ```
@@ -131,7 +133,7 @@ claude plugin marketplace add OpenRoly/openroly
 codex plugin marketplace add OpenRoly/openroly
 ```
 
-**Windows / iPhone / Android:** use the web app at [atn.shibubu.ai](https://atn.shibubu.ai).
+**Windows / iPhone / Android:** use the web app at [openroly.shibubu.ai](https://openroly.shibubu.ai).
 Connecting an AI still needs a Mac or Linux machine.
 
 ## PAAP Continuity Benchmark
@@ -154,7 +156,7 @@ writes, and as the first AI's full transcript.
 | Session cut off | 30.0% (95% 10.8–60.3% · n=10 · woken once more 3/10, finished after the rewake 3/3) | 🚧 | 🚧 | measured pairs: Claude Code → OpenCode · one medium task · measured on the runs that had a scripted person standing by |
 | Cost per finished job | 46.1k tokens + 477.0k cached · 60.7 credits (n=26 · 4 unfinished runs also spent) | 63.4k tokens + 490.8k cached · 70.2 credits (n=20 · 10 unfinished runs also spent) | 53.5k tokens + 560.6k cached · 70.9 credits (n=28 · 2 unfinished runs also spent) | measured pairs: Claude Code → OpenCode · one medium task · everything the measured runs spent, over the runs that finished |
 
-Runs measured 2026-09-15 to 2026-09-16 at `b4cae9e`, `7a7623b` (some runs not recorded); judged with the code at `2d7cf64`; recovery measured 2026-09-16 at `3809332`. Not measured yet: OpenCode → Claude Code, Claude Code → Codex, Codex → Claude Code, Claude Code → openai-compatible endpoint (Z.AI stand-in), Claude Code → Gemini, a summary written by a person. 🚧 = not measured.
+Runs measured 2026-09-15 to 2026-09-16 at `b4cae9e`, `7a7623b` (some runs not recorded); judged with the code at `2d7cf64`. Not measured yet: OpenCode → Claude Code, Claude Code → Codex, Codex → Claude Code, Claude Code → openai-compatible endpoint (Z.AI stand-in), Claude Code → Gemini, a summary written by a person. 🚧 = not measured.
 Rates leave out runs whose tool calls could not be recorded. Definitions: [specs/paap/benchmark.md](specs/paap/benchmark.md).
 
 <!-- paap-continuity-benchmark:end -->
@@ -173,7 +175,7 @@ The full plan, module by module, is in **[ROADMAP.md](ROADMAP.md)**.
 | 🚧 | Linux wake-ups | The Linux sandbox works; next, mail wakes real AIs inside it on Linux as it does on macOS |
 | ✅ | Pick up where you left off | Hit a usage limit and keep going in another session — engineering smoke benchmark (the handoff reached the other AI and it acted on the checkpoint): 3 of 3 live runs, picked up in 14.1s (median), no handoff left the work without an owner |
 | ✅ | Switch AI mid-task | Start in Claude, continue in OpenCode, in one step — engineering smoke benchmark (the handoff reached the other AI and it acted on the checkpoint): 6 of 6 live runs, picked up in 13.1s (median), no handoff left the work without an owner. Codex next |
-| ⏳ | Shared memory and skills | What Claude learned today, another AI can use tomorrow |
+| 🚧 | Shared memory and skills | What Claude learned today, another AI can use tomorrow — Memory v1 ships, and the same memory now reaches a second AI (cross-engine handoff implemented); the headline benchmark run is next |
 | ✅ | Account protocol v0.1 | Identity, work, checkpoints, and handoffs as an open spec ([`specs/paap/`](specs/paap/)), read by two small independent implementations and checked on every push |
 | ⏳ | Add your AI | A small engine interface, and a guide to connect a new AI in about 30 minutes |
 | ⏳ | Self-hosting | Run the account server yourself |
@@ -192,11 +194,11 @@ The full plan, module by module, is in **[ROADMAP.md](ROADMAP.md)**.
 ## Privacy
 
 The server only sees who sent something, when, and from where — never the subject or body.
-Your key stays on your device. Details: **[atn.shibubu.ai/privacy](https://atn.shibubu.ai/privacy)**.
+Your key stays on your device. Details: **[openroly.shibubu.ai/privacy](https://openroly.shibubu.ai/privacy)**.
 
 ## About this repository
 
-This repo holds everything that runs on your machine. The hosted server behind `atn.shibubu.ai`
+This repo holds everything that runs on your machine. The hosted server behind `openroly.shibubu.ai`
 is not open source yet.
 
 | Folder | What's inside |

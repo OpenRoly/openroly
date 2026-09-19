@@ -14,6 +14,10 @@ import {
   WORK_OWNER_KINDS,
   workOwnerId,
   decideWorkOwner,
+  decideWorkCreator,
+  isHumanHandActor,
+  resolvePairedRuntimeKind,
+  isWakeableKind,
   type WorkLease,
   type IntentTokenState,
 } from "../src/work.ts";
@@ -254,5 +258,39 @@ describe("decideWorkOwner(PBI-0467)", () => {
     expect(broken({ accountId: "acc_a", parent: { owner: "account:acc_b" } })).toEqual({ ok: true, owner: "account:acc_a" });
     // 本物は同じ入力を拒否する(壊れた版との差が「親を見ている」証拠)
     expect(decideWorkOwner({ accountId: "acc_a", parent: { owner: "account:acc_b" } }).ok).toBe(false);
+  });
+});
+
+describe("isHumanHandActor / resolvePairedRuntimeKind(PBI-0679)", () => {
+  test("human と broker だけが人の手。claude は違う", () => {
+    expect(isHumanHandActor("human", null)).toBe(true);
+    expect(isHumanHandActor("runtime", "broker")).toBe(true);
+    expect(isHumanHandActor("runtime", "claude")).toBe(false);
+    expect(isHumanHandActor("runtime", "local-grok")).toBe(false);
+  });
+
+  test("root work は broker で作れ、claude では human_only", () => {
+    expect(decideWorkCreator({ actorKind: "runtime", runtimeKind: "broker", hasParent: false })).toEqual({ ok: true });
+    expect(decideWorkCreator({ actorKind: "runtime", runtimeKind: "claude", hasParent: false }))
+      .toEqual({ ok: false, reason: "human_only" });
+  });
+
+  test("grok 要求で pair 済みが local-grok ならそちらへ畳む。逆も。在る方は触らない", () => {
+    expect(resolvePairedRuntimeKind("grok", ["local-grok"])).toBe("local-grok");
+    expect(resolvePairedRuntimeKind("local-grok", ["grok"])).toBe("grok");
+    expect(resolvePairedRuntimeKind("grok", ["grok", "local-grok"])).toBe("grok");
+    expect(resolvePairedRuntimeKind("codex", ["claude"])).toBe("codex");
+  });
+
+  test("local-grok は catalog の grok が headless なら起こせる", () => {
+    expect(isWakeableKind("grok", ["grok", "claude"])).toBe(true);
+    expect(isWakeableKind("local-grok", ["grok", "claude"])).toBe(true);
+    expect(isWakeableKind("local-foo", ["grok"])).toBe(false);
+  });
+
+  test("負の対照: 接頭辞を見ないと grok→local-grok が畳めない", () => {
+    const broken = (requested: string, paired: string[]) => (paired.includes(requested) ? requested : requested);
+    expect(broken("grok", ["local-grok"])).toBe("grok");
+    expect(resolvePairedRuntimeKind("grok", ["local-grok"])).toBe("local-grok");
   });
 });
